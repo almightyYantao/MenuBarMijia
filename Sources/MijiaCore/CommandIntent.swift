@@ -222,11 +222,29 @@ public enum IntentReply {
             if targetsByOp[key] == nil { order.append(intent.operation) }
             targetsByOp[key, default: []].append(nameById[intent.targetId] ?? intent.targetId)
         }
+        let isEn = L10n.isEnglish
         let clauses = order.map { op -> String in
             let names = targetsByOp[String(describing: op)] ?? []
+            let sep = isEn ? ", " : "、"
             let joined = names.count > 3
-                ? names.prefix(3).joined(separator: "、") + " 等 \(names.count) 台"
-                : names.joined(separator: "、")
+                ? names.prefix(3).joined(separator: sep) + (isEn ? " (+\(names.count - 3) more)" : " 等 \(names.count) 台")
+                : names.joined(separator: sep)
+            if isEn {
+                switch op {
+                case .power(true): return "Turned on \(joined)"
+                case .power(false): return "Turned off \(joined)"
+                case .brightness(let b): return "Set \(joined) brightness to \(b)%"
+                case .colorTemperature(let k): return "Set \(joined) color temp to \(k)K"
+                case .lightEffect(let e): return "Switched \(joined) to \(SmartDevice.localizeEffect(e)) mode"
+                case .hvacMode(let m): return "Switched \(joined) to \(SmartDevice.localizeHVACMode(m))"
+                case .targetTemperature(let t): return "Set \(joined) to \(formatTemperature(t))°C"
+                case .activateScene: return "Activated scene \"\(joined)\""
+                case .fanSpeed(let v): return "Set \(joined) fan speed to \(fanSpeedLabel(v))"
+                case .oscillation(let on): return "\(on ? "Enabled" : "Disabled") oscillation on \(joined)"
+                case .brightnessStep(let d): return "\(d >= 0 ? "Increased" : "Decreased") \(joined) brightness by \(abs(d))%"
+                case .temperatureStep(let d): return "\(d >= 0 ? "Increased" : "Decreased") \(joined) temp by \(formatTemperature(abs(d)))°C"
+                }
+            }
             switch op {
             case .power(true): return "打开\(joined)"
             case .power(false): return "关闭\(joined)"
@@ -244,12 +262,21 @@ public enum IntentReply {
             case .temperatureStep(let d): return "\(joined)温度\(d >= 0 ? "调高" : "调低") \(formatTemperature(abs(d)))°C"
             }
         }
-        return clauses.isEmpty ? "" : "已" + clauses.joined(separator: "，")
+        if clauses.isEmpty { return "" }
+        return isEn ? clauses.joined(separator: "; ") : "已" + clauses.joined(separator: "，")
     }
 
     /// "Level3" → "3 档"，"high" → "高档"；其余原样返回。
     public static func fanSpeedLabel(_ raw: String) -> String {
         let lowered = raw.lowercased()
+        if L10n.isEnglish {
+            if lowered.hasPrefix("level"), let n = Int(lowered.dropFirst(5)) { return "Level \(n)" }
+            let enNames = [
+                "low": "Low", "medium": "Medium", "middle": "Medium", "mid": "Medium",
+                "high": "High", "auto": "Auto", "silent": "Silent", "sleep": "Sleep"
+            ]
+            return enNames[lowered] ?? raw
+        }
         if lowered.hasPrefix("level"), let n = Int(lowered.dropFirst(5)) { return "\(n) 档" }
         let names = ["low": "低档", "medium": "中档", "middle": "中档", "mid": "中档", "high": "高档", "auto": "自动", "silent": "静音", "sleep": "睡眠"]
         return names[lowered] ?? raw

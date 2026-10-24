@@ -148,7 +148,7 @@ public final class SpeechInputController {
             return
         }
         guard Bundle.main.bundleURL.pathExtension == "app" else {
-            errorMessage = "语音识别仅在打包后的 App 中可用"
+            errorMessage = L10n.tr("语音识别仅在打包后的 App 中可用", "Speech recognition is only available in the packaged App")
             return
         }
         isStarting = true
@@ -164,21 +164,30 @@ public final class SpeechInputController {
         let micAllowed = await SpeechRuntimeBridge.requestMicrophoneAccess()
         guard micAllowed else {
             isHoldToTalk = false
-            errorMessage = "请在「系统设置 → 隐私与安全性 → 麦克风」中允许 MenuBarMijia"
+            errorMessage = L10n.tr(
+                "请在「系统设置 → 隐私与安全性 → 麦克风」中允许 MenuBarMijia",
+                "Please allow MenuBarMijia in System Settings → Privacy & Security → Microphone"
+            )
             return
         }
 
         let speechStatus = await SpeechRuntimeBridge.requestSpeechAuthorization()
         guard speechStatus == .authorized else {
             isHoldToTalk = false
-            errorMessage = "请在「系统设置 → 隐私与安全性 → 语音识别」中允许 MenuBarMijia"
+            errorMessage = L10n.tr(
+                "请在「系统设置 → 隐私与安全性 → 语音识别」中允许 MenuBarMijia",
+                "Please allow MenuBarMijia in System Settings → Privacy & Security → Speech Recognition"
+            )
             return
         }
 
-        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")) ?? SFSpeechRecognizer(),
+        let preferredLocale = Locale(identifier: store.effectiveLanguage.speechLocaleIdentifier)
+        guard let recognizer = SFSpeechRecognizer(locale: preferredLocale)
+                ?? SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
+                ?? SFSpeechRecognizer(),
               recognizer.isAvailable else {
             isHoldToTalk = false
-            errorMessage = "当前系统语音识别服务暂不可用"
+            errorMessage = L10n.tr("当前系统语音识别服务暂不可用", "System speech recognition is currently unavailable")
             return
         }
 
@@ -188,7 +197,7 @@ public final class SpeechInputController {
         let engine = AVAudioEngine()
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
-        // Privacy option: keep recognition on this Mac when the system supports it for zh-CN.
+        // Privacy option: keep recognition on this Mac when the system supports it.
         if store.prefersOnDeviceSpeech && recognizer.supportsOnDeviceRecognition {
             request.requiresOnDeviceRecognition = true
         }
@@ -197,7 +206,7 @@ public final class SpeechInputController {
         let format = inputNode.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             isHoldToTalk = false
-            errorMessage = "未检测到可用麦克风输入设备"
+            errorMessage = L10n.tr("未检测到可用麦克风输入设备", "No available microphone input device detected")
             return
         }
 
@@ -209,7 +218,10 @@ public final class SpeechInputController {
         } catch {
             inputNode.removeTap(onBus: 0)
             isHoldToTalk = false
-            errorMessage = "麦克风启动失败：\(error.localizedDescription)"
+            errorMessage = L10n.tr(
+                "麦克风启动失败：\(error.localizedDescription)",
+                "Microphone failed to start: \(error.localizedDescription)"
+            )
             return
         }
 
@@ -303,6 +315,7 @@ struct AssistantCommandBar: View {
     @FocusState private var isFieldFocused: Bool
 
     var body: some View {
+        let _ = store.effectiveLanguage
         let shape = RoundedRectangle(cornerRadius: 11, style: .continuous)
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 7) {
@@ -361,7 +374,10 @@ struct AssistantCommandBar: View {
 
             suggestionsRow
         }
-        .help("长按顶部菜单栏温度图标可按住说话；或点击麦克风说话，打字回车执行")
+        .help(L10n.tr(
+            "长按顶部菜单栏温度图标可按住说话；或点击麦克风说话，打字回车执行",
+            "Long-press the menu bar icon for Push-to-Talk, click the mic to speak, or type and press Return"
+        ))
         .animation(AppleMotion.snappySpring, value: store.assistantState)
         .animation(AppleMotion.snappySpring, value: store.assistantSuggestions)
         .animation(AppleMotion.snappySpring, value: store.scheduledCommands)
@@ -406,7 +422,7 @@ struct AssistantCommandBar: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .help("取消这个定时")
+                    .help(L10n.tr("取消这个定时", "Cancel this timer"))
                 }
                 .font(.system(size: 11, weight: .medium))
                 .padding(.horizontal, 4)
@@ -430,7 +446,7 @@ struct AssistantCommandBar: View {
                             Image(systemName: "wand.and.stars")
                                 .font(.system(size: 10, weight: .semibold))
                         }
-                        Text("Jev 猜你想做")
+                        Text(L10n.tr("Jev 猜你想做", "Jev Suggests"))
                             .font(.system(size: 10.5, weight: .semibold))
                     }
                     .foregroundStyle(Color.accentColor)
@@ -440,7 +456,10 @@ struct AssistantCommandBar: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(store.isProactiveRecommending)
-                .help("让 Jev 结合当前室温、时间段与你的个人习惯，实时推演最可能执行的设备操作")
+                .help(L10n.tr(
+                    "让 Jev 结合当前室温、时间段与你的个人习惯，实时推演最可能执行的设备操作",
+                    "Let Jev infer your most likely device actions based on room temperature, time of day, and habits"
+                ))
 
                 ForEach(store.assistantSuggestions) { suggestion in
                     Button {
@@ -467,8 +486,8 @@ struct AssistantCommandBar: View {
                     .buttonStyle(.plain)
                     .help(
                         suggestion.confidencePercent != nil
-                            ? "Jev 概率分布推演建议（点击立即执行）"
-                            : "你在当前时间段的常用习惯（点击立即执行）"
+                            ? L10n.tr("Jev 概率分布推演建议（点击立即执行）", "Jev probability-based suggestion (click to execute)")
+                            : L10n.tr("你在当前时间段的常用习惯（点击立即执行）", "Your frequent habit in this time slot (click to execute)")
                     )
                 }
             }
@@ -478,12 +497,21 @@ struct AssistantCommandBar: View {
 
     private var placeholderText: String {
         if speech.isHoldToTalk {
-            return "按住菜单栏说话，松开立即执行（如：准备写代码、书房灯月光模式）"
+            return L10n.tr(
+                "按住菜单栏说话，松开立即执行（如：准备写代码、书房灯月光模式）",
+                "Hold menu bar to speak, release to run (e.g. turn on study light, moonlight mode)"
+            )
         }
         if speech.isListening {
-            return "正在聆听…说完自动执行（如：准备写代码、书房灯月光模式）"
+            return L10n.tr(
+                "正在聆听…说完自动执行（如：准备写代码、书房灯月光模式）",
+                "Listening… auto-runs when done (e.g. turn on study light, moonlight mode)"
+            )
         }
-        return "支持模糊情境与习惯（如：准备写代码、有点闷热、书房灯月光模式）"
+        return L10n.tr(
+            "支持模糊情境与习惯（如：准备写代码、有点闷热、书房灯月光模式）",
+            "Type or speak a command (e.g. turn on study light, AC 24 degrees, moonlight mode)"
+        )
     }
 
     private var micButton: some View {
@@ -497,7 +525,9 @@ struct AssistantCommandBar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(speech.isListening ? "停止聆听并执行" : "语音输入（快捷键 V，或长按菜单栏图标）")
+        .help(speech.isListening
+              ? L10n.tr("停止聆听并执行", "Stop listening and run")
+              : L10n.tr("语音输入（快捷键 V，或长按菜单栏图标）", "Voice input (Shortcut V, or long-press menu bar icon)"))
     }
 
     @ViewBuilder
@@ -521,7 +551,7 @@ struct AssistantCommandBar: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("关闭 (Esc)")
+            .help(L10n.tr("关闭 (Esc)", "Close (Esc)"))
         }
     }
 
@@ -530,7 +560,7 @@ struct AssistantCommandBar: View {
             return (speechError, true)
         }
         switch store.assistantState {
-        case .done(let text): return (text.isEmpty ? "已执行" : text, false)
+        case .done(let text): return (text.isEmpty ? L10n.tr("已执行", "Done") : text, false)
         case .failed(let message): return (message, true)
         case .idle, .thinking: return nil
         }
@@ -550,49 +580,62 @@ struct AssistantSettingsSection: View {
     @State private var habitRevision = 0
 
     var body: some View {
+        let _ = store.effectiveLanguage
         let _ = habitRevision
         let habitItems = store.userHabitMemory.readableItems(devices: store.devices, scenes: store.scenes)
         let habitCount = habitItems.count
         VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Text("AI 决策与习惯记忆 (Jev)")
+                Text(L10n.tr("AI 决策与习惯记忆 (Jev)", "AI Decision & Habit Memory (Jev)"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
                 if AssistantConfig.loadCodexBarOpenRouterKey() != nil {
-                    Text("● 已自动接入 CodexBar")
+                    Text(L10n.tr("● 已自动接入 CodexBar", "● Linked via CodexBar"))
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(.green)
                 } else if !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("● 已配置 API Key")
+                    Text(L10n.tr("● 已配置 API Key", "● API Key Configured"))
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(.green)
                 } else {
-                    Text("● 未配置 Key（常规指令本地可用）")
+                    Text(L10n.tr("● 未配置 Key（常规指令本地可用）", "● No Key (Local Rules Active)"))
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                 }
             }
 
-            labeledField("服务地址 (默认 OpenRouter /v1，支持 System One 决策协议)") {
+            labeledField(L10n.tr(
+                "服务地址 (默认 OpenRouter /v1，支持 System One 决策协议)",
+                "Endpoint URL (Default OpenRouter /v1, System One Protocol)"
+            )) {
                 TextField(AssistantConfig.defaultBaseURL, text: $baseURLDraft)
                     .textFieldStyle(.roundedBorder)
             }
 
-            labeledField("模型 (默认 ~typesafe/jev-latest，支持全屋多头并行概率决策)") {
+            labeledField(L10n.tr(
+                "模型 (默认 ~typesafe/jev-latest，支持全屋多头并行概率决策)",
+                "Model (Default ~typesafe/jev-latest, Multi-Head Probabilistic Decision)"
+            )) {
                 TextField(AssistantConfig.defaultModel, text: $modelDraft)
                     .textFieldStyle(.roundedBorder)
             }
 
-            labeledField("API Key (留空将自动读取 CodexBar 的 OpenRouter Key)") {
-                SecureField("留空自动读取 CodexBar，或手动输入存入钥匙串", text: $apiKeyDraft)
-                    .textFieldStyle(.roundedBorder)
+            labeledField(L10n.tr(
+                "API Key (留空将自动读取 CodexBar 的 OpenRouter Key)",
+                "API Key (Leave blank to auto-read OpenRouter Key from CodexBar)"
+            )) {
+                SecureField(
+                    L10n.tr("留空自动读取 CodexBar，或手动输入存入钥匙串", "Auto-read CodexBar or enter manually (stored in Keychain)"),
+                    text: $apiKeyDraft
+                )
+                .textFieldStyle(.roundedBorder)
             }
 
             privacySection(habitItems: habitItems, habitCount: habitCount)
 
             HStack {
-                Button("恢复 Jev 默认") {
+                Button(L10n.tr("恢复 Jev 默认", "Restore Defaults")) {
                     baseURLDraft = AssistantConfig.defaultBaseURL
                     modelDraft = AssistantConfig.defaultModel
                 }
@@ -600,13 +643,13 @@ struct AssistantSettingsSection: View {
 
                 Spacer()
 
-                Button("保存 AI 配置") {
+                Button(L10n.tr("保存 AI 配置", "Save AI Config")) {
                     store.assistantConfig = AssistantConfig(
                         baseURL: baseURLDraft,
                         model: modelDraft,
                         apiKey: apiKeyDraft
                     )
-                    store.showToast("已保存 AI 指令配置")
+                    store.showToast(L10n.tr("已保存 AI 指令配置", "Saved AI configuration"))
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
             }
@@ -629,7 +672,7 @@ struct AssistantSettingsSection: View {
                 get: { store.isHabitLearningEnabled },
                 set: { store.isHabitLearningEnabled = $0 }
             )) {
-                Text("学习我的使用习惯（用于猜你想做）")
+                Text(L10n.tr("学习我的使用习惯（用于猜你想做）", "Learn my usage habits (for proactive suggestions)"))
                     .font(.system(size: 11))
             }
             .toggleStyle(.switch)
@@ -639,14 +682,16 @@ struct AssistantSettingsSection: View {
                 get: { store.prefersOnDeviceSpeech },
                 set: { store.prefersOnDeviceSpeech = $0 }
             )) {
-                Text("语音只在本机识别（不把声音发给苹果，系统支持时生效）")
+                Text(L10n.tr("语音只在本机识别（不把声音发给苹果，系统支持时生效）", "On-device speech recognition only (when supported by macOS)"))
                     .font(.system(size: 11))
             }
             .toggleStyle(.switch)
             .controlSize(.mini)
 
             HStack {
-                Button(isShowingHabits ? "收起已学习的习惯" : "查看已学习的习惯（\(habitCount) 条）") {
+                Button(isShowingHabits
+                       ? L10n.tr("收起已学习的习惯", "Hide learned habits")
+                       : L10n.tr("查看已学习的习惯（\(habitCount) 条）", "View learned habits (\(habitCount))")) {
                     isShowingHabits.toggle()
                 }
                 .buttonStyle(.plain)
@@ -655,10 +700,10 @@ struct AssistantSettingsSection: View {
                 .disabled(habitCount == 0)
                 Spacer()
                 if habitCount > 0 {
-                    Button("清空记忆") {
+                    Button(L10n.tr("清空记忆", "Clear Memory")) {
                         store.userHabitMemory = UserHabitMemory()
                         habitRevision &+= 1
-                        store.showToast("已清空个人习惯记忆")
+                        store.showToast(L10n.tr("已清空个人习惯记忆", "Cleared personal habit memory"))
                     }
                     .buttonStyle(PillActionButtonStyle())
                 }
@@ -683,12 +728,15 @@ struct AssistantSettingsSection: View {
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
-                        .help("忘掉这一条")
+                        .help(L10n.tr("忘掉这一条", "Forget this habit"))
                     }
                 }
             }
 
-            Text("发给 AI 的内容：你说的那句话、设备名称/房间/当前状态、时间段、室温\(store.isHabitLearningEnabled ? "、习惯摘要" : "")。只有本机解析不了的指令才会发送。API Key 和米家登录信息只存在本机钥匙串，不会发送。")
+            Text(L10n.tr(
+                "发给 AI 的内容：你说的那句话、设备名称/房间/当前状态、时间段、室温\(store.isHabitLearningEnabled ? "、习惯摘要" : "")。只有本机解析不了的指令才会发送。API Key 和米家登录信息只存在本机钥匙串，不会发送。",
+                "Sent to AI only when local parsing cannot resolve: your command text, device names/rooms/states, time slot, room temperature\(store.isHabitLearningEnabled ? ", and habit summary" : ""). API keys and Xiaomi credentials stay in your local Keychain."
+            ))
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

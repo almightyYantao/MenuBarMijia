@@ -439,15 +439,15 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
     }
 
     public var statusSubtitle: String {
-        guard isOnline else { return "离线 · 未通电" }
+        guard isOnline else { return L10n.tr("离线 · 未通电", "Offline · Unplugged") }
         switch kind {
         case .light(let s):
-            if !s.isOn { return "已关闭" }
+            if !s.isOn { return L10n.tr("已关闭", "Off") }
             var parts: [String] = []
             if let b = s.brightnessPercent, b > 0 {
                 parts.append("\(b)%")
             } else {
-                parts.append("已开启")
+                parts.append(L10n.tr("已开启", "On"))
             }
             if let effect = s.currentEffect, !effect.isEmpty {
                 parts.append(Self.localizeEffect(effect))
@@ -457,45 +457,53 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
             return parts.joined(separator: " · ")
 
         case .climate(let s):
-            if !s.isOn || s.hvacMode == "off" { return "已关闭" }
+            if !s.isOn || s.hvacMode == "off" { return L10n.tr("已关闭", "Off") }
             let modeLabel = Self.localizeHVACMode(s.hvacMode)
             let tempStr = String(format: "%.0f°C", s.targetTemperature)
             if let cur = s.currentTemperature {
-                return "\(modeLabel) \(tempStr) · 室温 \(String(format: "%.0f°", cur))"
+                return L10n.tr(
+                    "\(modeLabel) \(tempStr) · 室温 \(String(format: "%.0f°", cur))",
+                    "\(modeLabel) \(tempStr) · Room \(String(format: "%.0f°", cur))"
+                )
             }
             return "\(modeLabel) · \(tempStr)"
 
         case .fan(let s):
-            if !s.isOn { return "已关闭" }
+            if !s.isOn { return L10n.tr("已关闭", "Off") }
             var parts: [String] = []
             if let mode = s.presetMode { parts.append(mode) }
             if let pct = s.percentage { parts.append("\(pct)%") }
-            if parts.isEmpty { parts.append("运行中") }
+            if parts.isEmpty { parts.append(L10n.tr("运行中", "Running")) }
             return parts.joined(separator: " · ")
 
         case .plug(let s):
-            if !s.isOn { return "已关闭" }
+            if !s.isOn { return L10n.tr("已关闭", "Off") }
             if let w = s.powerWatts {
                 if w >= 1 {
-                    return String(format: "开启 · %.0fW", w)
+                    return L10n.tr(
+                        String(format: "开启 · %.0fW", w),
+                        String(format: "On · %.0fW", w)
+                    )
                 } else {
-                    return "开启 · 待机 0W"
+                    return L10n.tr("开启 · 待机 0W", "On · Standby 0W")
                 }
             }
-            return "已开启"
+            return L10n.tr("已开启", "On")
 
         case .fridge(let s):
-            let cStr = s.fridgeCurrentTemp.map { String(format: "冷藏 %.0f°", $0) } ?? "冷藏 --"
-            let fStr = s.freezerCurrentTemp.map { String(format: "冷冻 %.0f°", $0) } ?? "冷冻 --"
+            let cStr = s.fridgeCurrentTemp.map { String(format: L10n.tr("冷藏 %.0f°", "Fridge %.0f°"), $0) }
+                ?? L10n.tr("冷藏 --", "Fridge --")
+            let fStr = s.freezerCurrentTemp.map { String(format: L10n.tr("冷冻 %.0f°", "Freezer %.0f°"), $0) }
+                ?? L10n.tr("冷冻 --", "Freezer --")
             return "\(cStr) · \(fStr)"
 
         case .vacuum(let s):
             let st: String = switch s.status {
-            case "cleaning", "on": "清扫中"
-            case "returning": "回充途中"
-            case "paused": "已暂停"
-            case "docked": "充电待机"
-            default: "待机"
+            case "cleaning", "on": L10n.tr("清扫中", "Cleaning")
+            case "returning": L10n.tr("回充途中", "Returning")
+            case "paused": L10n.tr("已暂停", "Paused")
+            case "docked": L10n.tr("充电待机", "Docked")
+            default: L10n.tr("待机", "Standby")
             }
             if let bat = s.battery {
                 return "\(st) · \(bat)%"
@@ -503,27 +511,27 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
             return st
 
         case .speaker(let s):
-            let playStr = s.state == "playing" ? "播放中" : "待机"
-            let volStr = s.isMuted ? "已静音" : "音量 \(s.volumePercent)%"
+            let playStr = s.state == "playing" ? L10n.tr("播放中", "Playing") : L10n.tr("待机", "Standby")
+            let volStr = s.isMuted ? L10n.tr("已静音", "Muted") : L10n.tr("音量 \(s.volumePercent)%", "Vol \(s.volumePercent)%")
             return "\(playStr) · \(volStr)"
 
         case .tv(let s):
             if s.isPairingPromptActive {
-                return "请在电视上点击「允许」配对"
+                return L10n.tr("请在电视上点击「允许」配对", "Accept pairing prompt on TV")
             }
             if s.state == "off" || s.state == "standby" {
-                return "已关机 · 可唤醒"
+                return L10n.tr("已关机 · 可唤醒", "Standby · Ready to Wake")
             }
             var parts: [String] = []
             if let src = s.currentSource, !src.isEmpty {
                 parts.append(src)
             } else {
-                parts.append("在线")
+                parts.append(L10n.tr("在线", "Online"))
             }
             if s.isScreenOff {
-                parts.append("已熄屏")
+                parts.append(L10n.tr("已熄屏", "Screen Off"))
             }
-            parts.append(s.isMuted ? "已静音" : "音量 \(s.volumePercent)%")
+            parts.append(s.isMuted ? L10n.tr("已静音", "Muted") : L10n.tr("音量 \(s.volumePercent)%", "Vol \(s.volumePercent)%"))
             return parts.joined(separator: " · ")
 
         case .sensor(let s):
@@ -532,30 +540,30 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
             }
             if let text = s.statusText {
                 if let bat = s.battery {
-                    return "\(text) · 电量 \(bat)%"
+                    return L10n.tr("\(text) · 电量 \(bat)%", "\(text) · Battery \(bat)%")
                 }
                 return text
             }
-            return "在线"
+            return L10n.tr("在线", "Online")
         }
     }
 
     public static func localizeEffect(_ effect: String) -> String {
         switch effect {
-        case "Day": return "日光"
-        case "Night": return "月光"
+        case "Day": return L10n.tr("日光", "Daylight")
+        case "Night": return L10n.tr("月光", "Moonlight")
         default: return effect
         }
     }
 
     public static func localizeHVACMode(_ mode: String) -> String {
         switch mode {
-        case "cool": return "制冷"
-        case "heat": return "制热"
-        case "dry": return "除湿"
-        case "fan_only": return "送风"
-        case "auto", "heat_cool": return "自动"
-        case "off": return "关闭"
+        case "cool": return L10n.tr("制冷", "Cool")
+        case "heat": return L10n.tr("制热", "Heat")
+        case "dry": return L10n.tr("除湿", "Dry")
+        case "fan_only": return L10n.tr("送风", "Fan")
+        case "auto", "heat_cool": return L10n.tr("自动", "Auto")
+        case "off": return L10n.tr("关闭", "Off")
         default: return mode
         }
     }
@@ -586,9 +594,9 @@ public enum QuickAction: String, CaseIterable, Identifiable, Equatable, Sendable
 
     public var title: String {
         switch self {
-        case .lightsOff: return "全屋关灯"
-        case .softNightLight: return "柔和夜灯"
-        case .climateSleepOff: return "关温控风扇"
+        case .lightsOff: return L10n.tr("全屋关灯", "All Lights Off")
+        case .softNightLight: return L10n.tr("柔和夜灯", "Soft Night Light")
+        case .climateSleepOff: return L10n.tr("关温控风扇", "Sleep Climate Off")
         }
     }
 

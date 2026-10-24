@@ -556,7 +556,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
 
         let turnOffAction = UNNotificationAction(
             identifier: Self.turnOffActionId,
-            title: "立即关闭",
+            title: L10n.tr("立即关闭", "Turn Off Now"),
             options: [.destructive]
         )
         let category = UNNotificationCategory(

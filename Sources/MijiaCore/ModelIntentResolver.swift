@@ -9,11 +9,16 @@ public enum AssistantError: LocalizedError, Equatable, Sendable {
 
     public var errorDescription: String? {
         switch self {
-        case .missingAPIKey: return "尚未配置 AI 服务的 API Key，请先在设置中填写"
-        case .invalidBaseURL(let url): return "AI 服务地址无效：\(url)"
-        case .httpStatus(let code): return "AI 服务返回错误 (\(code))"
-        case .emptyResponse: return "AI 没有返回内容"
-        case .malformedResponse: return "AI 返回的内容无法解析"
+        case .missingAPIKey:
+            return L10n.tr("尚未配置 AI 服务的 API Key，请先在设置中填写", "AI API Key is not configured; please add it in Settings")
+        case .invalidBaseURL(let url):
+            return L10n.tr("AI 服务地址无效：\(url)", "Invalid AI service URL: \(url)")
+        case .httpStatus(let code):
+            return L10n.tr("AI 服务返回错误 (\(code))", "AI service returned error (\(code))")
+        case .emptyResponse:
+            return L10n.tr("AI 没有返回内容", "AI returned an empty response")
+        case .malformedResponse:
+            return L10n.tr("AI 返回的内容无法解析", "Could not parse AI response")
         }
     }
 
@@ -22,27 +27,54 @@ public enum AssistantError: LocalizedError, Equatable, Sendable {
         if let urlError = error as? URLError {
             switch urlError.code {
             case .timedOut:
-                return "AI 服务 10 秒没回应，换个简短说法再试；「关灯」这类简单指令不用联网"
+                return L10n.tr(
+                    "AI 服务 10 秒没回应，换个简短说法再试；「关灯」这类简单指令不用联网",
+                    "AI service timed out after 10s. Try a shorter phrase; direct commands like \"turn off lights\" work offline."
+                )
             case .notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost,
                  .dnsLookupFailed, .internationalRoamingOff, .dataNotAllowed:
-                return "连不上 AI 服务，请检查网络；「打开书房灯」这类简单指令仍可直接使用"
+                return L10n.tr(
+                    "连不上 AI 服务，请检查网络；「打开书房灯」这类简单指令仍可直接使用",
+                    "Cannot reach AI service. Check your network; direct commands like \"turn on study light\" still work offline."
+                )
             case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate:
-                return "和 AI 服务的安全连接失败，请检查服务地址或代理设置"
+                return L10n.tr(
+                    "和 AI 服务的安全连接失败，请检查服务地址或代理设置",
+                    "TLS connection to AI service failed; check the endpoint URL or proxy settings."
+                )
             default:
-                return "AI 服务连接失败（\(urlError.code.rawValue)），稍后再试"
+                return L10n.tr(
+                    "AI 服务连接失败（\(urlError.code.rawValue)），稍后再试",
+                    "AI service connection failed (\(urlError.code.rawValue)); try again later."
+                )
             }
         }
         switch error as? AssistantError {
         case .missingAPIKey:
-            return "尚未配置 AI 服务的 API Key，请到设置里填写后再试；「打开书房灯」这类简单指令无需 Key 即可使用"
+            return L10n.tr(
+                "尚未配置 AI 服务的 API Key，请到设置里填写后再试；「打开书房灯」这类简单指令无需 Key 即可使用",
+                "AI API Key is not configured. Add it in Settings; direct commands like \"turn on study light\" work without a key."
+            )
         case .httpStatus(401), .httpStatus(403):
-            return "AI 服务的 API Key 无效或已过期，请到设置里重新填写"
+            return L10n.tr(
+                "AI 服务的 API Key 无效或已过期，请到设置里重新填写",
+                "AI API Key is invalid or expired; please update it in Settings."
+            )
         case .httpStatus(429):
-            return "AI 服务请求太频繁，稍等几秒再试"
+            return L10n.tr(
+                "AI 服务请求太频繁，稍等几秒再试",
+                "Too many requests to AI service; wait a few seconds and try again."
+            )
         case .httpStatus(let code) where code >= 500:
-            return "AI 服务暂时出错（\(code)），稍后再试"
+            return L10n.tr(
+                "AI 服务暂时出错（\(code)），稍后再试",
+                "AI service is temporarily unavailable (\(code)); try again later."
+            )
         case .malformedResponse, .emptyResponse:
-            return "AI 返回的内容看不懂，换个说法再试"
+            return L10n.tr(
+                "AI 返回的内容看不懂，换个说法再试",
+                "Could not understand AI response; try rephrasing your command."
+            )
         default:
             return error.localizedDescription
         }

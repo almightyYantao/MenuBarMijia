@@ -36,7 +36,12 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key>
-    <string>zh_CN</string>
+    <string>zh-Hans</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>zh-Hans</string>
+        <string>en</string>
+    </array>
     <key>CFBundleDisplayName</key>
     <string>MenuBarMijia</string>
     <key>CFBundleExecutable</key>
@@ -79,6 +84,20 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+mkdir -p "$APP_DIR/Contents/Resources/zh-Hans.lproj"
+cat > "$APP_DIR/Contents/Resources/zh-Hans.lproj/InfoPlist.strings" <<'STRINGS_ZH'
+"NSLocalNetworkUsageDescription" = "用于局域网自动发现并实时连接 Home Assistant 及电视等智能家居设备。";
+"NSMicrophoneUsageDescription" = "用于通过语音指令直接控制米家智能家居设备。";
+"NSSpeechRecognitionUsageDescription" = "用于将您的语音指令实时识别为智能家居控制动作。";
+STRINGS_ZH
+
+mkdir -p "$APP_DIR/Contents/Resources/en.lproj"
+cat > "$APP_DIR/Contents/Resources/en.lproj/InfoPlist.strings" <<'STRINGS_EN'
+"NSLocalNetworkUsageDescription" = "Used to automatically discover and connect to Home Assistant and smart TVs on your local network.";
+"NSMicrophoneUsageDescription" = "Used to control your Xiaomi Home smart devices with voice commands.";
+"NSSpeechRecognitionUsageDescription" = "Used to transcribe your voice commands into smart home actions in real time.";
+STRINGS_EN
 
 if [ "$SIGN_IDENTITY" = "-" ]; then
     codesign --force --sign - "$APP_DIR"

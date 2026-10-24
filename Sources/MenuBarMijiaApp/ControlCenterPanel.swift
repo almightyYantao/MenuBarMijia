@@ -10,6 +10,7 @@ public struct ControlCenterPanel: View {
     }
 
     public var body: some View {
+        let _ = store.effectiveLanguage
         ZStack(alignment: .bottom) {
             if store.isShowingSettings {
                 SettingsSheetView(store: store)
@@ -70,7 +71,7 @@ public struct ControlCenterPanel: View {
                         emptyStateView
                     } else if store.selectedRoomId == nil {
                         if !store.favoriteDevices.isEmpty {
-                            sectionHeader("常用控制", count: store.favoriteDevices.count)
+                            sectionHeader(L10n.tr("常用控制", "Favorites"), count: store.favoriteDevices.count)
                             deviceCollectionView(
                                 devices: store.favoriteDevices,
                                 showRoomBadge: true,
@@ -80,7 +81,9 @@ public struct ControlCenterPanel: View {
 
                         if !store.nonFavoriteDevices.isEmpty {
                             sectionHeader(
-                                store.favoriteDevices.isEmpty ? "全屋设备" : "更多设备",
+                                store.favoriteDevices.isEmpty
+                                    ? L10n.tr("全屋设备", "All Devices")
+                                    : L10n.tr("更多设备", "More Devices"),
                                 count: store.nonFavoriteDevices.count
                             )
                             deviceCollectionView(
@@ -242,7 +245,7 @@ public struct ControlCenterPanel: View {
                         .glassEffect(.regular.interactive(), in: Capsule(style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .help("语音指令：点击直接说话控制设备（快捷键 V）")
+                .help(L10n.tr("语音指令：点击直接说话控制设备（快捷键 V）", "Voice command: click to speak (shortcut V)"))
 
                 Button {
                     withAnimation(AppleMotion.snappySpring) {
@@ -270,7 +273,7 @@ public struct ControlCenterPanel: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .help("AI 指令：用一句话控制设备（快捷键 /）")
+                .help(L10n.tr("AI 指令：用一句话控制设备（快捷键 /）", "AI command: control devices with natural language (shortcut /)"))
 
                 if store.activeDeviceCount > 0 {
                     Button {
@@ -281,7 +284,7 @@ public struct ControlCenterPanel: View {
                         HStack(spacing: 4) {
                             Image(systemName: "power")
                                 .font(.system(size: 10.5, weight: .bold))
-                            Text("全关 (\(store.activeDeviceCount))")
+                            Text(L10n.tr("全关 (\(store.activeDeviceCount))", "All Off (\(store.activeDeviceCount))"))
                                 .font(.system(size: 11.5, weight: .semibold))
                                 .monospacedDigit()
                         }
@@ -339,7 +342,7 @@ public struct ControlCenterPanel: View {
                 .font(.system(size: 10.5, weight: .semibold))
                 .foregroundStyle(colorScheme == .dark ? Color.teal : Color(red: 0.04, green: 0.48, blue: 0.52))
 
-            Text(env.label)
+            Text(L10n.displayRoomName(env.label))
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.primary.opacity(0.88))
 
@@ -368,9 +371,15 @@ public struct ControlCenterPanel: View {
 
     private var statusSummaryText: String {
         if store.activeDeviceCount > 0 {
-            return "\(store.activeDeviceCount) 台设备开启中 · 共 \(store.onlineDeviceCount) 台在线"
+            return L10n.tr(
+                "\(store.activeDeviceCount) 台设备开启中 · 共 \(store.onlineDeviceCount) 台在线",
+                "\(store.activeDeviceCount) active · \(store.onlineDeviceCount) online"
+            )
         }
-        return "全屋设备待机 · \(store.onlineDeviceCount) 台实时在线"
+        return L10n.tr(
+            "全屋设备待机 · \(store.onlineDeviceCount) 台实时在线",
+            "All standby · \(store.onlineDeviceCount) online"
+        )
     }
 
     // MARK: - 1B. Quick Actions & HA Scenes Strip
@@ -434,10 +443,10 @@ public struct ControlCenterPanel: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 GlassEffectContainer(spacing: 5) {
                     HStack(spacing: 5) {
-                        roomPill(title: "全部", roomId: nil)
+                        roomPill(title: L10n.tr("全部", "All"), roomId: nil)
 
                         ForEach(store.rooms) { room in
-                            roomPill(title: room.name, roomId: room.id)
+                            roomPill(title: L10n.displayRoomName(room.name), roomId: room.id)
                         }
                     }
                     .padding(.trailing, 10)
@@ -479,7 +488,11 @@ public struct ControlCenterPanel: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .help(store.isCompactGridMode ? "当前：双列紧凑磁贴（点击切换单列）" : "点击切换双列紧凑磁贴视图")
+                    .help(
+                        store.isCompactGridMode
+                            ? L10n.tr("当前：双列紧凑磁贴（点击切换单列）", "2-column compact tiles (click for single column)")
+                            : L10n.tr("点击切换双列紧凑磁贴视图", "Switch to 2-column compact tiles")
+                    )
 
                     Button {
                         withAnimation(AppleMotion.snappySpring) {
@@ -503,7 +516,11 @@ public struct ControlCenterPanel: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .help(store.hideOfflineDevices ? "当前只显示在线设备（点击显示全部）" : "点击隐藏未通电/离线设备")
+                    .help(
+                        store.hideOfflineDevices
+                            ? L10n.tr("当前只显示在线设备（点击显示全部）", "Showing online devices only (click to show all)")
+                            : L10n.tr("点击隐藏未通电/离线设备", "Hide offline/unplugged devices")
+                    )
                 }
             }
         }
@@ -540,24 +557,30 @@ public struct ControlCenterPanel: View {
                 .font(.system(size: 22))
                 .foregroundStyle(.secondary)
             if case .disconnected = store.connectionStatus {
-                Text(store.homeBackend == .xiaomiCloud ? "尚未登录米家云端账号" : "尚未连接到 Home Assistant")
+                Text(
+                    store.homeBackend == .xiaomiCloud
+                        ? L10n.tr("尚未登录米家云端账号", "Not signed in to Xiaomi Cloud")
+                        : L10n.tr("尚未连接到 Home Assistant", "Not connected to Home Assistant")
+                )
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.primary)
-                Text(store.homeBackend == .xiaomiCloud
-                     ? "无需额外部署服务器，使用手机「米家」App 扫码即可同步设备"
-                     : "点击下方按钮配置服务器地址与令牌，或切换为手机米家扫码直连")
+                Text(
+                    store.homeBackend == .xiaomiCloud
+                        ? L10n.tr("无需额外部署服务器，使用手机「米家」App 扫码即可同步设备", "Scan with the Mi Home app on your phone to sync devices without a server")
+                        : L10n.tr("点击下方按钮配置服务器地址与令牌，或切换为手机米家扫码直连", "Configure your server URL and token below, or switch to Xiaomi Cloud QR login")
+                )
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                 HStack(spacing: 8) {
-                    Button("打开新手引导") {
+                    Button(L10n.tr("打开新手引导", "Setup Guide")) {
                         withAnimation(AppleMotion.snappySpring) {
                             store.reopenOnboarding()
                         }
                     }
                     .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
 
-                    Button("偏好设置") {
+                    Button(L10n.tr("偏好设置", "Preferences")) {
                         withAnimation(AppleMotion.snappySpring) {
                             store.isShowingSettings = true
                         }
@@ -566,11 +589,15 @@ public struct ControlCenterPanel: View {
                 }
                 .padding(.top, 2)
             } else {
-                Text(store.hideOfflineDevices ? "该房间暂无通电在线的设备" : "正在同步设备列表…")
+                Text(
+                    store.hideOfflineDevices
+                        ? L10n.tr("该房间暂无通电在线的设备", "No online devices in this room")
+                        : L10n.tr("正在同步设备列表…", "Syncing devices…")
+                )
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
                 if store.hideOfflineDevices {
-                    Button("显示离线设备") {
+                    Button(L10n.tr("显示离线设备", "Show Offline Devices")) {
                         withAnimation(AppleMotion.snappySpring) {
                             store.hideOfflineDevices = false
                         }
@@ -599,7 +626,7 @@ public struct ControlCenterPanel: View {
 
                 Spacer()
 
-                Button("撤销") {
+                Button(L10n.tr("撤销", "Undo")) {
                     withAnimation(AppleMotion.snappySpring) {
                         store.undoTurnAllOff()
                     }
@@ -658,7 +685,7 @@ public struct ControlCenterPanel: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("立即同步最新状态")
+            .help(L10n.tr("立即同步最新状态", "Refresh device states now"))
 
             Button {
                 withAnimation(AppleMotion.snappySpring) {
@@ -672,7 +699,7 @@ public struct ControlCenterPanel: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("偏好设置与连接配置")
+            .help(L10n.tr("偏好设置与连接配置", "Preferences & connection settings"))
         }
     }
 
@@ -688,13 +715,13 @@ public struct ControlCenterPanel: View {
         switch store.connectionStatus {
         case .connected:
             if store.homeBackend == .xiaomiCloud {
-                return "\(store.serverHostSummary) · Miot 直连"
+                return L10n.tr("\(store.serverHostSummary) · Miot 直连", "\(store.serverHostSummary) · MIoT Direct")
             }
-            return "HA 实时连接 (\(store.serverHostSummary))"
+            return L10n.tr("HA 实时连接 (\(store.serverHostSummary))", "HA Live (\(store.serverHostSummary))")
         case .connecting:
-            return "正在连接 (\(store.serverHostSummary))…"
+            return L10n.tr("正在连接 (\(store.serverHostSummary))…", "Connecting (\(store.serverHostSummary))…")
         case .disconnected(let reason):
-            return "未连接：\(reason)"
+            return L10n.tr("未连接：\(reason)", "Disconnected: \(reason)")
         }
     }
 }

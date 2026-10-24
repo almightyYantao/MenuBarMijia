@@ -52,10 +52,10 @@ public enum MiLoginError: LocalizedError, Equatable, Sendable {
 
     public var errorDescription: String? {
         switch self {
-        case .http(let code): return "小米账号服务返回 HTTP \(code)"
-        case .badResponse(let what): return "小米账号服务响应异常：\(what)"
-        case .qrExpired: return "二维码已过期，请重新获取"
-        case .missingServiceToken: return "登录成功但未拿到 serviceToken，请重试"
+        case .http(let code): return L10n.tr("小米账号服务返回 HTTP \(code)", "Xiaomi account service returned HTTP \(code)")
+        case .badResponse(let what): return L10n.tr("小米账号服务响应异常：\(what)", "Invalid Xiaomi account response: \(what)")
+        case .qrExpired: return L10n.tr("二维码已过期，请重新获取", "QR code expired; please refresh")
+        case .missingServiceToken: return L10n.tr("登录成功但未拿到 serviceToken，请重试", "Signed in, but missing serviceToken; please retry")
         }
     }
 }

@@ -12,8 +12,21 @@ public enum DelayPhrase {
     private static let unit = #"(个半|个)?(秒钟|秒|分钟|分|小时|钟头)(半)?"#
     private static let leading = try! NSRegularExpression(pattern: #"^(过|等)?"# + number + unit + #"(以后|之后|后)?"#)
     private static let trailing = try! NSRegularExpression(pattern: #"[，,\s]*"# + number + unit + #"(以后|之后|后)$"#)
+    private static let enLeading = try! NSRegularExpression(
+        pattern: #"^(?:in|after)\s+(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\b[,\s]*"#,
+        options: [.caseInsensitive]
+    )
+    private static let enTrailing = try! NSRegularExpression(
+        pattern: #"[,\s]+(?:in|after)\s+(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\s*$"#,
+        options: [.caseInsensitive]
+    )
 
     private static let cancelPhrases = ["取消定时", "取消倒计时", "定时取消", "定时都取消", "取消所有定时", "取消全部定时", "不要定时"]
+    private static let enCancelPhrases = [
+        "cancel timer", "cancel timers", "cancel all timers",
+        "clear timer", "clear timers", "clear all timers",
+        "stop timer", "stop timers", "stop all timers"
+    ]
 
     public static func extract(_ utterance: String) -> (delay: TimeInterval, remainder: String)? {
         let text = utterance.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -30,10 +43,18 @@ public enum DelayPhrase {
         if let m = trailing.firstMatch(in: text, range: full), let seconds = seconds(ns, m, numberGroup: 1) {
             return finish(seconds, ns.replacingCharacters(in: m.range, with: ""))
         }
+        if let m = enLeading.firstMatch(in: text, range: full), let secs = enSeconds(ns, m) {
+            return finish(secs, ns.replacingCharacters(in: m.range, with: ""))
+        }
+        if let m = enTrailing.firstMatch(in: text, range: full), let secs = enSeconds(ns, m) {
+            return finish(secs, ns.replacingCharacters(in: m.range, with: ""))
+        }
         return nil
     }
 
     public static func isCancel(_ utterance: String) -> Bool {
+        let lower = utterance.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if enCancelPhrases.contains(where: { lower.contains($0) }) { return true }
         let compact = utterance.filter { !$0.isWhitespace && !"，。！？,.!?了吧".contains($0) }
         return cancelPhrases.contains { compact.contains($0) }
     }
@@ -41,10 +62,25 @@ public enum DelayPhrase {
     /// 30 → "30 秒后"，600 → "10 分钟后"，5400 → "1 小时 30 分钟后"。
     public static func describe(_ delay: TimeInterval) -> String {
         let total = Int(delay.rounded())
+        if L10n.isEnglish {
+            if total < 60 { return "In \(total)s: " }
+            let hours = total / 3600, minutes = (total % 3600) / 60
+            if hours == 0 { return "In \(minutes)m: " }
+            return minutes == 0 ? "In \(hours)h: " : "In \(hours)h \(minutes)m: "
+        }
         if total < 60 { return "\(total) 秒后" }
         let hours = total / 3600, minutes = (total % 3600) / 60
         if hours == 0 { return "\(minutes) 分钟后" }
         return minutes == 0 ? "\(hours) 小时后" : "\(hours) 小时 \(minutes) 分钟后"
+    }
+
+    private static func enSeconds(_ ns: NSString, _ m: NSTextCheckingResult) -> TimeInterval? {
+        guard m.range(at: 1).location != NSNotFound, m.range(at: 2).location != NSNotFound,
+              let val = Double(ns.substring(with: m.range(at: 1))) else { return nil }
+        let unit = ns.substring(with: m.range(at: 2)).lowercased()
+        if unit.hasPrefix("s") { return val }
+        if unit.hasPrefix("m") { return val * 60 }
+        return val * 3600
     }
 
     private static func finish(_ seconds: TimeInterval, _ rest: String) -> (TimeInterval, String)? {
@@ -110,9 +146,13 @@ public struct ScheduledCommand: Identifiable, Equatable, Sendable {
 
 public enum UndoPhrase {
     private static let keywords = ["撤销", "撤回", "还原", "恢复原样", "恢复原状", "恢复刚才", "取消刚才", "刚才不算"]
+    private static let enKeywords: Set<String> = ["undo", "revert", "undo that", "revert that", "cancel that"]
 
     /// Short utterances only, so a long command that merely mentions "还原" still reaches the parser.
     public static func isUndo(_ utterance: String) -> Bool {
+        let lower = utterance.lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "，。！？,.!? ").union(.whitespacesAndNewlines))
+        if enKeywords.contains(lower) { return true }
         let compact = utterance.filter { !$0.isWhitespace && !"，。！？,.!?".contains($0) }
         guard compact.count <= 10, !DelayPhrase.isCancel(compact) else { return false }
         return keywords.contains { compact.contains($0) }

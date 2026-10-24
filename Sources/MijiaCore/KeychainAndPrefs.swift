@@ -11,10 +11,10 @@ public enum MenuBarDisplayMode: String, CaseIterable, Identifiable, Sendable {
 
     public var label: String {
         switch self {
-        case .primaryTemp: return "主卧温度 (如 26.6°)"
-        case .balconyTemp: return "阳台温度 (如 28.1°)"
-        case .activeCount: return "开启设备数"
-        case .iconOnly: return "仅显示图标"
+        case .primaryTemp: return L10n.tr("主卧温度 (如 26.6°)", "Bedroom Temp (e.g. 26.6°)")
+        case .balconyTemp: return L10n.tr("阳台温度 (如 28.1°)", "Balcony Temp (e.g. 28.1°)")
+        case .activeCount: return L10n.tr("开启设备数", "Active Devices")
+        case .iconOnly: return L10n.tr("仅显示图标", "Icon Only")
         }
     }
 }
@@ -24,6 +24,9 @@ public enum KeychainHelper {
     private static let account = "ha_access_token"
 
     public static let defaultHomeName = "我的家"
+    public static var localizedDefaultHomeName: String {
+        L10n.tr("我的家", "My Home")
+    }
     public static let defaultNASURL = "http://homeassistant.local:8123"
     public static let defaultSeededToken = ""
 

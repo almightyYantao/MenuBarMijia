@@ -17,6 +17,7 @@ public struct OnboardingGuideView: View {
     }
 
     public var body: some View {
+        let _ = store.effectiveLanguage
         VStack(alignment: .leading, spacing: 0) {
             headerBar
                 .padding(.horizontal, 14)
@@ -87,18 +88,26 @@ public struct OnboardingGuideView: View {
             }
 
             VStack(alignment: .leading, spacing: 1.5) {
-                Text("欢迎使用 MenuBarMijia")
+                Text(L10n.tr("欢迎使用 MenuBarMijia", "Welcome to MenuBarMijia"))
                     .font(.system(size: 14, weight: .bold))
                     .tracking(-0.2)
 
-                Text("30 秒完成配置 · 菜单栏一秒掌控米家")
+                Text(L10n.tr("30 秒完成配置 · 菜单栏一秒掌控米家", "30-second setup · Control Xiaomi Home from your menu bar"))
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
 
-            Button("跳过") {
+            Button(store.effectiveLanguage == .en ? "中文" : "EN") {
+                withAnimation(AppleMotion.snappySpring) {
+                    store.appLanguagePreference = (store.effectiveLanguage == .en) ? .zhHans : .en
+                }
+            }
+            .buttonStyle(PillActionButtonStyle())
+            .help(L10n.tr("切换为英文界面 / Switch to English", "Switch to Chinese / 切换为中文界面"))
+
+            Button(L10n.tr("跳过", "Skip")) {
                 withAnimation(AppleMotion.snappySpring) {
                     store.completeOnboarding()
                 }
@@ -113,11 +122,11 @@ public struct OnboardingGuideView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 stepBadge("1", isDone: isBackendConnected)
-                Text("连接你的米家设备")
+                Text(L10n.tr("连接你的米家设备", "Connect Your Devices"))
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
                 if isBackendConnected {
-                    Label("已连接", systemImage: "checkmark.circle.fill")
+                    Label(L10n.tr("已连接", "Connected"), systemImage: "checkmark.circle.fill")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.green)
                 } else if let firstHA = store.discoveredHAInstances.first {
@@ -128,13 +137,16 @@ public struct OnboardingGuideView: View {
                             store.switchBackend(.homeAssistant)
                         }
                     } label: {
-                        Label("已发现局域网 HA · \(firstHA.hostAndPort)", systemImage: "dot.radiowaves.left.and.right")
+                        Label(
+                            L10n.tr("已发现局域网 HA · \(firstHA.hostAndPort)", "Found LAN HA · \(firstHA.hostAndPort)"),
+                            systemImage: "dot.radiowaves.left.and.right"
+                        )
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.green)
                     }
                     .buttonStyle(.plain)
                 } else {
-                    Text("推荐手机扫码")
+                    Text(L10n.tr("推荐手机扫码", "QR Login Recommended"))
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.orange)
                 }
@@ -169,15 +181,15 @@ public struct OnboardingGuideView: View {
                             .controlSize(.small)
                             .font(.system(size: 11, design: .monospaced))
 
-                        Button(store.isDiscoveringHA ? "扫描中…" : "自动扫描") {
+                        Button(store.isDiscoveringHA ? L10n.tr("扫描中…", "Scanning…") : L10n.tr("自动扫描", "Auto Scan")) {
                             Task {
                                 let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: false)
                                 if let first = found.first {
                                     haURLDraft = first.baseURL
                                     store.applyDiscoveredHAInstance(first, reconnectProvider: false)
-                                    store.showToast("已发现：\(first.displaySummary)")
+                                    store.showToast(L10n.tr("已发现：\(first.displaySummary)", "Found: \(first.displaySummary)"))
                                 } else {
-                                    store.showToast("未在局域网扫描到 Home Assistant", isError: true)
+                                    store.showToast(L10n.tr("未在局域网扫描到 Home Assistant", "No Home Assistant found on LAN"), isError: true)
                                 }
                             }
                         }
@@ -190,13 +202,13 @@ public struct OnboardingGuideView: View {
                             Image(systemName: "checkmark.seal.fill")
                                 .font(.system(size: 10))
                                 .foregroundStyle(.green)
-                            Text("已自动识别局域网 HA：\(firstHA.displaySummary)")
+                            Text(L10n.tr("已自动识别局域网 HA：\(firstHA.displaySummary)", "Detected LAN HA: \(firstHA.displaySummary)"))
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                             Spacer()
                             if let secURL = URL(string: "\(HAWebSocketProvider.normalizeBaseURL(haURLDraft))/profile/security") {
-                                Button("打开网页取令牌") {
+                                Button(L10n.tr("打开网页取令牌", "Open Security Page")) {
                                     NSWorkspace.shared.open(secURL)
                                 }
                                 .buttonStyle(.plain)
@@ -207,12 +219,12 @@ public struct OnboardingGuideView: View {
                     }
 
                     HStack(spacing: 6) {
-                        SecureField("粘贴 HA 长期访问令牌", text: $haTokenDraft)
+                        SecureField(L10n.tr("粘贴 HA 长期访问令牌", "Paste HA Long-Lived Access Token"), text: $haTokenDraft)
                             .textFieldStyle(.roundedBorder)
                             .controlSize(.small)
                             .font(.system(size: 11, design: .monospaced))
 
-                        Button("连接") {
+                        Button(L10n.tr("连接", "Connect")) {
                             store.updateConnection(serverURL: haURLDraft, token: haTokenDraft)
                         }
                         .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
@@ -234,41 +246,44 @@ public struct OnboardingGuideView: View {
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
                 stepBadge("2", isDone: isReady)
-                Text("Jev 极速决策模型（可选）")
+                Text(L10n.tr("Jev 极速决策模型（可选）", "Jev Fast Decision Model (Optional)"))
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
                 if hasCodexBarKey {
-                    Label("已自动接入 CodexBar", systemImage: "checkmark.circle.fill")
+                    Label(L10n.tr("已自动接入 CodexBar", "Linked via CodexBar"), systemImage: "checkmark.circle.fill")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.green)
                 } else if hasSavedKey {
-                    Label("已配置密钥", systemImage: "checkmark.circle.fill")
+                    Label(L10n.tr("已配置密钥", "Key Configured"), systemImage: "checkmark.circle.fill")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.green)
                 } else {
-                    Text("不填也可用本机 0ms 规则")
+                    Text(L10n.tr("不填也可用本机 0ms 规则", "0ms Local Rules Work Without Key"))
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
             }
 
-            Text("常规指令本机 0ms 直接执行；配置 OpenRouter Key 后，复杂场景口语（如「准备写代码，有点热」）由 Jev 决策模型约 280ms 一次统筹多台设备。")
+            Text(L10n.tr(
+                "常规指令本机 0ms 直接执行；配置 OpenRouter Key 后，复杂场景口语（如「准备写代码，有点热」）由 Jev 决策模型约 280ms 一次统筹多台设备。",
+                "Standard commands run locally in 0ms. With an OpenRouter Key, complex natural phrases (e.g. \"getting ready to code, a bit warm\") are coordinated across devices by Jev in ~280ms."
+            ))
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if !hasCodexBarKey {
                 HStack(spacing: 6) {
-                    SecureField("粘贴 OpenRouter API Key (sk-or-...)", text: $apiKeyDraft)
+                    SecureField(L10n.tr("粘贴 OpenRouter API Key (sk-or-...)", "Paste OpenRouter API Key (sk-or-...)"), text: $apiKeyDraft)
                         .textFieldStyle(.roundedBorder)
                         .controlSize(.small)
                         .font(.system(size: 11, design: .monospaced))
 
-                    Button("保存") {
+                    Button(L10n.tr("保存", "Save")) {
                         var cfg = store.assistantConfig
                         cfg.apiKey = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                         store.assistantConfig = cfg
-                        store.showToast("已保存 OpenRouter 密钥")
+                        store.showToast(L10n.tr("已保存 OpenRouter 密钥", "Saved OpenRouter API Key"))
                     }
                     .buttonStyle(PillActionButtonStyle(isSelected: !apiKeyDraft.isEmpty, tintColor: .accentColor))
                 }
@@ -284,11 +299,11 @@ public struct OnboardingGuideView: View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
                 stepBadge("3", isDone: voiceAuthorized)
-                Text("解锁「按住菜单栏直接说话」")
+                Text(L10n.tr("解锁「按住菜单栏直接说话」", "Unlock Hold-to-Talk & Shortcuts"))
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
                 if voiceAuthorized {
-                    Label("语音已授权", systemImage: "checkmark.circle.fill")
+                    Label(L10n.tr("语音已授权", "Voice Authorized"), systemImage: "checkmark.circle.fill")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.green)
                 }
@@ -297,13 +312,19 @@ public struct OnboardingGuideView: View {
             VStack(alignment: .leading, spacing: 5) {
                 shortcutTipRow(
                     icon: "waveform.badge.mic",
-                    title: "长按顶部菜单栏温度/图标",
-                    detail: "按住直接说出指令（如「书房灯月光模式」「10分钟后关灯」），松手即执行"
+                    title: L10n.tr("长按顶部菜单栏温度/图标", "Long-Press Menu Bar Icon"),
+                    detail: L10n.tr(
+                        "按住直接说出指令（如「书房灯月光模式」「10分钟后关灯」），松手即执行",
+                        "Hold and speak a command (e.g. \"study light moonlight mode\", \"in 10 minutes turn off lights\"), release to run"
+                    )
                 )
                 shortcutTipRow(
                     icon: "command",
-                    title: "全局快捷键 ⌥M 与数字键 1–9",
-                    detail: "随时按 ⌥M 呼出面板，按 1–9 瞬间开关对应常用设备，说「撤销」可回退操作"
+                    title: L10n.tr("全局快捷键 ⌥M 与数字键 1–9", "Global Hotkey ⌥M & Keys 1–9"),
+                    detail: L10n.tr(
+                        "随时按 ⌥M 呼出面板，按 1–9 瞬间开关对应常用设备，说「撤销」可回退操作",
+                        "Press ⌥M anytime to toggle the dashboard, 1–9 to toggle top devices, or say \"undo\" to revert"
+                    )
                 )
             }
 
@@ -317,15 +338,20 @@ public struct OnboardingGuideView: View {
                             voiceAuthorized = granted
                             isRequestingVoice = false
                             if granted {
-                                store.showToast("已开启麦克风与语音识别权限")
+                                store.showToast(L10n.tr("已开启麦克风与语音识别权限", "Microphone & Speech Recognition enabled"))
                             } else {
-                                store.showToast("可在「系统设置 → 隐私与安全性」中开启权限", isError: true)
+                                store.showToast(
+                                    L10n.tr("可在「系统设置 → 隐私与安全性」中开启权限", "Enable permissions in System Settings → Privacy & Security"),
+                                    isError: true
+                                )
                             }
                         }
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "mic.fill")
-                            Text(isRequestingVoice ? "正在请求系统授权…" : "一键授权麦克风与语音")
+                            Text(isRequestingVoice
+                                 ? L10n.tr("正在请求系统授权…", "Requesting Authorization…")
+                                 : L10n.tr("一键授权麦克风与语音", "Authorize Microphone & Speech"))
                         }
                     }
                     .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
@@ -342,7 +368,7 @@ public struct OnboardingGuideView: View {
 
     private var bottomActionRow: some View {
         HStack {
-            Text("随时可在「偏好设置 → 新手引导」重新打开")
+            Text(L10n.tr("随时可在「偏好设置 → 新手引导」重新打开", "Reopen anytime in Settings → Guide"))
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
 
@@ -354,7 +380,7 @@ public struct OnboardingGuideView: View {
                 }
             } label: {
                 HStack(spacing: 4) {
-                    Text("开始使用")
+                    Text(L10n.tr("开始使用", "Get Started"))
                     Image(systemName: "arrow.right")
                 }
                 .font(.system(size: 11.5, weight: .semibold))

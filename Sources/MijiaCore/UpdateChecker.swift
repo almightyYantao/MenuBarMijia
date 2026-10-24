@@ -47,8 +47,8 @@ public struct UpdateChecker: Sendable {
 
         public var errorDescription: String? {
             switch self {
-            case .httpStatus(let code): return "检查更新失败（\(code)），稍后再试"
-            case .malformed: return "检查更新失败：返回内容看不懂"
+            case .httpStatus(let code): return L10n.tr("检查更新失败（\(code)），稍后再试", "Update check failed (\(code)); try again later")
+            case .malformed: return L10n.tr("检查更新失败：返回内容看不懂", "Update check failed: unexpected response")
             }
         }
     }

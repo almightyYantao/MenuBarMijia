@@ -29,7 +29,29 @@ public struct MiAccountSection: View {
     }
 
     public var body: some View {
+        let _ = store.effectiveLanguage
         VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text(L10n.tr("云端服务器地区", "Cloud Region"))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker(
+                    "",
+                    selection: Binding(
+                        get: { store.miCloudRegion },
+                        set: { store.miCloudRegion = $0 }
+                    )
+                ) {
+                    ForEach(MiCloudRegion.allCases) { region in
+                        Text(region.label).tag(region)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 176)
+                .controlSize(.small)
+            }
+
             switch phase {
             case .idle:
                 if let masked = store.miSessionMaskedUserId {
@@ -42,11 +64,11 @@ public struct MiAccountSection: View {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("正在获取小米登录二维码…")
+                    Text(L10n.tr("正在获取小米登录二维码…", "Fetching Xiaomi QR code…"))
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("取消") {
+                    Button(L10n.tr("取消", "Cancel")) {
                         cancelLogin()
                     }
                     .buttonStyle(PillActionButtonStyle())
@@ -67,14 +89,14 @@ public struct MiAccountSection: View {
                     }
 
                     HStack {
-                        Button("取消") {
+                        Button(L10n.tr("取消", "Cancel")) {
                             cancelLogin()
                         }
                         .buttonStyle(PillActionButtonStyle())
 
                         Spacer()
 
-                        Button("重试获取二维码") {
+                        Button(L10n.tr("重试获取二维码", "Retry QR Code")) {
                             startQRLogin()
                         }
                         .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
@@ -93,7 +115,7 @@ public struct MiAccountSection: View {
                 Image(systemName: "person.crop.circle.badge.checkmark")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.green)
-                Text("已登录米家账号：\(maskedUserId)")
+                Text(L10n.tr("已登录米家账号：\(maskedUserId)", "Signed in to Xiaomi Home: \(maskedUserId)"))
                     .font(.system(size: 11.5, weight: .medium))
                 Spacer()
             }
@@ -105,20 +127,20 @@ public struct MiAccountSection: View {
             }
 
             HStack(spacing: 6) {
-                Button("同步设备") {
+                Button(L10n.tr("同步设备", "Sync Devices")) {
                     store.refreshNow()
-                    store.showToast("正在同步米家云端设备…")
+                    store.showToast(L10n.tr("正在同步米家云端设备…", "Syncing Xiaomi Cloud devices…"))
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
 
-                Button("重新扫码") {
+                Button(L10n.tr("重新扫码", "Rescan QR")) {
                     startQRLogin()
                 }
                 .buttonStyle(PillActionButtonStyle())
 
                 Spacer()
 
-                Button("退出登录") {
+                Button(L10n.tr("退出登录", "Sign Out")) {
                     store.logoutMiAccount()
                 }
                 .buttonStyle(PillActionButtonStyle())
@@ -128,13 +150,16 @@ public struct MiAccountSection: View {
 
     private var loggedOutView: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("无需额外部署 Home Assistant，扫码即可通过米家云端直连同步设备与房间。")
+            Text(L10n.tr(
+                "无需额外部署 Home Assistant，扫码即可通过米家云端直连同步设备与房间。",
+                "No Home Assistant needed. Scan with the Mi Home app to sync devices and rooms directly from Xiaomi Cloud."
+            ))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
 
             HStack {
                 Spacer()
-                Button("扫码登录米家账号") {
+                Button(L10n.tr("扫码登录米家账号", "Sign In with QR Code")) {
                     startQRLogin()
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
@@ -154,25 +179,25 @@ public struct MiAccountSection: View {
                     .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
 
-            Text("使用手机「米家」App 或小米账号扫码确认登录")
+            Text(L10n.tr("使用手机「米家」App 或小米账号扫码确认登录", "Scan with the Mi Home app on your phone to confirm sign-in"))
                 .font(.system(size: 11.5, weight: .medium))
                 .multilineTextAlignment(.center)
 
             TimelineView(.periodic(from: .now, by: 1.0)) { context in
                 let remaining = max(0, Int(expiresAt.timeIntervalSince(context.date).rounded()))
-                Text("二维码有效剩余 \(remaining)s")
+                Text(L10n.tr("二维码有效剩余 \(remaining)s", "QR code expires in \(remaining)s"))
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
 
             HStack(spacing: 8) {
-                Button("取消") {
+                Button(L10n.tr("取消", "Cancel")) {
                     cancelLogin()
                 }
                 .buttonStyle(PillActionButtonStyle())
 
-                Button("刷新二维码") {
+                Button(L10n.tr("刷新二维码", "Refresh QR")) {
                     startQRLogin()
                 }
                 .buttonStyle(PillActionButtonStyle())
@@ -185,8 +210,9 @@ public struct MiAccountSection: View {
     private func startQRLogin() {
         loginTask?.cancel()
         phase = .loadingTicket
+        let selectedRegion = store.miCloudRegion.rawValue
         loginTask = Task {
-            let login = MiAccountLogin()
+            let login = MiAccountLogin(region: selectedRegion)
             do {
                 let ticket = try await login.start()
                 guard !Task.isCancelled else { return }

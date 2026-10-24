@@ -112,13 +112,17 @@ public enum LocalIntentParser {
         if containing.count == 1, let scene = containing.first {
             return scenePlan(scene)
         }
+        if utterance.unicodeScalars.contains(where: { $0.isASCII && CharacterSet.letters.contains($0) }) {
+            return parseEnglishCommand(utterance, devices: devices, scenes: scenes)
+        }
         return nil
     }
 
     private static func scenePlan(_ scene: HomeScene) -> IntentPlan {
-        IntentPlan(
-            intents: [DeviceIntent(targetId: scene.id, operation: .activateScene)],
-            reply: "已执行场景「\(scene.name)」",
+        let intents = [DeviceIntent(targetId: scene.id, operation: .activateScene)]
+        return IntentPlan(
+            intents: intents,
+            reply: IntentReply.describe(intents, devices: [], scenes: [scene]),
             source: .local
         )
     }
@@ -381,6 +385,300 @@ public enum LocalIntentParser {
                     in: text,
                     range: NSRange(location: 0, length: ns.length),
                     withTemplate: String(consumed)
+                )
+            }
+        }
+        return ops
+    }
+
+    // MARK: - English Command Parser (Word-Boundary Tokenized)
+
+    private static let englishRoomAliases: [String: [String]] = [
+        "master bedroom": ["主卧", "卧室", "master bedroom", "master"],
+        "second bedroom": ["次卧", "小卧室", "second bedroom", "guest"],
+        "guest room": ["次卧", "小卧室", "guest room"],
+        "living room": ["客厅", "living room", "living"],
+        "dining room": ["餐厅", "dining room", "dining"],
+        "study room": ["书房", "study"],
+        "study": ["书房", "study"],
+        "bedroom": ["卧室", "主卧", "bedroom"],
+        "kitchen": ["厨房", "kitchen"],
+        "balcony": ["阳台", "balcony"],
+        "bathroom": ["卫生间", "浴室", "bathroom", "bath"],
+        "entryway": ["玄关", "entryway", "entry"]
+    ]
+
+    private static let englishScopeWords: [String] = [
+        "whole home", "entire home", "whole house", "everywhere", "everything", "all", "every"
+    ]
+
+    private static let englishCategoryWords: [(String, IntentDeviceCategory)] = [
+        ("air conditioner", .climate), ("air conditioning", .climate),
+        ("ceiling lights", .light), ("ceiling light", .light),
+        ("bedside lamp", .light), ("desk lamp", .light), ("table lamp", .light),
+        ("screen bar", .light), ("light strip", .light),
+        ("robot vacuum", .vacuum), ("smart plug", .plug), ("space heater", .heater),
+        ("standing fan", .fan),
+        ("lights", .light), ("light", .light), ("lamps", .light), ("lamp", .light),
+        ("climate", .climate), ("ac", .climate),
+        ("heater", .heater),
+        ("fans", .fan), ("fan", .fan),
+        ("plugs", .plug), ("plug", .plug), ("socket", .plug), ("outlet", .plug),
+        ("vacuum", .vacuum),
+        ("television", .tv), ("tv", .tv)
+    ]
+
+    private static let englishFillers: [String] = [
+        "please", "can", "could", "would", "you", "help", "me",
+        "the", "my", "a", "an", "in", "at", "to", "by", "for", "into", "of",
+        "set", "change", "switch", "adjust", "make", "it", "bit", "little",
+        "mode", "room", "temperature", "temp", "brightness", "level", "speed"
+    ]
+
+    private static func parseEnglishCommand(
+        _ utterance: String,
+        devices: [SmartDevice],
+        scenes: [HomeScene]
+    ) -> IntentPlan? {
+        let lower = utterance.lowercased()
+            .replacingOccurrences(of: #"[,!?;:'"“”‘’。，！？、]+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !lower.isEmpty else { return nil }
+
+        // Check scene activation ("activate sleep mode", "run focus scene")
+        for scene in scenes where !scene.name.isEmpty {
+            let sName = scene.name.lowercased()
+            if lower == "activate \(sName)" || lower == "run \(sName)" || lower == "start \(sName)" || lower == "\(sName) scene" {
+                return scenePlan(scene)
+            }
+        }
+
+        var rest = " " + lower + " "
+        var ops: [IntentOperation] = extractEnglishNumericOperations(&rest)
+
+        // 1. Explicit device names (supports both English and Chinese names inside an English sentence)
+        var explicitIds: [String] = []
+        for dev in devices.sorted(by: { $0.name.count > $1.name.count }) where !dev.name.isEmpty {
+            let devLower = dev.name.lowercased()
+            if consumeEnglishPhrase(devLower, from: &rest) {
+                if !explicitIds.contains(dev.id) { explicitIds.append(dev.id) }
+            }
+        }
+
+        // 2. Rooms, scope, and category words
+        var matchedRoomKeys: [String] = []
+        let allRoomKeys = Array(Set(englishRoomAliases.keys).union(devices.map { $0.roomName.lowercased() }.filter { !$0.isEmpty }))
+            .sorted { $0.count > $1.count }
+        for roomKey in allRoomKeys where consumeEnglishPhrase(roomKey, from: &rest) {
+            matchedRoomKeys.append(roomKey)
+        }
+
+        var hasScope = false
+        for scopeWord in englishScopeWords where consumeEnglishPhrase(scopeWord, from: &rest) {
+            hasScope = true
+        }
+
+        var categories: Set<IntentDeviceCategory> = []
+        for (phrase, cat) in englishCategoryWords where consumeEnglishPhrase(phrase, from: &rest) {
+            categories.insert(cat)
+        }
+
+        // 3. Operations (ordered from specific multi-word phrases to shorter verbs)
+        let oscPhrases: [(String, Bool)] = [
+            ("stop oscillating", false), ("stop oscillation", false), ("stop swing", false),
+            ("oscillation off", false), ("swing off", false),
+            ("start oscillating", true), ("oscillation on", true), ("swing on", true),
+            ("oscillate", true), ("oscillation", true), ("swing", true)
+        ]
+        for (p, val) in oscPhrases where consumeEnglishPhrase(p, from: &rest) {
+            ops.append(.oscillation(val))
+        }
+
+        let fanPhrases: [(String, String)] = [
+            ("fan speed high", "high"), ("high fan speed", "high"), ("high speed", "high"), ("max speed", "high"),
+            ("fan speed medium", "medium"), ("medium fan speed", "medium"), ("medium speed", "medium"),
+            ("fan speed low", "low"), ("low fan speed", "low"), ("low speed", "low"), ("min speed", "low"),
+            ("fan speed auto", "auto"), ("auto fan speed", "auto"), ("auto speed", "auto")
+        ]
+        for (p, val) in fanPhrases where consumeEnglishPhrase(p, from: &rest) {
+            ops.append(.fanSpeed(val))
+        }
+
+        let briStepPhrases: [(String, Int)] = [
+            ("a bit darker", -20), ("a little darker", -20), ("a bit dimmer", -20), ("a little dimmer", -20),
+            ("dimmer", -20), ("darker", -20),
+            ("a bit brighter", 20), ("a little brighter", 20), ("brighter", 20)
+        ]
+        for (p, val) in briStepPhrases where consumeEnglishPhrase(p, from: &rest) {
+            ops.append(.brightnessStep(val))
+        }
+
+        let tempStepPhrases: [(String, Double)] = [
+            ("a bit warmer", 1), ("a little warmer", 1), ("warmer", 1), ("hotter", 1),
+            ("a bit cooler", -1), ("a little cooler", -1), ("cooler", -1), ("colder", -1)
+        ]
+        for (p, val) in tempStepPhrases where consumeEnglishPhrase(p, from: &rest) {
+            ops.append(.temperatureStep(val))
+        }
+
+        let effectPhrases: [(String, String)] = [
+            ("moonlight mode", "Night"), ("moonlight", "Night"),
+            ("night light mode", "Night"), ("night light", "Night"), ("night mode", "Night"),
+            ("daylight mode", "Day"), ("daylight", "Day"), ("day mode", "Day")
+        ]
+        for (p, val) in effectPhrases where consumeEnglishPhrase(p, from: &rest) {
+            ops.append(.lightEffect(val))
+        }
+
+        let briPhrases: [(String, Int)] = [
+            ("minimum brightness", 10), ("dimmest", 10), ("dim", 20),
+            ("maximum brightness", 100), ("max brightness", 100), ("full brightness", 100), ("brightest", 100)
+        ]
+        for (p, val) in briPhrases where consumeEnglishPhrase(p, from: &rest) {
+            ops.append(.brightness(val))
+        }
+
+        let ctPhrases: [(String, Int)] = [
+            ("warm light", 2700), ("warm white", 2700), ("yellow light", 2700),
+            ("natural light", 4000), ("neutral white", 4000),
+            ("white light", 6500), ("cool white", 6500), ("cold light", 6500)
+        ]
+        for (p, val) in ctPhrases where consumeEnglishPhrase(p, from: &rest) {
+            ops.append(.colorTemperature(val))
+        }
+
+        let hvacPhrases: [(String, String)] = [
+            ("cooling mode", "cool"), ("cool mode", "cool"), ("cooling", "cool"), ("cool", "cool"),
+            ("heating mode", "heat"), ("heat mode", "heat"), ("heating", "heat"), ("heat", "heat"),
+            ("dry mode", "dry"), ("dehumidify", "dry"),
+            ("fan only mode", "fan_only"), ("fan only", "fan_only"), ("fan mode", "fan_only"),
+            ("auto mode", "auto")
+        ]
+        for (p, val) in hvacPhrases where consumeEnglishPhrase(p, from: &rest) {
+            ops.append(.hvacMode(val))
+        }
+
+        let powerPhrases: [(String, Bool)] = [
+            ("turn on", true), ("switch on", true), ("power on", true), ("enable", true), ("open", true),
+            ("turn off", false), ("switch off", false), ("power off", false), ("shut off", false), ("disable", false), ("close", false),
+            ("off", false), ("on", true)
+        ]
+        for (p, val) in powerPhrases where consumeEnglishPhrase(p, from: &rest) {
+            ops.append(.power(val))
+        }
+
+        // 4. Fillers
+        for filler in englishFillers.sorted(by: { $0.count > $1.count }) {
+            _ = consumeEnglishPhrase(filler, from: &rest)
+        }
+
+        guard rest.allSatisfy({ $0 == consumed || $0.isWhitespace }) else { return nil }
+        guard let ops = reconcile(ops) else { return nil }
+
+        let roomDeviceIds: Set<String> = Set(matchedRoomKeys.flatMap { key -> [String] in
+            let aliases = englishRoomAliases[key] ?? [key]
+            return devices.filter { dev in
+                let rLower = dev.roomName.lowercased()
+                return aliases.contains { rLower == $0.lowercased() || rLower.contains($0.lowercased()) }
+            }.map(\.id)
+        })
+
+        let isTurningOff = ops == [.power(false)]
+        var targetIds: [String]
+        let mustAcceptAll: Set<String> = Set(explicitIds)
+
+        if !explicitIds.isEmpty {
+            targetIds = explicitIds
+        } else {
+            let implied = impliedCategories(for: ops)
+            let wanted = categories.isEmpty ? implied : categories
+            if wanted == nil && !isTurningOff { return nil }
+            guard hasScope || !matchedRoomKeys.isEmpty || wanted != nil else { return nil }
+
+            let onlyActive = ops.allSatisfy(\.isRelative)
+            let candidates = devices.filter { dev in
+                let category = IntentDeviceCategory(dev)
+                guard dev.isOnline, category.isAssistantControllable else { return false }
+                if onlyActive && !dev.isActiveOn { return false }
+                if !matchedRoomKeys.isEmpty && !roomDeviceIds.contains(dev.id) { return false }
+                if let wanted, !wanted.contains(category) { return false }
+                return true
+            }
+            if !onlyActive && !hasScope && matchedRoomKeys.isEmpty && candidates.count != 1 { return nil }
+            targetIds = candidates.map(\.id)
+        }
+
+        let deviceById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var intents: [DeviceIntent] = []
+        for id in targetIds {
+            guard let device = deviceById[id] else { return nil }
+            let normalized = ops.compactMap { IntentValidator.normalize($0, for: device) }
+            guard normalized.count == ops.count else {
+                if mustAcceptAll.contains(id) { return nil }
+                continue
+            }
+            intents.append(contentsOf: normalized.map { DeviceIntent(targetId: id, operation: $0) })
+        }
+        guard !intents.isEmpty else { return nil }
+
+        return IntentPlan(
+            intents: intents,
+            reply: IntentReply.describe(intents, devices: devices, scenes: scenes),
+            source: .local
+        )
+    }
+
+    private static func consumeEnglishPhrase(_ phrase: String, from text: inout String) -> Bool {
+        guard !phrase.isEmpty else { return false }
+        let escaped = NSRegularExpression.escapedPattern(for: phrase)
+        let isASCIIWord = phrase.unicodeScalars.allSatisfy { $0.isASCII }
+        let pattern = isASCIIWord ? #"(?<![a-z0-9])"# + escaped + #"(?![a-z0-9])"# : escaped
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+        let ns = text as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        guard regex.firstMatch(in: text, range: range) != nil else { return false }
+        text = regex.stringByReplacingMatches(in: text, range: range, withTemplate: " \(consumed) ")
+        return true
+    }
+
+    private static func extractEnglishNumericOperations(_ text: inout String) -> [IntentOperation] {
+        var ops: [IntentOperation] = []
+        let stepPattern = #"(?<![a-z])(increase|raise|up|decrease|lower|down)(?:\s+by)?\s+(\d{1,2})\s*(?:degrees?|deg|℃|°c|°)(?![a-z])"#
+        if let regex = try? NSRegularExpression(pattern: stepPattern) {
+            let ns = text as NSString
+            let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            for match in matches {
+                let dir = ns.substring(with: match.range(at: 1))
+                if let amount = Double(ns.substring(with: match.range(at: 2))) {
+                    let sign: Double = (dir == "increase" || dir == "raise" || dir == "up") ? 1 : -1
+                    ops.append(.temperatureStep(sign * amount))
+                }
+            }
+            if !matches.isEmpty {
+                text = regex.stringByReplacingMatches(
+                    in: text, range: NSRange(location: 0, length: ns.length), withTemplate: " \(consumed) "
+                )
+            }
+        }
+
+        let patterns: [(String, (Double) -> IntentOperation)] = [
+            (#"(?<![a-z0-9])(\d{4})\s*k(?![a-z0-9])"#, { .colorTemperature(Int($0)) }),
+            (#"(?<![a-z0-9])(\d{1,3})\s*(?:%|percent)(?![a-z0-9])"#, { .brightness(Int($0)) }),
+            (#"(?<![a-z0-9])(\d{1,2}(?:\.\d)?)\s*(?:degrees?\s*celsius|degrees?|deg|℃|°c|°)(?![a-z0-9])"#, { .targetTemperature($0) })
+        ]
+        for (pattern, make) in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let ns = text as NSString
+            let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            for match in matches {
+                if let val = Double(ns.substring(with: match.range(at: 1))) {
+                    ops.append(make(val))
+                }
+            }
+            if !matches.isEmpty {
+                text = regex.stringByReplacingMatches(
+                    in: text, range: NSRange(location: 0, length: ns.length), withTemplate: " \(consumed) "
                 )
             }
         }

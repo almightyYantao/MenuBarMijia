@@ -80,11 +80,11 @@ public enum MiCloudError: LocalizedError, Equatable, Sendable {
 
     public var errorDescription: String? {
         switch self {
-        case .notLoggedIn: return "请在设置中扫码登录米家账号"
-        case .sessionExpired: return "米家登录已过期，请重新扫码"
-        case .http(let code): return "米家云服务 HTTP \(code)"
-        case .api(let code, let message): return "米家云指令失败 (\(code))：\(message)"
-        case .badResponse(let what): return "米家云响应异常：\(what)"
+        case .notLoggedIn: return L10n.tr("请在设置中扫码登录米家账号", "Scan QR code in Settings to sign in to Xiaomi Home")
+        case .sessionExpired: return L10n.tr("米家登录已过期，请重新扫码", "Xiaomi Home session expired; please scan again")
+        case .http(let code): return L10n.tr("米家云服务 HTTP \(code)", "Xiaomi Cloud HTTP \(code)")
+        case .api(let code, let message): return L10n.tr("米家云指令失败 (\(code))：\(message)", "Xiaomi Cloud command failed (\(code)): \(message)")
+        case .badResponse(let what): return L10n.tr("米家云响应异常：\(what)", "Invalid Xiaomi Cloud response: \(what)")
         }
     }
 }

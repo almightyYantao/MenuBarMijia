@@ -10,7 +10,7 @@ public enum HomeBackend: String, CaseIterable, Identifiable, Sendable {
     public var title: String {
         switch self {
         case .homeAssistant: return "Home Assistant"
-        case .xiaomiCloud: return "米家云端直连"
+        case .xiaomiCloud: return L10n.tr("米家云端直连", "Xiaomi Cloud Direct")
         }
     }
 }
@@ -39,10 +39,10 @@ public enum HomeProviderError: LocalizedError, Equatable, Sendable {
 
     public var errorDescription: String? {
         switch self {
-        case .invalidURL(let u): return "无效的 HA 地址：\(u)"
-        case .unauthorized: return "令牌无效或已过期，请在设置中更新"
-        case .serviceCallFailed(let code, let msg): return "指令执行失败 (\(code))：\(msg)"
-        case .networkError(let msg): return "网络异常：\(msg)"
+        case .invalidURL(let u): return L10n.tr("无效的 HA 地址：\(u)", "Invalid HA URL: \(u)")
+        case .unauthorized: return L10n.tr("令牌无效或已过期，请在设置中更新", "Invalid or expired token; update it in Settings")
+        case .serviceCallFailed(let code, let msg): return L10n.tr("指令执行失败 (\(code))：\(msg)", "Command failed (\(code)): \(msg)")
+        case .networkError(let msg): return L10n.tr("网络异常：\(msg)", "Network error: \(msg)")
         }
     }
 }
@@ -135,7 +135,7 @@ public actor HAWebSocketProvider: HomeProvider {
         var backoffSeconds: Double = 0.8
         while !Task.isCancelled {
             if token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                continuation?.yield(.statusChanged(.disconnected("请在设置中配置访问令牌")))
+                continuation?.yield(.statusChanged(.disconnected(L10n.tr("请在设置中配置访问令牌", "Configure your access token in Settings"))))
                 return
             }
             continuation?.yield(.statusChanged(.connecting))

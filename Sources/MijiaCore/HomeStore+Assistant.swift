@@ -104,11 +104,11 @@ extension HomeStore {
             )
             if !inferred.isEmpty {
                 assistantSuggestions = inferred
-                setAssistantState(.done("Jev 已结合室温与习惯生成建议"))
+                setAssistantState(.done(L10n.tr("Jev 已结合室温与习惯生成建议", "Jev generated suggestions from room climate & habits")))
             } else {
                 let fallback = userHabitMemory.topSuggestions(devices: devices, scenes: scenes, limit: 3)
                 assistantSuggestions = fallback
-                setAssistantState(.done("当前居家状态已处于理想区间"))
+                setAssistantState(.done(L10n.tr("当前居家状态已处于理想区间", "Home environment is already in an ideal range")))
             }
         } catch {
             setAssistantState(.failed(AssistantError.userMessage(for: error)))
@@ -129,7 +129,11 @@ extension HomeStore {
         guard !spoken.isEmpty else { return nil }
         if DelayPhrase.isCancel(spoken) {
             let count = cancelScheduledCommands()
-            setAssistantState(count > 0 ? .done("已取消 \(count) 个定时") : .failed("现在没有定时任务"))
+            setAssistantState(
+                count > 0
+                    ? .done(L10n.tr("已取消 \(count) 个定时", "Cancelled \(count) timer(s)"))
+                    : .failed(L10n.tr("现在没有定时任务", "No active timers"))
+            )
             return nil
         }
         if UndoPhrase.isUndo(spoken) {
@@ -162,7 +166,7 @@ extension HomeStore {
             if !plan.suggestions.isEmpty {
                 assistantSuggestions = plan.suggestions
             }
-            setAssistantState(.failed(plan.reply.isEmpty ? "没有找到可执行的设备操作" : plan.reply))
+            setAssistantState(.failed(plan.reply.isEmpty ? L10n.tr("没有找到可执行的设备操作", "No matching device actions found") : plan.reply))
             return plan
         }
 
@@ -178,7 +182,7 @@ extension HomeStore {
     private func undoLastAssistantAction() async {
         guard let last = lastAssistantUndo, Date().timeIntervalSince(last.at) <= Self.voiceUndoWindow else {
             lastAssistantUndo = nil
-            setAssistantState(.failed("没有可以撤销的操作"))
+            setAssistantState(.failed(L10n.tr("没有可以撤销的操作", "Nothing to undo")))
             return
         }
         lastAssistantUndo = nil
@@ -193,7 +197,7 @@ extension HomeStore {
             try? await executeDeviceCommand(cmd)
         }
         let what = last.reply.hasPrefix("已") ? String(last.reply.dropFirst()) : last.reply
-        setAssistantState(.done("已撤销：\(what)"))
+        setAssistantState(.done(L10n.tr("已撤销：\(what)", "Undone: \(what)")))
     }
 
     // MARK: - Scheduled Commands
@@ -217,7 +221,7 @@ extension HomeStore {
             _ = await self.executeIntentPlan(entry.plan, recordedUtterance: nil)
         }
         var reply = plan
-        reply.reply = "好的，" + entry.reply
+        reply.reply = L10n.tr("好的，", "Scheduled — ") + entry.reply
         setAssistantState(.done(reply.reply))
         return reply
     }
@@ -288,16 +292,20 @@ extension HomeStore {
 
         if appliedDeviceIds.count > 1 {
             scheduleUndoBanner(
-                title: plan.reply.isEmpty ? "已执行 AI 指令" : plan.reply,
+                title: plan.reply.isEmpty ? L10n.tr("已执行 AI 指令", "Executed AI command") : plan.reply,
                 restoreCommands: restoreCommands.reversed(),
                 previousDevices: previousSnapshot
             )
         }
 
         if !failedNames.isEmpty {
-            setAssistantState(.failed("\(failedNames.joined(separator: "、")) 未响应"))
+            let sep = L10n.isEnglish ? ", " : "、"
+            setAssistantState(.failed(L10n.tr("\(failedNames.joined(separator: sep)) 未响应", "\(failedNames.joined(separator: sep)) did not respond")))
         } else if outcomes.allSatisfy({ if case .applied = $0 { return false } else { return true } }) {
-            let reason = offlineNames.isEmpty ? "没有可执行的设备操作" : "\(offlineNames.joined(separator: "、")) 当前离线"
+            let sep = L10n.isEnglish ? ", " : "、"
+            let reason = offlineNames.isEmpty
+                ? L10n.tr("没有可执行的设备操作", "No matching device actions")
+                : L10n.tr("\(offlineNames.joined(separator: sep)) 当前离线", "\(offlineNames.joined(separator: sep)) offline")
             setAssistantState(.failed(reason))
         } else {
             var memory = userHabitMemory

@@ -53,7 +53,7 @@ The Swift package has no third-party Swift dependencies and uses Swift 6 strict 
 
 Releases: <https://github.com/jryang1997/MenuBarMijia/releases>
 
-**v1.0.1** is the latest. It includes `MenuBarMijia-1.0.1.dmg` for macOS and Windows installers.
+**v1.0.2** is the latest. It includes `MenuBarMijia-1.0.2.dmg` for macOS (with full English & Simplified Chinese UI and voice commands) and Windows installers.
 
 The macOS app is ad-hoc signed and not notarized. On first launch, open **System Settings → Privacy & Security** and choose **Open Anyway**, or run:
 
@@ -178,7 +178,7 @@ npx tauri build   # on Windows: NSIS .exe and .msi
 
 Packaging needs Visual Studio “Desktop development with C++”, the Windows SDK, and the MSVC Rust toolchain. Build from an x64 Native Tools prompt. If `CC` or `CXX` points at another compiler, set them to `cl.exe` in that prompt.
 
-Pushes to `main` run core tests, then GitHub Actions builds the Windows installers and uploads them as the `MenuBarMijia-Windows-x64` artifact. Release assets and SHA-256 files are attached to GitHub Releases. Ordinary pushes do not replace a published installer. The Windows fix release is [v1.0.1](https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.1), which also includes the macOS DMG.
+Pushes to `main` run core tests, then GitHub Actions builds the Windows installers and uploads them as the `MenuBarMijia-Windows-x64` artifact. Release assets and SHA-256 files are attached to GitHub Releases. Ordinary pushes do not replace a published installer. The latest release is [v1.0.2](https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.2), which includes the macOS DMG and Windows installers.
 
 ## Privacy
 

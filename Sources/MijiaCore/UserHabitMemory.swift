@@ -43,6 +43,16 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         case evening = "夜晚"      // 18:00 - 22:59
         case lateNight = "深夜"    // 23:00 - 05:59
 
+        public var localizedName: String {
+            switch self {
+            case .morning: return L10n.tr("清晨", "Morning")
+            case .midday: return L10n.tr("午间", "Midday")
+            case .afternoon: return L10n.tr("下午", "Afternoon")
+            case .evening: return L10n.tr("夜晚", "Evening")
+            case .lateNight: return L10n.tr("深夜", "Late Night")
+            }
+        }
+
         public static func from(date: Date, calendar: Calendar = .current) -> TimeBucket {
             let hour = calendar.component(.hour, from: date)
             switch hour {
@@ -157,13 +167,19 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
             let title = Self.suggestionTitle(for: intent, devices: devices, scenes: scenes) ?? entry.targetId
             items.append(ReadableItem(
                 id: "e|\(entry.bucket.rawValue)|\(entry.targetId)|\(entry.operationKey)",
-                text: "\(entry.bucket.rawValue)常做：\(title)（\(entry.count) 次）"
+                text: L10n.tr(
+                    "\(entry.bucket.rawValue)常做：\(title)（\(entry.count) 次）",
+                    "\(entry.bucket.localizedName): \(title) (\(entry.count)x)"
+                )
             ))
         }
         for phrase in phrases {
             items.append(ReadableItem(
                 id: "p|\(phrase.phrase)",
-                text: "口头禅「\(phrase.phrase)」→ \(phrase.summary)（\(phrase.count) 次）"
+                text: L10n.tr(
+                    "口头禅「\(phrase.phrase)」→ \(phrase.summary)（\(phrase.count) 次）",
+                    "Phrase \"\(phrase.phrase)\" → \(phrase.summary) (\(phrase.count)x)"
+                )
             ))
         }
         return items
@@ -341,6 +357,23 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
             return scene.name
         }
         guard let dev = devices.first(where: { $0.id == intent.targetId }) else { return nil }
+        if L10n.isEnglish {
+            switch intent.operation {
+            case .power(true): return "Turn on \(dev.name)"
+            case .power(false): return "Turn off \(dev.name)"
+            case .lightEffect(let effect):
+                let label = effect.lowercased() == "night" ? "Moonlight" : (effect.lowercased() == "day" ? "Daylight" : effect)
+                return "\(dev.name) · \(label)"
+            case .brightness(let pct): return "\(dev.name) · \(pct)%"
+            case .colorTemperature(let k): return "\(dev.name) · \(k)K"
+            case .hvacMode(let mode): return "\(dev.name) · \(SmartDevice.localizeHVACMode(mode))"
+            case .targetTemperature(let t): return "\(dev.name) · \(Int(t.rounded()))°C"
+            case .activateScene: return nil
+            case .fanSpeed(let v): return "\(dev.name) · Fan \(IntentReply.fanSpeedLabel(v))"
+            case .oscillation(let on): return "\(dev.name) · \(on ? "Swing On" : "Swing Off")"
+            case .brightnessStep, .temperatureStep: return nil
+            }
+        }
         switch intent.operation {
         case .power(true): return "打开\(dev.name)"
         case .power(false): return "关闭\(dev.name)"

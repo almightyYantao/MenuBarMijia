@@ -104,6 +104,21 @@ public final class HomeStore {
         didSet { userDefaults.set(homeName, forKey: "home_name") }
     }
 
+    public var appLanguagePreference: AppLanguagePreference = .system {
+        didSet {
+            userDefaults.set(appLanguagePreference.rawValue, forKey: "app_language")
+            syncEffectiveLanguage()
+        }
+    }
+
+    public private(set) var effectiveLanguage: AppLanguage = .zhHans
+
+    public var miCloudRegion: MiCloudRegion = .cn {
+        didSet {
+            userDefaults.set(miCloudRegion.rawValue, forKey: "mi_cloud_region")
+        }
+    }
+
     /// When off, nothing new is learned and no habit summary is sent to the AI model.
     public var isHabitLearningEnabled: Bool = true {
         didSet { userDefaults.set(isHabitLearningEnabled, forKey: "assistant_habit_learning_enabled") }
@@ -152,8 +167,10 @@ public final class HomeStore {
     public internal(set) var miSessionMaskedUserId: String?
 
     public var serverHostSummary: String {
+        let _ = effectiveLanguage
         if homeBackend == .xiaomiCloud {
-            return miSessionMaskedUserId.map { "米家云端 (\($0))" } ?? "米家云端 (未登录)"
+            return miSessionMaskedUserId.map { L10n.tr("米家云端 (\($0))", "Xiaomi Cloud (\($0))") }
+                ?? L10n.tr("米家云端 (未登录)", "Xiaomi Cloud (Signed Out)")
         }
         if let url = URL(string: serverURLString), let host = url.host() {
             return host
@@ -198,13 +215,28 @@ public final class HomeStore {
             ud.object(forKey: key) == nil ? true : ud.bool(forKey: key)
         }
 
+        let savedLangPref = ud.string(forKey: "app_language").flatMap(AppLanguagePreference.init(rawValue:)) ?? .system
+        self.appLanguagePreference = savedLangPref
+        let initialEffective: AppLanguage = (self.isTestEnvironment && savedLangPref == .system)
+            ? .zhHans
+            : savedLangPref.resolved()
+        self.effectiveLanguage = initialEffective
+        if !self.isTestEnvironment {
+            L10n.currentLanguage = initialEffective
+        }
+
+        let savedRegion = ud.string(forKey: "mi_cloud_region").flatMap(MiCloudRegion.init(rawValue:))
+            ?? MiSessionStore.load().flatMap { MiCloudRegion(rawValue: $0.region.lowercased()) }
+            ?? .cn
+        self.miCloudRegion = savedRegion
+
         let savedURL = ud.string(forKey: "ha_server_url") ?? KeychainHelper.defaultNASURL
         self.serverURLString = savedURL
         let initialBackend = ud.string(forKey: "home_backend").flatMap(HomeBackend.init(rawValue:)) ?? .homeAssistant
         self.homeBackend = initialBackend
         self.miSessionMaskedUserId = MiSessionStore.load()?.maskedUserId
         self.lgConfig = LGWebOSConfig.load(from: ud)
-        self.homeName = ud.string(forKey: "home_name") ?? KeychainHelper.defaultHomeName
+        self.homeName = ud.string(forKey: "home_name") ?? KeychainHelper.localizedDefaultHomeName
         self.isHabitLearningEnabled = boolOrDefaultTrue("assistant_habit_learning_enabled")
         self.prefersOnDeviceSpeech = ud.bool(forKey: "assistant_on_device_speech")
         self.hasCompletedOnboarding = ud.bool(forKey: "has_completed_onboarding")
@@ -266,13 +298,29 @@ public final class HomeStore {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.lgConfig.clientKey = key
-                    self.showToast("已成功配对 \(self.lgConfig.name)")
+                    self.showToast(L10n.tr("已成功配对 \(self.lgConfig.name)", "Paired with \(self.lgConfig.name)"))
                 }
             }
         )
         self.lgWebOSClient = client
         if lgConfig.isEnabled && lgConfig.hasConfiguredHost {
             Task { await client.start() }
+        }
+    }
+
+    private func syncEffectiveLanguage() {
+        let next: AppLanguage = (isTestEnvironment && appLanguagePreference == .system)
+            ? .zhHans
+            : appLanguagePreference.resolved()
+        effectiveLanguage = next
+        if !isTestEnvironment {
+            L10n.currentLanguage = next
+        }
+        if homeName == "我的家" || homeName == "My Home" {
+            let localizedDefault = next == .en ? "My Home" : "我的家"
+            if homeName != localizedDefault {
+                homeName = localizedDefault
+            }
         }
     }
 
@@ -394,18 +442,19 @@ public final class HomeStore {
     }
 
     public var availableMenuBarOptions: [MenuBarMetricOption] {
+        let _ = effectiveLanguage
         var opts: [MenuBarMetricOption] = [
-            MenuBarMetricOption(id: "auto:primary", title: "自动（主卧温度优先）")
+            MenuBarMetricOption(id: "auto:primary", title: L10n.tr("自动（主卧温度优先）", "Auto (Bedroom Temp First)"))
         ]
         for env in environmentReadings {
-            opts.append(MenuBarMetricOption(id: "temp:\(env.id)", title: "\(env.label) · 温度"))
+            opts.append(MenuBarMetricOption(id: "temp:\(env.id)", title: L10n.tr("\(env.label) · 温度", "\(env.label) · Temp")))
             if env.humidity != nil {
-                opts.append(MenuBarMetricOption(id: "temp_hum:\(env.id)", title: "\(env.label) · 温湿度"))
+                opts.append(MenuBarMetricOption(id: "temp_hum:\(env.id)", title: L10n.tr("\(env.label) · 温湿度", "\(env.label) · Temp & Humidity")))
             }
         }
-        opts.append(MenuBarMetricOption(id: "power:total", title: "全屋实时总功率 (W)"))
-        opts.append(MenuBarMetricOption(id: "active:count", title: "开启设备数量"))
-        opts.append(MenuBarMetricOption(id: "icon:only", title: "仅显示图标"))
+        opts.append(MenuBarMetricOption(id: "power:total", title: L10n.tr("全屋实时总功率 (W)", "Total Home Power (W)")))
+        opts.append(MenuBarMetricOption(id: "active:count", title: L10n.tr("开启设备数量", "Active Device Count")))
+        opts.append(MenuBarMetricOption(id: "icon:only", title: L10n.tr("仅显示图标", "Icon Only")))
         return opts
     }
 
@@ -471,7 +520,8 @@ public final class HomeStore {
             return String(format: "%.0fW", totalPowerWatts)
         }
         if menuBarTargetId == "active:count" {
-            return activeDeviceCount > 0 ? "\(activeDeviceCount)开" : nil
+            let _ = effectiveLanguage
+            return activeDeviceCount > 0 ? L10n.tr("\(activeDeviceCount)开", "\(activeDeviceCount) On") : nil
         }
         if menuBarTargetId == "icon:only" {
             return nil
@@ -493,7 +543,8 @@ public final class HomeStore {
             }
             return nil
         case .activeCount:
-            return activeDeviceCount > 0 ? "\(activeDeviceCount)开" : nil
+            let _ = effectiveLanguage
+            return activeDeviceCount > 0 ? L10n.tr("\(activeDeviceCount)开", "\(activeDeviceCount) On") : nil
         }
     }
 
@@ -512,8 +563,11 @@ public final class HomeStore {
                         SafetyAlert(
                             id: "offline:\(dev.id):\(Int(now.timeIntervalSince1970))",
                             deviceId: dev.id,
-                            title: "\(dev.name) 已离线",
-                            body: "\(dev.roomName)的「\(dev.name)」刚刚断开连接或断电。"
+                            title: L10n.tr("\(dev.name) 已离线", "\(dev.name) Offline"),
+                            body: L10n.tr(
+                                "\(dev.roomName)的「\(dev.name)」刚刚断开连接或断电。",
+                                "\"\(dev.name)\" in \(dev.roomName) just went offline or lost power."
+                            )
                         )
                     )
                 }
@@ -528,8 +582,11 @@ public final class HomeStore {
                         SafetyAlert(
                             id: "battery:\(dev.id)",
                             deviceId: dev.id,
-                            title: "\(dev.name) 电量低 (\(bat)%)",
-                            body: "请及时为\(dev.roomName)的「\(dev.name)」更换电池或充电。"
+                            title: L10n.tr("\(dev.name) 电量低 (\(bat)%)", "\(dev.name) Low Battery (\(bat)%)"),
+                            body: L10n.tr(
+                                "请及时为\(dev.roomName)的「\(dev.name)」更换电池或充电。",
+                                "Please replace or recharge the battery for \"\(dev.name)\" (\(dev.roomName))."
+                            )
                         )
                     )
                 }
@@ -550,8 +607,11 @@ public final class HomeStore {
                         SafetyAlert(
                             id: "longrun:\(dev.id)",
                             deviceId: dev.id,
-                            title: "\(dev.name) 已开启超过 45 分钟",
-                            body: "当前功率 \(Int((s.powerWatts ?? 0).rounded()))W，如需关闭可直接点击通知按钮。",
+                            title: L10n.tr("\(dev.name) 已开启超过 45 分钟", "\(dev.name) On for Over 45m"),
+                            body: L10n.tr(
+                                "当前功率 \(Int((s.powerWatts ?? 0).rounded()))W，如需关闭可直接点击通知按钮。",
+                                "Drawing \(Int((s.powerWatts ?? 0).rounded()))W. Click the notification action to turn it off."
+                            ),
                             turnOffCommand: .setSwitch(entityId: s.switchEntityId, isOn: false)
                         )
                     )
@@ -561,8 +621,11 @@ public final class HomeStore {
                         SafetyAlert(
                             id: "longrun:\(dev.id)",
                             deviceId: dev.id,
-                            title: "\(dev.name) 已连续运行 4 小时",
-                            body: "当前设定 \(Int(s.targetTemperature.rounded()))°C，请确认是否仍需开启。",
+                            title: L10n.tr("\(dev.name) 已连续运行 4 小时", "\(dev.name) Running for 4 Hours"),
+                            body: L10n.tr(
+                                "当前设定 \(Int(s.targetTemperature.rounded()))°C，请确认是否仍需开启。",
+                                "Target temp \(Int(s.targetTemperature.rounded()))°C. Check if you still need it running."
+                            ),
                             turnOffCommand: .setClimatePower(entityId: s.entityId, isOn: false, fallbackMode: s.hvacMode)
                         )
                     )
@@ -709,7 +772,7 @@ public final class HomeStore {
 
     public func togglePrimary(_ device: SmartDevice) {
         guard device.isOnline else {
-            showToast("\(device.name) 当前离线（可能断电）", isError: true)
+            showToast(L10n.tr("\(device.name) 当前离线（可能断电）", "\(device.name) is offline (unplugged)"), isError: true)
             return
         }
         guard let idx = devices.firstIndex(where: { $0.id == device.id }) else { return }
@@ -786,7 +849,7 @@ public final class HomeStore {
                     self.devices[revertIdx] = previous
                 }
                 self.optimisticLockUntil.removeValue(forKey: device.id)
-                self.showToast("\(device.name) 响应失败，已回滚", isError: true)
+                self.showToast(L10n.tr("\(device.name) 响应失败，已回滚", "\(device.name) failed to respond; rolled back"), isError: true)
             }
         }
     }
@@ -1088,16 +1151,20 @@ public final class HomeStore {
 
         let targetEid = asDirective ? s.directiveNotifyEntityId : s.ttsNotifyEntityId
         guard let eid = targetEid else {
-            showToast("该音箱不支持此指令通道", isError: true)
+            showToast(L10n.tr("该音箱不支持此指令通道", "This speaker does not support that channel"), isError: true)
             return
         }
 
         Task {
             do {
                 try await executeDeviceCommand(.sendNotifyMessage(entityId: eid, message: trimmed))
-                showToast(asDirective ? "已向小爱下发指令：「\(trimmed)」" : "小爱已播报：「\(trimmed)」")
+                showToast(
+                    asDirective
+                        ? L10n.tr("已向小爱下发指令：「\(trimmed)」", "Sent command to XiaoAi: \"\(trimmed)\"")
+                        : L10n.tr("小爱已播报：「\(trimmed)」", "XiaoAi announced: \"\(trimmed)\"")
+                )
             } catch {
-                showToast("发送失败：\(error.localizedDescription)", isError: true)
+                showToast(L10n.tr("发送失败：\(error.localizedDescription)", "Failed to send: \(error.localizedDescription)"), isError: true)
             }
         }
     }
@@ -1106,9 +1173,9 @@ public final class HomeStore {
         Task {
             do {
                 try await executeDeviceCommand(.pressButton(entityId: buttonEntityId))
-                showToast("已触发：\(label)")
+                showToast(L10n.tr("已触发：\(label)", "Triggered: \(label)"))
             } catch {
-                showToast("\(label) 执行失败", isError: true)
+                showToast(L10n.tr("\(label) 执行失败", "\(label) failed"), isError: true)
             }
         }
     }
@@ -1119,9 +1186,9 @@ public final class HomeStore {
         Task {
             do {
                 try await executeDeviceCommand(.activateScene(entityId: scene.entityId))
-                showToast("已触发场景：\(scene.name)")
+                showToast(L10n.tr("已触发场景：\(scene.name)", "Activated scene: \(scene.name)"))
             } catch {
-                showToast("场景「\(scene.name)」执行失败", isError: true)
+                showToast(L10n.tr("场景「\(scene.name)」执行失败", "Scene \"\(scene.name)\" failed"), isError: true)
             }
         }
     }
@@ -1204,12 +1271,12 @@ public final class HomeStore {
         }
 
         guard !commands.isEmpty else {
-            showToast("当前无需执行「\(action.title)」")
+            showToast(L10n.tr("当前无需执行「\(action.title)」", "No devices need \"\(action.title)\""))
             return
         }
 
         scheduleUndoBanner(
-            title: "已执行「\(action.title)」",
+            title: L10n.tr("已执行「\(action.title)」", "Executed \"\(action.title)\""),
             restoreCommands: restoreCommands,
             previousDevices: previousSnapshot
         )
@@ -1226,7 +1293,7 @@ public final class HomeStore {
     public func turnAllOff() {
         let activeDevs = devices.filter(\.isActiveOn)
         guard !activeDevs.isEmpty else {
-            showToast("当前没有开启的设备")
+            showToast(L10n.tr("当前没有开启的设备", "No active devices are currently on"))
             return
         }
 
@@ -1286,7 +1353,7 @@ public final class HomeStore {
         }
 
         scheduleUndoBanner(
-            title: "已关闭 \(offCommands.count) 台设备",
+            title: L10n.tr("已关闭 \(offCommands.count) 台设备", "Turned off \(offCommands.count) device(s)"),
             restoreCommands: restoreCommands,
             previousDevices: previousSnapshot
         )
@@ -1334,7 +1401,7 @@ public final class HomeStore {
             for cmd in banner.restoreCommands {
                 try? await executeDeviceCommand(cmd)
             }
-            showToast("已恢复关闭前的状态")
+            showToast(L10n.tr("已恢复关闭前的状态", "Restored previous device states"))
         }
     }
 
@@ -1381,13 +1448,16 @@ public final class HomeStore {
     public func completeMiLogin(_ session: MiSession) {
         MiSessionStore.save(session)
         self.miSessionMaskedUserId = session.maskedUserId
+        if let region = MiCloudRegion(rawValue: session.region.lowercased()) {
+            self.miCloudRegion = region
+        }
         self.homeBackend = .xiaomiCloud
         self.completeOnboarding()
         eventTask?.cancel()
         shutdownCurrentProvider()
         self.provider = MiCloudProvider()
         startListening()
-        showToast("已登录米家账号 (\(session.maskedUserId))")
+        showToast(L10n.tr("已登录米家账号 (\(session.maskedUserId))", "Signed in to Xiaomi Home (\(session.maskedUserId))"))
     }
 
     public func logoutMiAccount() {
@@ -1399,7 +1469,7 @@ public final class HomeStore {
             self.provider = MiCloudProvider()
             startListening()
         }
-        showToast("已退出米家账号")
+        showToast(L10n.tr("已退出米家账号", "Signed out of Xiaomi Home"))
     }
 
     private func shutdownCurrentProvider() {
@@ -1424,7 +1494,7 @@ public final class HomeStore {
                 await haProvider.updateCredentials(baseURLString: normalized, token: token)
             }
         }
-        showToast("已保存并重新连接 Home Assistant")
+        showToast(L10n.tr("已保存并重新连接 Home Assistant", "Saved and reconnecting to Home Assistant"))
     }
 
     public func applyDiscoveredHAInstance(_ instance: HADiscoveredInstance, reconnectProvider: Bool = true) {
@@ -1479,24 +1549,26 @@ public final class HomeStore {
         }
         if newConfig.isEnabled {
             showToast(
-                newConfig.hasConfiguredHost ? "已保存并重连 \(newConfig.name)" : "请先填写或扫描电视局域网 IP",
+                newConfig.hasConfiguredHost
+                    ? L10n.tr("已保存并重连 \(newConfig.name)", "Saved and reconnecting to \(newConfig.name)")
+                    : L10n.tr("请先填写或扫描电视局域网 IP", "Please enter or scan the TV LAN IP first"),
                 isError: !newConfig.hasConfiguredHost
             )
         } else {
-            showToast("已停用 LG 电视局域网直连")
+            showToast(L10n.tr("已停用 LG 电视局域网直连", "Disabled LG TV LAN direct connection"))
         }
     }
 
     public func triggerLGWebOSPairing() {
         guard lgConfig.hasConfiguredHost else {
-            showToast("请先填写或扫描电视局域网 IP", isError: true)
+            showToast(L10n.tr("请先填写或扫描电视局域网 IP", "Please enter or scan the TV LAN IP first"), isError: true)
             return
         }
         if lgWebOSClient == nil {
             startLGWebOSIfNeeded()
         }
         guard let lgClient = lgWebOSClient else { return }
-        showToast("已向电视发送配对请求，请在电视屏幕点击「接受」")
+        showToast(L10n.tr("已向电视发送配对请求，请在电视屏幕点击「接受」", "Pairing request sent; accept the prompt on your TV screen"))
         Task {
             await lgClient.triggerPairing()
         }
@@ -1557,7 +1629,7 @@ public final class HomeStore {
                     self.devices[idx] = fallback
                 }
                 self.optimisticLockUntil.removeValue(forKey: deviceId)
-                self.showToast("\(fallback.name) 操作未生效", isError: true)
+                self.showToast(L10n.tr("\(fallback.name) 操作未生效", "\(fallback.name) action failed"), isError: true)
             }
         }
     }
@@ -1579,7 +1651,7 @@ public final class HomeStore {
                     self.devices[idx] = fallback
                 }
                 self.optimisticLockUntil.removeValue(forKey: deviceId)
-                self.showToast("\(fallback.name) 调节未生效", isError: true)
+                self.showToast(L10n.tr("\(fallback.name) 调节未生效", "\(fallback.name) adjustment failed"), isError: true)
             }
         }
     }

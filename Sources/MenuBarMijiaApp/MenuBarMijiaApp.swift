@@ -14,6 +14,7 @@ struct MenuBarMijiaApp: App {
     }
 
     var body: some Scene {
+        let _ = store.effectiveLanguage
         MenuBarExtra {
             ControlCenterPanel(store: store)
         } label: {
@@ -28,14 +29,14 @@ struct MenuBarMijiaApp: App {
                         .monospacedDigit()
                 }
             }
-            .help("单击打开面板；按住直接说话控制设备")
+            .help(L10n.tr("单击打开面板；按住直接说话控制设备", "Click to open panel; hold to speak a command"))
         }
         .menuBarExtraStyle(.window)
     }
 
     private var menuBarSpeechText: String {
         let trimmed = speech.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "聆听中…" }
+        guard !trimmed.isEmpty else { return L10n.tr("聆听中…", "Listening…") }
         if trimmed.count > 10 {
             return String(trimmed.suffix(10))
         }

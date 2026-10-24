@@ -58,6 +58,7 @@ public struct DeviceCardView: View {
     }
 
     public var body: some View {
+        let _ = store.effectiveLanguage
         VStack(alignment: .leading, spacing: 0) {
             if isCompactTile {
                 compactHeaderRow
@@ -89,20 +90,23 @@ public struct DeviceCardView: View {
             Button {
                 store.toggleFavorite(device.id)
             } label: {
-                Label(isFavorite ? "取消常用星标" : "设为常用星标", systemImage: isFavorite ? "star.slash" : "star.fill")
+                Label(
+                    isFavorite ? L10n.tr("取消常用星标", "Remove from Favorites") : L10n.tr("设为常用星标", "Add to Favorites"),
+                    systemImage: isFavorite ? "star.slash" : "star.fill"
+                )
             }
 
             if isFavorite {
                 Button {
                     store.moveFavorite(deviceId: device.id, direction: -1)
                 } label: {
-                    Label("常用排序上移", systemImage: "arrow.up")
+                    Label(L10n.tr("常用排序上移", "Move Up in Favorites"), systemImage: "arrow.up")
                 }
 
                 Button {
                     store.moveFavorite(deviceId: device.id, direction: 1)
                 } label: {
-                    Label("常用排序下移", systemImage: "arrow.down")
+                    Label(L10n.tr("常用排序下移", "Move Down in Favorites"), systemImage: "arrow.down")
                 }
             }
 
@@ -112,7 +116,10 @@ public struct DeviceCardView: View {
                         store.toggleExpanded(device.id)
                     }
                 } label: {
-                    Label(isExpanded ? "收起详细控制" : "展开详细控制", systemImage: "slider.horizontal.3")
+                    Label(
+                        isExpanded ? L10n.tr("收起详细控制", "Collapse Controls") : L10n.tr("展开详细控制", "Expand Controls"),
+                        systemImage: "slider.horizontal.3"
+                    )
                 }
             }
 
@@ -123,7 +130,7 @@ public struct DeviceCardView: View {
                     store.hideDevice(device.id)
                 }
             } label: {
-                Label("隐藏此设备", systemImage: "eye.slash")
+                Label(L10n.tr("隐藏此设备", "Hide Device"), systemImage: "eye.slash")
             }
         }
     }
@@ -140,7 +147,7 @@ public struct DeviceCardView: View {
                 iconBadge
             }
             .buttonStyle(PressableCardButtonStyle())
-            .help("点击直接切换开关")
+            .help(L10n.tr("点击直接切换开关", "Click to toggle power"))
 
             Button {
                 withAnimation(AppleMotion.snappySpring) {
@@ -178,7 +185,7 @@ public struct DeviceCardView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(device.hasDetailDrawer ? "点击展开详细控制" : device.name)
+            .help(device.hasDetailDrawer ? L10n.tr("点击展开详细控制", "Click to expand controls") : device.name)
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 8.5)
@@ -204,7 +211,7 @@ public struct DeviceCardView: View {
                                 .lineLimit(1)
 
                             if showRoomBadge {
-                                Text(device.roomName)
+                                Text(L10n.displayRoomName(device.roomName))
                                     .font(.system(size: 9.5, weight: .semibold))
                                     .foregroundStyle(.primary.opacity(0.68))
                                     .padding(.horizontal, 5.5)
@@ -252,7 +259,7 @@ public struct DeviceCardView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help(isFavorite ? "从常用中移除" : "加入常用")
+                    .help(isFavorite ? L10n.tr("从常用中移除", "Remove from Favorites") : L10n.tr("加入常用", "Add to Favorites"))
                 }
 
                 if device.hasDetailDrawer {
@@ -276,7 +283,7 @@ public struct DeviceCardView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help(isExpanded ? "收起控制面板" : "展开详细控制")
+                    .help(isExpanded ? L10n.tr("收起控制面板", "Collapse controls") : L10n.tr("展开详细控制", "Expand controls"))
                 }
             }
         }
@@ -488,11 +495,11 @@ public struct DeviceCardView: View {
                         .font(.system(size: 22, weight: .bold, design: .rounded))
                         .monospacedDigit()
                     if let cur = spec.currentTemperature {
-                        Text(String(format: "当前室温 %.1f°C", cur))
+                        Text(String(format: L10n.tr("当前室温 %.1f°C", "Room %.1f°C"), cur))
                             .font(.system(size: 10.5, weight: .medium))
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("设定温度")
+                        Text(L10n.tr("设定温度", "Target Temp"))
                             .font(.system(size: 10.5, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
@@ -558,7 +565,7 @@ public struct DeviceCardView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("实时功率")
+                    Text(L10n.tr("实时功率", "Live Power"))
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
                     Text(String(format: "%.0f W", spec.powerWatts ?? 0))
@@ -569,7 +576,7 @@ public struct DeviceCardView: View {
                 Divider().frame(height: 22)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("今日用电")
+                    Text(L10n.tr("今日用电", "Today"))
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
                     Text(String(format: "%.2f kWh", spec.energyKwh ?? 0))
@@ -581,7 +588,7 @@ public struct DeviceCardView: View {
 
                 if spec.childLockEntityId != nil {
                     Toggle(
-                        "按键锁",
+                        L10n.tr("按键锁", "Child Lock"),
                         isOn: Binding(
                             get: { spec.isChildLocked },
                             set: { store.setPlugChildLock(device.id, locked: $0) }
@@ -602,14 +609,14 @@ public struct DeviceCardView: View {
             // Fridge & Freezer Target Steppers
             HStack(spacing: 10) {
                 fridgeZoneBox(
-                    title: "冷藏室",
+                    title: L10n.tr("冷藏室", "Fridge"),
                     actual: spec.fridgeCurrentTemp,
                     target: spec.fridgeTargetTemp,
                     onStep: { store.stepFridgeTargetTemp(device.id, isFreezer: false, delta: $0) }
                 )
 
                 fridgeZoneBox(
-                    title: "冷冻室",
+                    title: L10n.tr("冷冻室", "Freezer"),
                     actual: spec.freezerCurrentTemp,
                     target: spec.freezerTargetTemp,
                     onStep: { store.stepFridgeTargetTemp(device.id, isFreezer: true, delta: $0) }
@@ -647,7 +654,7 @@ public struct DeviceCardView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 if let actual {
-                    Text(String(format: "实测 %.0f°C", actual))
+                    Text(String(format: L10n.tr("实测 %.0f°C", "Actual %.0f°C"), actual))
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
@@ -693,21 +700,21 @@ public struct DeviceCardView: View {
                 Button {
                     store.performVacuumAction(device.id, action: .start)
                 } label: {
-                    Label("开始清扫", systemImage: "play.fill")
+                    Label(L10n.tr("开始清扫", "Clean"), systemImage: "play.fill")
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: spec.status == "cleaning", tintColor: accent))
 
                 Button {
                     store.performVacuumAction(device.id, action: .pause)
                 } label: {
-                    Label("暂停", systemImage: "pause.fill")
+                    Label(L10n.tr("暂停", "Pause"), systemImage: "pause.fill")
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: spec.status == "paused", tintColor: accent))
 
                 Button {
                     store.performVacuumAction(device.id, action: .returnToBase)
                 } label: {
-                    Label("回充", systemImage: "bolt.house.fill")
+                    Label(L10n.tr("回充", "Dock"), systemImage: "bolt.house.fill")
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: spec.status == "returning", tintColor: accent))
             }
@@ -729,7 +736,7 @@ public struct DeviceCardView: View {
                         .glassEffect(.regular.interactive(), in: Circle())
                 }
                 .buttonStyle(.plain)
-                .help("切换麦克风/扬声器静音")
+                .help(L10n.tr("切换麦克风/扬声器静音", "Toggle speaker mute"))
 
                 LiquidGlassSlider(
                     value: Binding(
@@ -756,18 +763,18 @@ public struct DeviceCardView: View {
                 HStack(spacing: 6) {
                     if let musicBtn = spec.playMusicButtonId {
                         Button {
-                            store.pressDeviceButton(musicBtn, label: "播放音乐")
+                            store.pressDeviceButton(musicBtn, label: L10n.tr("播放音乐", "Play Music"))
                         } label: {
-                            Label("放歌", systemImage: "music.note")
+                            Label(L10n.tr("放歌", "Music"), systemImage: "music.note")
                         }
                         .buttonStyle(PillActionButtonStyle(tintColor: accent))
                     }
 
                     if let stopAlarmBtn = spec.stopAlarmButtonId {
                         Button {
-                            store.pressDeviceButton(stopAlarmBtn, label: "停止闹钟")
+                            store.pressDeviceButton(stopAlarmBtn, label: L10n.tr("停止闹钟", "Stop Alarm"))
                         } label: {
-                            Label("停闹钟", systemImage: "bell.slash.fill")
+                            Label(L10n.tr("停闹钟", "Stop Alarm"), systemImage: "bell.slash.fill")
                         }
                         .buttonStyle(PillActionButtonStyle(tintColor: accent))
                     }
@@ -776,7 +783,7 @@ public struct DeviceCardView: View {
 
             if spec.directiveNotifyEntityId != nil || spec.ttsNotifyEntityId != nil {
                 HStack(spacing: 6) {
-                    TextField("输入小爱指令或播报文字…", text: $speakerInputText)
+                    TextField(L10n.tr("输入小爱指令或播报文字…", "Enter XiaoAi command or TTS text…"), text: $speakerInputText)
                         .textFieldStyle(.plain)
                         .font(.system(size: 11.5))
                         .padding(.horizontal, 9)
@@ -789,7 +796,7 @@ public struct DeviceCardView: View {
                         }
 
                     if spec.ttsNotifyEntityId != nil {
-                        Button("播报") {
+                        Button(L10n.tr("播报", "Speak")) {
                             store.sendSpeakerText(device.id, text: speakerInputText, asDirective: false)
                             speakerInputText = ""
                         }
@@ -798,7 +805,7 @@ public struct DeviceCardView: View {
                     }
 
                     if spec.directiveNotifyEntityId != nil {
-                        Button("执行") {
+                        Button(L10n.tr("执行", "Run")) {
                             store.sendSpeakerText(device.id, text: speakerInputText, asDirective: true)
                             speakerInputText = ""
                         }
@@ -820,11 +827,11 @@ public struct DeviceCardView: View {
                     Image(systemName: "tv.badge.wifi")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.orange)
-                    Text("电视已弹出配对提示，请用遥控器点击「接受」")
+                    Text(L10n.tr("电视已弹出配对提示，请用遥控器点击「接受」", "Pairing prompt shown on TV; accept with your remote"))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.primary)
                     Spacer()
-                    Button("重发请求") {
+                    Button(L10n.tr("重发请求", "Retry")) {
                         store.triggerLGWebOSPairing()
                     }
                     .buttonStyle(PillActionButtonStyle(tintColor: accent))
@@ -839,7 +846,7 @@ public struct DeviceCardView: View {
                         .font(.system(size: 11, weight: .semibold))
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: spec.isMuted, tintColor: accent))
-                .help(spec.isMuted ? "取消静音" : "静音")
+                .help(spec.isMuted ? L10n.tr("取消静音", "Unmute") : L10n.tr("静音", "Mute"))
 
                 LiquidGlassSlider(
                     value: Binding(
@@ -868,7 +875,7 @@ public struct DeviceCardView: View {
                         Button {
                             store.togglePrimary(device)
                         } label: {
-                            Label(device.isActiveOn ? "关机待机" : "唤醒开机", systemImage: "power")
+                            Label(device.isActiveOn ? L10n.tr("关机待机", "Standby") : L10n.tr("唤醒开机", "Wake"), systemImage: "power")
                         }
                         .buttonStyle(PillActionButtonStyle(isSelected: device.isActiveOn, tintColor: accent))
 
@@ -876,7 +883,7 @@ public struct DeviceCardView: View {
                             Button {
                                 store.toggleTVScreenOff(device.id)
                             } label: {
-                                Label(spec.isScreenOff ? "点亮屏幕" : "OLED 熄屏", systemImage: "moon.fill")
+                                Label(spec.isScreenOff ? L10n.tr("点亮屏幕", "Screen On") : L10n.tr("OLED 熄屏", "Screen Off"), systemImage: "moon.fill")
                             }
                             .buttonStyle(PillActionButtonStyle(isSelected: spec.isScreenOff, tintColor: accent))
                         }
