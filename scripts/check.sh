@@ -51,8 +51,8 @@ if ! search_quiet 'defaultHost = ""' Sources/MijiaCore/LGWebOSClient.swift; then
     exit 1
 fi
 
-if search_matches '10\.10\.1\.[0-9]+|4c:ba:d7:c3:e9:9a|localhost:3425' Sources/ Tests/; then
-    echo "❌ 检测到硬编码的个人局域网 IP / MAC 或本机调试端口 (localhost:3425)，请移除！"
+if search_matches '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|localhost:3425' Sources/ Tests/; then
+    echo "❌ 检测到硬编码的个人局域网 IP 或本机调试端口 (localhost:3425)，请移除！"
     exit 1
 fi
 
