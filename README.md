@@ -1,13 +1,34 @@
-English | [简体中文](README.zh-CN.md)
+<p align="center">
+  <img src="docs/assets/logo.svg" width="120" alt="MenuBarMijia">
+</p>
 
-# MenuBarMijia
+<h1 align="center">MenuBarMijia</h1>
 
-MenuBarMijia is an unofficial macOS menu-bar app for controlling Mi Home devices by voice or keyboard.
+<p align="center">
+  <b>Native macOS menu-bar & Windows 11 tray controller for Xiaomi Mi Home (Mijia) and Home Assistant.</b><br>
+  Hold the menu-bar icon, speak a command, release to execute across multiple devices in ~0.2s — or run the entire panel from the keyboard.
+</p>
 
-The app bundle is `MenuBarMijia.app`. Release disk images are `MenuBarMijia-*.dmg`. GitHub v1.0.0 assets still used the older `MenuMijia` name.
+<p align="center">
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-<!-- GIF placeholder — not recorded yet. Suggested: ~10 s screen capture on macOS 26: hold the menu-bar icon, say one Chinese command that changes 2+ devices (e.g. 「关客厅灯，空调调到26度」), show the cards update, then say 「撤销」 and show them revert. Save as docs/assets/demo-en.gif (≤5 MB), then replace this comment with:
-<p align="center"><img src="docs/assets/demo-en.gif" width="720" alt="Hold the menu bar icon, speak, release"></p> -->
+<p align="center">
+  <a href="https://github.com/jryang1997/MenuBarMijia/releases/latest"><img src="https://img.shields.io/github/v/release/jryang1997/MenuBarMijia?color=0A84FF&label=release" alt="Latest Release"></a>
+  <img src="https://img.shields.io/badge/macOS-26%2B-000000?logo=apple&logoColor=white" alt="macOS 26+">
+  <img src="https://img.shields.io/badge/Windows_11-Tauri_v2-0078D4?logo=windows11&logoColor=white" alt="Windows 11 Tauri v2">
+  <img src="https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white" alt="Swift 6">
+  <img src="https://img.shields.io/badge/Backends-Mi_Cloud_QR_%7C_Home_Assistant-30D158" alt="Dual Backends">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License"></a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/jev-demo.gif" width="420" alt="Live demo: hold the menu-bar icon, speak, and execute multi-device changes with 5s undo">
+</p>
+
+<p align="center">
+  <img src="docs/assets/jev-decision-showcase.png" width="860" alt="Left: press-and-hold voice control and concurrent execution; Right: Jev confidence pills and moonlight drawer">
+</p>
 
 <p align="center">
   <img src="docs/assets/panel.png" width="420" alt="MenuBarMijia main panel">
@@ -17,7 +38,7 @@ The app bundle is `MenuBarMijia.app`. Release disk images are `MenuBarMijia-*.dm
   <img src="docs/assets/menubar.png" width="330" alt="Menu bar icon">
 </p>
 
-This project is a personal open-source app. It is not affiliated with, authorized by, or endorsed by Xiaomi, Mi Home, or Midea. “Xiaomi”, “Mi Home” (米家), and “Midea” are trademarks of their owners and are used here only to name compatible products.
+This project is a personal open-source app (`MenuBarMijia.app` on macOS, plus a companion Windows 11 Tauri v2 tray app in `windows/` and Synology NAS Home Assistant scripts in `nas/`). It is not affiliated with, authorized by, or endorsed by Xiaomi, Mi Home, or Midea. “Xiaomi”, “Mi Home” (米家), and “Midea” are trademarks of their owners and are used here only to name compatible products.
 
 ## Requirements
 
