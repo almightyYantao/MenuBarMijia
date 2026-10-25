@@ -141,11 +141,15 @@ public enum MiotCommandMapper {
         }
 
         func writeListValue(_ name: String, description: String, searchDevice: Bool = false) throws -> MiotPropWrite {
-            let found = try require(name, searchDevice: searchDevice)
-            guard let item = found.property.valueList?.first(where: { $0.description.caseInsensitiveCompare(description) == .orderedSame }) else {
-                throw MiotCommandError.unsupported("\(name)=\(description)")
+            let services = [service] + (searchDevice ? spec.services(named: "fan-control") + spec.services.filter { $0.iid != service.iid } : [])
+            for s in services {
+                for p in s.properties where p.shortName == name && p.isWritable {
+                    if let item = p.valueList?.first(where: { $0.description.caseInsensitiveCompare(description) == .orderedSame }) {
+                        return write(Found(service: s, property: p), .number(Double(item.value)))
+                    }
+                }
             }
-            return write(found, .number(Double(item.value)))
+            throw MiotCommandError.unsupported("\(name)=\(description)")
         }
 
         func action(_ candidates: [String]) throws -> MiotActionCall {

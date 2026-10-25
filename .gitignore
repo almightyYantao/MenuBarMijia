@@ -32,9 +32,11 @@ windows/src-tauri/target/
 windows/src-tauri/gen/
 
 # Android 构建缓存与本地私密配置
-android/.gradle/
-android/build/
-android/app/build/
-android/local.properties
-android/.kotlin/
+android/
+
+# 本地宣传片工程与未发布图标草稿（保留在本地磁盘，不随代码库提交）
+remotion_promo/
+video_promo/
+*.mp4
+docs/assets/AppIcon_*.png
 

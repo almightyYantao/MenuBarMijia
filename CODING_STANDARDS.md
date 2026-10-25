@@ -35,12 +35,12 @@ In `ControlCenterPanel` when `isCompactGridMode` is active:
 - Keep `MijiaCore` free of `AppKit` / `SwiftUI` imports so all synthesis, optimistic locking, and store state remain fast-testable via `MockHomeProvider`.
 - Align type and property names with [`GLOSSARY.md`](GLOSSARY.md) and [`docs/adr/0001-ha-as-single-source-of-truth.md`](docs/adr/0001-ha-as-single-source-of-truth.md).
 
-## 6. Cross-Platform Intent & Schedule Golden Corpus
+## 6. Cross-Platform Golden Corpora
 
-When adding or changing spoken command, delay, or undo rules in `Sources/MijiaCore/LocalIntentParser.swift`, `Sources/MijiaCore/AssistantSchedule.swift`, or `windows/src/core/assistant.ts`:
+When adding or changing spoken command, delay, undo, MIoT synthesis, or MIoT command mapping rules in `Sources/MijiaCore/LocalIntentParser.swift`, `Sources/MijiaCore/AssistantSchedule.swift`, `Sources/MijiaCore/MiCloud/MiotSynthesizer.swift`, `Sources/MijiaCore/MiCloud/MiotCommandMapper.swift`, `windows/src/core/assistant.ts`, or `windows/src/core/miCloudClient.ts`:
 
-- Add a representative test case to [`Tests/Fixtures/intent_golden.json`](Tests/Fixtures/intent_golden.json) so both `Tests/MijiaCoreTests/GoldenCorpusTests.swift` and `windows/tests/core.test.ts` assert the exact same behavior.
-- Never let one platform silently diverge on Chinese or English command parsing, delay limits (`<= 86400s`), or unknown-word fallback (`nil` / `null`).
+- Add a representative test case to [`Tests/Fixtures/intent_golden.json`](Tests/Fixtures/intent_golden.json) or [`Tests/Fixtures/miot_golden.json`](Tests/Fixtures/miot_golden.json) so both `Tests/MijiaCoreTests/GoldenCorpusTests.swift` and `windows/tests/core.test.ts` assert the exact same behavior.
+- Never let one platform silently diverge on Chinese or English command parsing, delay limits (`<= 86400s`), unknown-word fallback (`nil` / `null`), MIoT `0`/`1` boolean coercion, multi-service property resolution, or command range/step clamping.
 
 ## 7. Scheduled Command Persistence & Missed-Timer Confirmation
 

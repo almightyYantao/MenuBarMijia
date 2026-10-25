@@ -279,6 +279,63 @@ describe("MiotSynthesizer & MiotCommandMapper", () => {
     assert.equal(home.devices[1]?.kind.kind, "plug");
     assert.equal(home.devices[1]?.kind.isOn, true);
   });
+
+  it("matches the cross-platform MIoT golden JSON corpus shared with MijiaCoreTests", () => {
+    const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/miot_golden.json"), "utf8");
+    const corpus = JSON.parse(raw) as {
+      specs: Record<string, unknown>;
+      devices: Array<{ did: string; name: string; model: string; isOnline: boolean }>;
+      rooms: Array<{ id: string; name: string; dids: string[] }>;
+      values: Array<{ did: string; siid: number; piid: number; value: unknown }>;
+      expectedKinds: Record<string, unknown>;
+      expectedEnvironmentReadings: Array<unknown>;
+      expectedRequiredProps: Record<string, Array<{ did: string; siid: number; piid: number }>>;
+      commandCases: Array<{
+        model: string;
+        command: Parameters<typeof MiotCommandMapper.map>[0];
+        expected: ReturnType<typeof MiotCommandMapper.map>;
+      }>;
+    };
+
+    const parsedSpecs: Record<string, MiotDeviceSpec> = {};
+    for (const [model, rawSpec] of Object.entries(corpus.specs)) {
+      const parsed = parseMiotDeviceSpec(rawSpec);
+      assert.ok(parsed, `Failed to parse MIoT spec for ${model}`);
+      parsedSpecs[model] = parsed;
+    }
+
+    const records = corpus.devices.map((d) => ({
+      ...d,
+      specType: null,
+    }));
+    const values = new Map<string, unknown>();
+    for (const v of corpus.values) {
+      values.set(`${v.did}.${v.siid}.${v.piid}`, v.value);
+    }
+
+    const home = MiotSynthesizer.synthesize(records, corpus.rooms, parsedSpecs, values);
+    assert.equal(home.devices.length, Object.keys(corpus.expectedKinds).length);
+    for (const [did, expectedKind] of Object.entries(corpus.expectedKinds)) {
+      const dev = home.devices.find((d) => d.id === did);
+      assert.ok(dev, `Missing synthesized device ${did}`);
+      assert.deepEqual(dev.kind, expectedKind, `DeviceKind mismatch on ${did}`);
+    }
+    assert.deepEqual(home.environmentReadings, corpus.expectedEnvironmentReadings);
+
+    for (const record of records) {
+      const spec = parsedSpecs[record.model];
+      assert.ok(spec, `Missing spec for ${record.model}`);
+      const actualProps = MiotSynthesizer.requiredProps(record, spec);
+      assert.deepEqual(actualProps, corpus.expectedRequiredProps[record.did], `requiredProps mismatch on ${record.did}`);
+    }
+
+    for (const item of corpus.commandCases) {
+      const spec = parsedSpecs[item.model];
+      assert.ok(spec, `Missing spec for ${item.model}`);
+      const actualWrite = MiotCommandMapper.map(item.command, spec);
+      assert.deepEqual(actualWrite, item.expected, `${item.model} ${item.command.kind}`);
+    }
+  });
 });
 
 describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", () => {

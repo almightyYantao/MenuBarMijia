@@ -1001,6 +1001,12 @@ export class MiotSpecResolver {
   }
 }
 
+function miotBool(val: unknown): boolean | null {
+  if (typeof val === "boolean") return val;
+  if (typeof val === "number") return val !== 0;
+  return null;
+}
+
 export const MiotSynthesizer = {
   synthesize(
     devices: readonly MiDeviceRecord[],
@@ -1115,9 +1121,11 @@ export const MiotSynthesizer = {
       "temperature-humidity-sensor",
     ];
     const devShort = miotShortName(spec.type);
-    let primaryService: MiotService | undefined = spec.services.find(
-      (s) => miotShortName(s.type) === devShort && priority.includes(devShort)
-    );
+    const preferredServices = devShort === "outlet" ? ["outlet", "switch"] : [devShort];
+    let primaryService: MiotService | undefined = spec.services.find((s) => {
+      const sShort = miotShortName(s.type);
+      return preferredServices.includes(sShort) && priority.includes(sShort);
+    });
     if (!primaryService) {
       for (const p of priority) {
         const found = spec.services.find((s) => miotShortName(s.type) === p);
@@ -1141,7 +1149,27 @@ export const MiotSynthesizer = {
       const prop = s.properties.find((p) => miotShortName(p.type) === short && p.access.includes("read"));
       if (!prop) return null;
       const val = values.get(propKeyString({ did, siid: s.iid, piid: prop.iid }));
-      return { prop, val };
+      return { service: s, prop, val };
+    };
+
+    const readProps = (s: MiotService, short: string) =>
+      s.properties
+        .filter((p) => miotShortName(p.type) === short && p.access.includes("read"))
+        .map((prop) => ({
+          service: s,
+          prop,
+          val: values.get(propKeyString({ did, siid: s.iid, piid: prop.iid })),
+        }));
+
+    const readFirst = (services: readonly MiotService[], short: string) => {
+      const seen = new Set<number>();
+      for (const s of services) {
+        if (seen.has(s.iid)) continue;
+        seen.add(s.iid);
+        const found = readProp(s, short);
+        if (found) return found;
+      }
+      return null;
     };
 
     const sName = miotShortName(primaryService.type);
@@ -1165,7 +1193,7 @@ export const MiotSynthesizer = {
       return {
         kind: "light",
         entityId: makeMiotAddress(did, primaryService.iid),
-        isOn: Boolean(on?.val),
+        isOn: miotBool(on?.val) ?? false,
         brightnessPercent: briPct,
         colorTempKelvin: typeof ct?.val === "number" ? Math.round(ct.val) : null,
         minKelvin: Math.round(ct?.prop.valueRange?.[0] ?? 2700),
@@ -1179,14 +1207,20 @@ export const MiotSynthesizer = {
       const on = readProp(primaryService, "on");
       const mode = readProp(primaryService, "mode");
       const target = readProp(primaryService, "target-temperature");
-      const envSvc = spec.services.find(
-        (s) => miotShortName(s.type) === "environment" || miotShortName(s.type) === "temperature-humidity-sensor"
+      const current = readFirst(
+        [
+          primaryService,
+          ...spec.services.filter((s) => miotShortName(s.type) === "environment"),
+          ...spec.services.filter((s) => miotShortName(s.type) === "temperature-humidity-sensor"),
+        ],
+        "temperature"
       );
-      const current = readProp(primaryService, "temperature") ?? (envSvc ? readProp(envSvc, "temperature") : null);
-      const fanSvc = spec.services.find((s) => miotShortName(s.type) === "fan-control");
-      const fanLevel = (fanSvc ? readProp(fanSvc, "fan-level") : null) ?? readProp(primaryService, "fan-level");
+      const fanLevel = readFirst(
+        [...spec.services.filter((s) => miotShortName(s.type) === "fan-control"), primaryService],
+        "fan-level"
+      );
 
-      const isOn = Boolean(on?.val);
+      const isOn = miotBool(on?.val) ?? false;
       const haModes: string[] = [];
       for (const item of mode?.prop.valueList ?? []) {
         const mapped = hvacModeFromDescription(item.description);
@@ -1219,9 +1253,22 @@ export const MiotSynthesizer = {
     if (sName === "fan") {
       const on = readProp(primaryService, "on");
       const mode = readProp(primaryService, "mode");
-      const level = readProp(primaryService, "fan-level");
+      const levels = readProps(primaryService, "fan-level");
       const swing = readProp(primaryService, "horizontal-swing");
-      const presetRef = (mode?.prop.valueList?.length ?? 0) > 0 ? mode : level;
+      const percentRef = levels.find((r) => r.prop.valueRange !== undefined);
+      const presetRef =
+        (mode?.prop.valueList?.length ?? 0) > 0
+          ? mode
+          : levels.find((r) => (r.prop.valueList?.length ?? 0) > 0);
+      const pctNum = typeof percentRef?.val === "number" ? percentRef.val : null;
+      const maxPct = percentRef?.prop.valueRange?.[1] ?? 100;
+      const percentage =
+        pctNum !== null
+          ? Math.max(
+              0,
+              Math.min(100, Math.round(maxPct > 0 && maxPct !== 100 ? (pctNum / maxPct) * 100 : pctNum))
+            )
+          : null;
       const presetVal = typeof presetRef?.val === "number" ? Math.trunc(presetRef.val) : null;
       const presetDesc =
         presetVal !== null
@@ -1231,46 +1278,78 @@ export const MiotSynthesizer = {
       return {
         kind: "fan",
         entityId: makeMiotAddress(did, primaryService.iid),
-        isOn: Boolean(on?.val),
-        percentage: null,
+        isOn: miotBool(on?.val) ?? false,
+        percentage,
         presetMode: presetDesc,
         availablePresetModes: presetRef?.prop.valueList?.map((i) => i.description) ?? [],
-        isOscillating: typeof swing?.val === "boolean" ? swing.val : null,
+        isOscillating: miotBool(swing?.val),
       };
     }
 
     if (sName === "vacuum") {
       const status = readProp(primaryService, "status");
-      const batSvc = spec.services.find((s) => miotShortName(s.type) === "battery") ?? primaryService;
-      const battery = readProp(batSvc, "battery-level");
+      const mode = readProp(primaryService, "mode");
+      const battery = readFirst(
+        [...spec.services.filter((s) => miotShortName(s.type) === "battery"), primaryService],
+        "battery-level"
+      );
       const statusVal = typeof status?.val === "number" ? Math.trunc(status.val) : null;
       const statusDesc =
         statusVal !== null
           ? (status?.prop.valueList?.find((i) => i.value === statusVal)?.description?.toLowerCase() ?? "")
           : "";
       let normalizedStatus = "idle";
-      if (statusDesc.includes("return") || statusDesc.includes("go charging")) normalizedStatus = "returning";
-      else if (statusDesc.includes("paus")) normalizedStatus = "paused";
-      else if (statusDesc.includes("sweep") || statusDesc.includes("clean") || statusDesc.includes("working"))
+      if (
+        statusDesc.includes("go charging") ||
+        statusDesc.includes("returning") ||
+        statusDesc.includes("go home") ||
+        statusDesc.includes("back to") ||
+        statusDesc.includes("recharge")
+      ) {
+        normalizedStatus = "returning";
+      } else if (statusDesc.includes("paus")) {
+        normalizedStatus = "paused";
+      } else if (
+        statusDesc.includes("sweep") ||
+        statusDesc.includes("clean") ||
+        statusDesc.includes("mop") ||
+        statusDesc.includes("working") ||
+        statusDesc.includes("busy")
+      ) {
         normalizedStatus = "cleaning";
-      else if (statusDesc.includes("charg") || statusDesc.includes("dock")) normalizedStatus = "docked";
+      } else if (statusDesc.includes("charg") || statusDesc.includes("dock") || statusDesc.includes("full")) {
+        normalizedStatus = "docked";
+      }
+
+      const modeVal = typeof mode?.val === "number" ? Math.trunc(mode.val) : null;
+      const currentMode =
+        modeVal !== null
+          ? (mode?.prop.valueList?.find((i) => i.value === modeVal)?.description ?? null)
+          : null;
 
       return {
         kind: "vacuum",
         entityId: makeMiotAddress(did, primaryService.iid),
         status: normalizedStatus,
         battery: typeof battery?.val === "number" ? Math.round(battery.val) : null,
-        modeEntityId: null,
-        currentMode: null,
-        availableModes: [],
+        modeEntityId: mode ? makeMiotAddress(did, mode.service.iid) : null,
+        currentMode,
+        availableModes: mode?.prop.valueList?.map((i) => i.description) ?? [],
       };
     }
 
     if (sName === "temperature-humidity-sensor" || sName === "environment") {
-      const temp = readProp(primaryService, "temperature");
-      const hum = readProp(primaryService, "relative-humidity");
-      const batSvc = spec.services.find((s) => miotShortName(s.type) === "battery");
-      const battery = batSvc ? readProp(batSvc, "battery-level") : null;
+      const readingServices = [
+        primaryService,
+        ...spec.services.filter((s) => miotShortName(s.type) === "environment"),
+        ...spec.services.filter((s) => miotShortName(s.type) === "temperature-humidity-sensor"),
+      ];
+      const temp = readFirst(readingServices, "temperature");
+      const hum = readFirst(readingServices, "relative-humidity");
+      const battery = readFirst(
+        spec.services.filter((s) => miotShortName(s.type) === "battery"),
+        "battery-level"
+      );
       return {
         kind: "sensor",
         temperature: typeof temp?.val === "number" ? temp.val : null,
@@ -1285,18 +1364,20 @@ export const MiotSynthesizer = {
       primaryService.properties.some((p) => miotShortName(p.type) === "on")
     ) {
       const on = readProp(primaryService, "on");
-      const pwrSvc = spec.services.find((s) => miotShortName(s.type) === "power-consumption") ?? primaryService;
-      const power = readProp(pwrSvc, "electric-power");
+      const power = readFirst(
+        [...spec.services.filter((s) => miotShortName(s.type) === "power-consumption"), ...spec.services],
+        "electric-power"
+      );
       const lockSvc = spec.services.find((s) => miotShortName(s.type) === "physical-controls-locked");
       const lock = lockSvc ? readProp(lockSvc, "physical-controls-locked") : null;
 
       return {
         kind: "plug",
         switchEntityId: makeMiotAddress(did, primaryService.iid),
-        isOn: Boolean(on?.val),
+        isOn: miotBool(on?.val) ?? false,
         powerWatts: typeof power?.val === "number" ? power.val : null,
-        childLockEntityId: lockSvc ? makeMiotAddress(did, lockSvc.iid) : null,
-        isChildLocked: Boolean(lock?.val),
+        childLockEntityId: lock ? makeMiotAddress(did, lock.service.iid) : null,
+        isChildLocked: miotBool(lock?.val) ?? false,
       };
     }
 
@@ -1319,12 +1400,39 @@ export const MiotCommandMapper = {
       const local = service.properties.find((p) => miotShortName(p.type) === short && p.access.includes("write"));
       if (local) return { service, prop: local };
       if (searchAll) {
-        for (const s of spec.services) {
+        const others = [
+          ...spec.services.filter((s) => miotShortName(s.type) === "fan-control"),
+          ...spec.services.filter((s) => s.iid !== service.iid),
+        ];
+        for (const s of others) {
           const p = s.properties.find((pr) => miotShortName(pr.type) === short && pr.access.includes("write"));
           if (p) return { service: s, prop: p };
         }
       }
       throw new Error(`Unsupported property: ${short}`);
+    };
+
+    const findListProp = (short: string, description: string, searchAll = false) => {
+      const services = [
+        service,
+        ...(searchAll
+          ? [
+              ...spec.services.filter((s) => miotShortName(s.type) === "fan-control"),
+              ...spec.services.filter((s) => s.iid !== service.iid),
+            ]
+          : []),
+      ];
+      for (const s of services) {
+        for (const p of s.properties) {
+          if (miotShortName(p.type) === short && p.access.includes("write")) {
+            const item = p.valueList?.find(
+              (i) => i.description.toLowerCase() === description.toLowerCase()
+            );
+            if (item) return { service: s, prop: p, item };
+          }
+        }
+      }
+      return null;
     };
 
     const coerce = (prop: MiotProperty, val: number): number => {
@@ -1390,16 +1498,13 @@ export const MiotCommandMapper = {
         };
       }
       case "setLightEffect": {
-        const { prop } = findProp("mode");
-        const item = prop.valueList?.find(
-          (i) => i.description.toLowerCase() === command.effect.toLowerCase()
-        );
-        if (!item) throw new Error(`Unsupported effect: ${command.effect}`);
+        const found = findListProp("mode", command.effect);
+        if (!found) throw new Error(`Unsupported effect: ${command.effect}`);
         return {
           kind: "setProps",
           writes: [
             ...powerOnPrefix(),
-            { did: addr.did, siid: service.iid, piid: prop.iid, value: item.value },
+            { did: addr.did, siid: found.service.iid, piid: found.prop.iid, value: found.item.value },
           ],
         };
       }
@@ -1435,37 +1540,19 @@ export const MiotCommandMapper = {
         };
       }
       case "setClimateFanMode": {
-        const found = findProp("fan-level", true);
-        const item = found.prop.valueList?.find(
-          (i) => i.description.toLowerCase() === command.fanMode.toLowerCase()
-        );
-        if (!item) throw new Error(`Unsupported fan mode: ${command.fanMode}`);
+        const found = findListProp("fan-level", command.fanMode, true);
+        if (!found) throw new Error(`Unsupported fan mode: ${command.fanMode}`);
         return {
           kind: "setProps",
-          writes: [{ did: addr.did, siid: found.service.iid, piid: found.prop.iid, value: item.value }],
+          writes: [{ did: addr.did, siid: found.service.iid, piid: found.prop.iid, value: found.item.value }],
         };
       }
       case "setFanPresetMode": {
-        const modeProp = service.properties.find(
-          (p) => miotShortName(p.type) === "mode" && p.access.includes("write")
-        );
-        const modeItem = modeProp?.valueList?.find(
-          (i) => i.description.toLowerCase() === command.presetMode.toLowerCase()
-        );
-        if (modeProp && modeItem) {
-          return {
-            kind: "setProps",
-            writes: [{ did: addr.did, siid: service.iid, piid: modeProp.iid, value: modeItem.value }],
-          };
-        }
-        const { prop: levelProp } = findProp("fan-level");
-        const levelItem = levelProp.valueList?.find(
-          (i) => i.description.toLowerCase() === command.presetMode.toLowerCase()
-        );
-        if (!levelItem) throw new Error(`Unsupported preset: ${command.presetMode}`);
+        const found = findListProp("mode", command.presetMode) ?? findListProp("fan-level", command.presetMode);
+        if (!found) throw new Error(`Unsupported preset: ${command.presetMode}`);
         return {
           kind: "setProps",
-          writes: [{ did: addr.did, siid: service.iid, piid: levelProp.iid, value: levelItem.value }],
+          writes: [{ did: addr.did, siid: found.service.iid, piid: found.prop.iid, value: found.item.value }],
         };
       }
       case "setFanOscillating": {

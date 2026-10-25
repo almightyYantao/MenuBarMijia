@@ -98,9 +98,12 @@ public enum MiotSynthesizer {
 
     static func primary(for spec: MiotDeviceSpec) -> (MiotService, KindBuilder)? {
         let deviceType = spec.shortName
-        if let entry = registry.first(where: { $0.service == deviceType }),
-           let service = spec.services(named: entry.service).first {
-            return (service, entry.build)
+        let preferredServices = deviceType == "outlet" ? ["outlet", "switch"] : [deviceType]
+        for serviceName in preferredServices {
+            if let entry = registry.first(where: { $0.service == serviceName }),
+               let service = spec.services(named: entry.service).first {
+                return (service, entry.build)
+            }
         }
         for entry in registry {
             if let service = spec.services(named: entry.service).first {
