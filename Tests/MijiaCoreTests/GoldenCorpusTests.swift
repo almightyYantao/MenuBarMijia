@@ -214,11 +214,21 @@ struct GoldenCorpusTests {
         }
     }
 
+    private static func locateGoldenFixture() throws -> URL {
+        var dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        for _ in 0..<8 {
+            let candidate = dir.appendingPathComponent("Tests/Fixtures/intent_golden.json")
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+            dir.deleteLastPathComponent()
+        }
+        throw CocoaError(.fileNoSuchFile)
+    }
+
     @Test("Cross-platform golden JSON corpus matches MijiaCore LocalIntentParser, DelayPhrase, and UndoPhrase")
     func goldenCorpusParity() throws {
-        let testFile = URL(fileURLWithPath: #filePath)
-        let repoRoot = testFile.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let fixtureURL = repoRoot.appendingPathComponent("Tests/Fixtures/intent_golden.json")
+        let fixtureURL = try Self.locateGoldenFixture()
         let data = try Data(contentsOf: fixtureURL)
         let corpus = try JSONDecoder().decode(Corpus.self, from: data)
         let devices = corpus.devices.map { $0.toSmartDevice() }
