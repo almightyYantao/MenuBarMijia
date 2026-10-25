@@ -404,9 +404,9 @@ describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", 
       devices: SmartDevice[];
       intentCases: Array<{
         utterance: string;
-        expected: Array<{ targetId: string; kind: string; value: boolean | number | string }>;
+        expected: Array<{ targetId: string; kind: string; value: boolean | number | string }> | null;
       }>;
-      delayCases: Array<{ utterance: string; seconds: number; remainder: string }>;
+      delayCases: Array<{ utterance: string; seconds: number | null; remainder: string | null }>;
       cancelCases: Array<{ utterance: string; isCancel: boolean }>;
       undoCases: Array<{ utterance: string; isUndo: boolean }>;
     };
@@ -429,13 +429,21 @@ describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", 
 
     for (const item of corpus.intentCases) {
       const plan = LocalIntentParser.parse(item.utterance, corpus.devices, []);
-      assert.ok(plan, `Expected plan for: ${item.utterance}`);
-      assert.deepEqual(plan.intents.map(encodeOp as never), item.expected, item.utterance);
+      if (item.expected === null) {
+        assert.equal(plan, null, item.utterance);
+      } else {
+        assert.ok(plan, `Expected plan for: ${item.utterance}`);
+        assert.deepEqual(plan.intents.map(encodeOp as never), item.expected, item.utterance);
+      }
     }
 
     for (const item of corpus.delayCases) {
       const got = DelayPhrase.extract(item.utterance);
-      assert.deepEqual(got, { seconds: item.seconds, remainder: item.remainder }, item.utterance);
+      if (item.seconds === null || item.remainder === null) {
+        assert.equal(got, null, item.utterance);
+      } else {
+        assert.deepEqual(got, { seconds: item.seconds, remainder: item.remainder }, item.utterance);
+      }
     }
 
     for (const item of corpus.cancelCases) {

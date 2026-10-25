@@ -69,7 +69,17 @@ for f in $(search_files 'UNUserNotificationCenter\.current\(\)' Sources/ || true
     fi
 done
 
-echo "🧪 [3/4] 运行 Swift 单元测试 (swift test)..."
+for f in $(search_files '\.glassEffect\(|GlassEffectContainer' Sources/ || true); do
+    if [ "$f" != "Sources/MenuBarMijiaApp/ThemeAndMotion.swift" ]; then
+        echo "❌ $f 直接使用了 macOS 26 专属的 .glassEffect 或 GlassEffectContainer，请改用 ThemeAndMotion.swift 中的 adaptiveGlass / AdaptiveGlassContainer 以保持 macOS 14+ 兼容！"
+        exit 1
+    fi
+done
+
+echo "🧪 [3/4] 运行 Swift 单元测试 (swift test) 与双端黄金语料校验..."
 swift test
+if [ -x "windows/node_modules/.bin/tsx" ]; then
+    (cd windows && ./node_modules/.bin/tsx --test tests/core.test.ts)
+fi
 
 echo "✅ [4/4] 所有门禁检查与单元测试全部通过！"

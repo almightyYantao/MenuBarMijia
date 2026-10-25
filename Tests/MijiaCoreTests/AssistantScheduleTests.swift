@@ -138,19 +138,25 @@ struct AssistantScheduleTests {
         let store = HomeStore(provider: mock, defaultsSuiteName: suiteName)
         var notified: [ScheduledCommand] = []
         store.onMissedScheduledCommand = { notified.append($0) }
-        for _ in 0..<50 where store.devices.isEmpty {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        store.notifyMissedScheduledCommandsIfNeeded()
 
         #expect(store.scheduledCommands.isEmpty)
-        #expect(ScheduledCommand.load(from: defaults).isEmpty)
+        #expect(ScheduledCommand.load(from: defaults).map(\.id) == [expiredEntry.id])
         #expect(store.missedScheduledCommands.map(\.id) == [expiredEntry.id])
         #expect(store.isShowingAssistantBar == true)
         #expect(notified.map(\.id) == [expiredEntry.id])
         #expect(await mock.executedCommands.isEmpty)
 
-        _ = await store.runMissedScheduledCommand(id: expiredEntry.id)
-        #expect(store.missedScheduledCommands.isEmpty)
+        // A second restart before user action must keep the missed timer until confirmed or dismissed.
+        let restartedStore = HomeStore(provider: mock, defaultsSuiteName: suiteName)
+        for _ in 0..<50 where restartedStore.devices.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(restartedStore.missedScheduledCommands.map(\.id) == [expiredEntry.id])
+
+        _ = await restartedStore.runMissedScheduledCommand(id: expiredEntry.id)
+        #expect(restartedStore.missedScheduledCommands.isEmpty)
+        #expect(ScheduledCommand.load(from: defaults).isEmpty)
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
     }
 }

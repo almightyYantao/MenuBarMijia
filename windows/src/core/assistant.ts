@@ -34,6 +34,23 @@ const EN_CANCEL_PHRASES = [
   "stop timer", "stop timers", "stop all timers",
 ];
 
+function buildDelay(val: number | null, unitMultiplier: number, remainder: string): ParsedDelay | null {
+  const rem = remainder.trim();
+  if (val === null || !Number.isFinite(val) || val <= 0 || !rem) return null;
+  const seconds = Math.round(val * unitMultiplier);
+  if (seconds <= 0 || seconds > 86400) return null;
+  return { seconds, remainder: rem };
+}
+
+function englishUnitMultiplier(unitRaw: string): number {
+  const u = unitRaw.toLowerCase();
+  return u.startsWith("h") ? 3600 : u.startsWith("m") ? 60 : 1;
+}
+
+function chineseUnitMultiplier(unitRaw: string): number {
+  return unitRaw.startsWith("小") || unitRaw.startsWith("钟") ? 3600 : unitRaw.startsWith("分") ? 60 : 1;
+}
+
 export const DelayPhrase = {
   isCancel(utterance: string): boolean {
     const lower = utterance.toLowerCase().trim();
@@ -46,50 +63,25 @@ export const DelayPhrase = {
     const trimmed = utterance.trim();
     const enLead = /^(?:in|after)\s+(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\b[,\s]*(.+)$/i.exec(trimmed);
     if (enLead) {
-      const val = Number(enLead[1]);
-      const unit = (enLead[2] ?? "").toLowerCase();
-      const rem = (enLead[3] ?? "").trim();
-      if (val > 0 && rem) {
-        const mult = unit.startsWith("h") ? 3600 : unit.startsWith("m") ? 60 : 1;
-        return { seconds: Math.min(86400, val * mult), remainder: rem };
-      }
+      return buildDelay(Number(enLead[1]), englishUnitMultiplier(enLead[2] ?? ""), enLead[3] ?? "");
     }
     const enTrail = /^(.+?)[,\s]+(?:in|after)\s+(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\s*$/i.exec(trimmed);
     if (enTrail) {
-      const rem = (enTrail[1] ?? "").trim();
-      const val = Number(enTrail[2]);
-      const unit = (enTrail[3] ?? "").toLowerCase();
-      if (val > 0 && rem) {
-        const mult = unit.startsWith("h") ? 3600 : unit.startsWith("m") ? 60 : 1;
-        return { seconds: Math.min(86400, val * mult), remainder: rem };
-      }
+      return buildDelay(Number(enTrail[2]), englishUnitMultiplier(enTrail[3] ?? ""), enTrail[1] ?? "");
     }
     if (/^半小时(?:以)?后(.+)$/.test(trimmed)) {
       const m = /^半小时(?:以)?后(.+)$/.exec(trimmed);
-      const rem = m?.[1]?.trim() ?? "";
-      if (rem) return { seconds: 1800, remainder: rem };
+      return buildDelay(1800, 1, m?.[1] ?? "");
     }
     const regex = /^(?:过|等)?([0-9]+|[一二两三四五六七八九十]+)(秒钟?|分钟?|小时|钟头)(?:以)?后?[，,\s]*(.+)$/;
     const front = regex.exec(trimmed);
     if (front) {
-      const num = parseCnOrArabicNumber(front[1] ?? "");
-      const unit = front[2] ?? "";
-      const rem = (front[3] ?? "").trim();
-      if (num && rem) {
-        const mult = unit.startsWith("小") || unit.startsWith("钟") ? 3600 : unit.startsWith("分") ? 60 : 1;
-        return { seconds: Math.min(86400, num * mult), remainder: rem };
-      }
+      return buildDelay(parseCnOrArabicNumber(front[1] ?? ""), chineseUnitMultiplier(front[2] ?? ""), front[3] ?? "");
     }
     const backRegex = /^(.+?)[，,\s]*(?:过|等)?([0-9]+|[一二两三四五六七八九十]+)(秒钟?|分钟?|小时|钟头)(?:以)?后$/;
     const back = backRegex.exec(trimmed);
     if (back) {
-      const rem = (back[1] ?? "").trim();
-      const num = parseCnOrArabicNumber(back[2] ?? "");
-      const unit = back[3] ?? "";
-      if (num && rem) {
-        const mult = unit.startsWith("小") || unit.startsWith("钟") ? 3600 : unit.startsWith("分") ? 60 : 1;
-        return { seconds: Math.min(86400, num * mult), remainder: rem };
-      }
+      return buildDelay(parseCnOrArabicNumber(back[2] ?? ""), chineseUnitMultiplier(back[3] ?? ""), back[1] ?? "");
     }
     return null;
   },
@@ -360,6 +352,225 @@ export const IntentReply = {
 
 // MARK: - 0ms Local Intent Parser
 
+type IntentCategory = "light" | "climate" | "heater" | "fan" | "plug" | "vacuum" | "tv" | "other";
+
+const CONSUMED_MARKER = "\u001f";
+
+function deviceCategory(dev: SmartDevice): IntentCategory {
+  if (dev.kind.kind === "light") return "light";
+  if (dev.kind.kind === "climate") return dev.name.includes("暖") ? "heater" : "climate";
+  if (dev.kind.kind === "fan") return "fan";
+  if (dev.kind.kind === "plug") return "plug";
+  if (dev.kind.kind === "vacuum") return "vacuum";
+  return "other";
+}
+
+function isAssistantControllable(cat: IntentCategory): boolean {
+  return cat !== "other";
+}
+
+function isRelativeOp(op: IntentOperation): boolean {
+  return op.kind === "brightnessStep" || op.kind === "temperatureStep";
+}
+
+function impliedCategories(ops: readonly IntentOperation[]): Set<IntentCategory> | null {
+  for (const op of ops) {
+    switch (op.kind) {
+      case "brightness":
+      case "brightnessStep":
+      case "colorTemperature":
+      case "lightEffect":
+        return new Set(["light"]);
+      case "hvacMode":
+      case "targetTemperature":
+      case "temperatureStep":
+        return new Set(["climate", "heater"]);
+      case "fanSpeed":
+        return new Set(["fan", "climate"]);
+      case "oscillation":
+        return new Set(["fan"]);
+      case "power":
+      case "activateScene":
+        continue;
+    }
+  }
+  return null;
+}
+
+function dispatchRank(op: IntentOperation): number {
+  switch (op.kind) {
+    case "power": return 0;
+    case "hvacMode": return 1;
+    case "targetTemperature":
+    case "temperatureStep": return 2;
+    case "lightEffect": return 3;
+    case "brightness":
+    case "brightnessStep": return 4;
+    case "colorTemperature": return 5;
+    case "activateScene": return 6;
+    case "fanSpeed": return 7;
+    case "oscillation": return 8;
+  }
+}
+
+function reconcileOps(ops: readonly IntentOperation[]): IntentOperation[] | null {
+  if (ops.length === 0) return null;
+  const byRank = new Map<number, IntentOperation>();
+  for (const op of ops) {
+    const rank = dispatchRank(op);
+    const existing = byRank.get(rank);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(op)) return null;
+    byRank.set(rank, op);
+  }
+  const p = byRank.get(0);
+  if (p?.kind === "power" && !p.isOn && byRank.size > 1) return null;
+  if (p?.kind === "power" && p.isOn && (byRank.has(1) || byRank.has(3) || byRank.has(4) || byRank.has(5))) {
+    byRank.delete(0);
+  }
+  return Array.from(byRank.keys())
+    .sort((a, b) => a - b)
+    .map((k) => byRank.get(k)!);
+}
+
+function buildPlanFromCandidates(
+  candidates: readonly SmartDevice[],
+  mustAcceptIds: ReadonlySet<string>,
+  ops: readonly IntentOperation[],
+  devices: readonly SmartDevice[],
+  scenes: readonly HomeScene[]
+): IntentPlan | null {
+  const intents: DeviceIntent[] = [];
+  for (const dev of candidates) {
+    const normOps = ops
+      .map((o) => IntentValidator.normalize(o, dev))
+      .filter((o): o is IntentOperation => o !== null);
+    if (normOps.length !== ops.length) {
+      if (mustAcceptIds.has(dev.id)) return null;
+      continue;
+    }
+    for (const no of normOps) {
+      intents.push({ targetId: dev.id, operation: no });
+    }
+  }
+  if (intents.length === 0) return null;
+  return {
+    intents,
+    reply: IntentReply.describe(intents, devices, scenes),
+    source: "local",
+    suggestions: [],
+  };
+}
+
+const EN_ROOM_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  "master bedroom": ["主卧", "卧室", "master bedroom", "master"],
+  "second bedroom": ["次卧", "小卧室", "second bedroom", "guest"],
+  "guest room": ["次卧", "小卧室", "guest room"],
+  "living room": ["客厅", "living room", "living"],
+  "dining room": ["餐厅", "dining room", "dining"],
+  "study room": ["书房", "study"],
+  study: ["书房", "study"],
+  bedroom: ["卧室", "主卧", "bedroom"],
+  kitchen: ["厨房", "kitchen"],
+  balcony: ["阳台", "balcony"],
+  bathroom: ["卫生间", "浴室", "bathroom", "bath"],
+  entryway: ["玄关", "entryway", "entry"],
+};
+
+const EN_SCOPE_WORDS = [
+  "whole home", "entire home", "whole house", "everywhere", "everything", "all", "every",
+];
+
+const EN_CATEGORY_WORDS: ReadonlyArray<readonly [string, IntentCategory]> = [
+  ["air conditioner", "climate"], ["air conditioning", "climate"],
+  ["ceiling lights", "light"], ["ceiling light", "light"],
+  ["bedside lamp", "light"], ["desk lamp", "light"], ["table lamp", "light"],
+  ["screen bar", "light"], ["light strip", "light"],
+  ["robot vacuum", "vacuum"], ["smart plug", "plug"], ["space heater", "heater"],
+  ["standing fan", "fan"],
+  ["lights", "light"], ["light", "light"], ["lamps", "light"], ["lamp", "light"],
+  ["climate", "climate"], ["ac", "climate"],
+  ["heater", "heater"],
+  ["fans", "fan"], ["fan", "fan"],
+  ["plugs", "plug"], ["plug", "plug"], ["socket", "plug"], ["outlet", "plug"],
+  ["vacuum", "vacuum"],
+  ["television", "tv"], ["tv", "tv"],
+];
+
+const EN_FILLERS = [
+  "please", "can", "could", "would", "you", "help", "me",
+  "the", "my", "a", "an", "in", "at", "to", "by", "for", "into", "of",
+  "set", "change", "switch", "adjust", "make", "it", "bit", "little",
+  "mode", "room", "temperature", "temp", "brightness", "level", "speed",
+].sort((a, b) => b.length - a.length);
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function consumeEnglishPhrase(phrase: string, state: { rest: string }): boolean {
+  if (!phrase) return false;
+  const escaped = escapeRegex(phrase);
+  const isAscii = /^[\x00-\x7f]+$/.test(phrase);
+  const pattern = isAscii ? `(?<![a-z0-9])${escaped}(?![a-z0-9])` : escaped;
+  const regex = new RegExp(pattern, "g");
+  if (!regex.test(state.rest)) return false;
+  state.rest = state.rest.replace(new RegExp(pattern, "g"), ` ${CONSUMED_MARKER} `);
+  return true;
+}
+
+function extractEnglishNumericOps(state: { rest: string }): IntentOperation[] {
+  const ops: IntentOperation[] = [];
+  const stepRegex = /(?<![a-z])(increase|raise|up|decrease|lower|down)(?:\s+by)?\s+(\d{1,2})\s*(?:degrees?|deg|℃|°c|°)(?![a-z])/g;
+  let stepMatched = false;
+  for (const m of state.rest.matchAll(stepRegex)) {
+    const dir = m[1] ?? "";
+    const amount = Number(m[2]);
+    if (Number.isFinite(amount)) {
+      const sign = dir === "increase" || dir === "raise" || dir === "up" ? 1 : -1;
+      ops.push({ kind: "temperatureStep", delta: sign * amount });
+      stepMatched = true;
+    }
+  }
+  if (stepMatched) {
+    state.rest = state.rest.replace(stepRegex, ` ${CONSUMED_MARKER} `);
+  }
+
+  const trailingStepRegex = /(?<![a-z0-9])(\d{1,2})\s*(?:degrees?|deg|℃|°c|°)\s+(warmer|hotter|higher|cooler|colder|lower)(?![a-z])/g;
+  let trailingStepMatched = false;
+  for (const m of state.rest.matchAll(trailingStepRegex)) {
+    const amount = Number(m[1]);
+    const dir = m[2] ?? "";
+    if (Number.isFinite(amount)) {
+      const sign = dir === "warmer" || dir === "hotter" || dir === "higher" ? 1 : -1;
+      ops.push({ kind: "temperatureStep", delta: sign * amount });
+      trailingStepMatched = true;
+    }
+  }
+  if (trailingStepMatched) {
+    state.rest = state.rest.replace(trailingStepRegex, ` ${CONSUMED_MARKER} `);
+  }
+
+  const numericPatterns: ReadonlyArray<readonly [RegExp, (val: number) => IntentOperation]> = [
+    [/(?<![a-z0-9])(\d{4})\s*k(?![a-z0-9])/g, (v) => ({ kind: "colorTemperature", kelvin: Math.round(v) })],
+    [/(?<![a-z0-9])(\d{1,3})\s*(?:%|percent)(?![a-z0-9])/g, (v) => ({ kind: "brightness", percent: Math.round(v) })],
+    [/(?<![a-z0-9])(\d{1,2}(?:\.\d)?)\s*(?:degrees?\s*celsius|degrees?|deg|℃|°c|°)(?![a-z0-9])/g, (v) => ({ kind: "targetTemperature", celsius: v })],
+  ];
+  for (const [regex, make] of numericPatterns) {
+    let matched = false;
+    for (const m of state.rest.matchAll(regex)) {
+      const val = Number(m[1]);
+      if (Number.isFinite(val)) {
+        ops.push(make(val));
+        matched = true;
+      }
+    }
+    if (matched) {
+      state.rest = state.rest.replace(regex, ` ${CONSUMED_MARKER} `);
+    }
+  }
+  return ops;
+}
+
 export const LocalIntentParser = {
   parse(
     utterance: string,
@@ -368,6 +579,10 @@ export const LocalIntentParser = {
   ): IntentPlan | null {
     const clean = utterance.replace(/[，。！？、\s]/g, "");
     if (!clean) return null;
+
+    if (!/[\u4e00-\u9fff]/.test(utterance) && /[a-zA-Z]/.test(utterance)) {
+      return this.parseEnglish(utterance, devices, scenes);
+    }
 
     for (const scene of scenes) {
       if (clean === scene.name || clean === `执行${scene.name}` || clean === `打开${scene.name}` || clean === `开启${scene.name}`) {
@@ -386,6 +601,17 @@ export const LocalIntentParser = {
       ops.push({ kind: "lightEffect", effect: "Night" });
     } else if (clean.includes("日光模式") || clean.includes("日光")) {
       ops.push({ kind: "lightEffect", effect: "Day" });
+    }
+
+    const ctMatch = /(\d{4})[kK]/.exec(clean);
+    if (ctMatch?.[1]) {
+      ops.push({ kind: "colorTemperature", kelvin: Number(ctMatch[1]) });
+    } else if (clean.includes("暖光") || clean.includes("暖色") || clean.includes("黄光")) {
+      ops.push({ kind: "colorTemperature", kelvin: 2700 });
+    } else if (clean.includes("自然光")) {
+      ops.push({ kind: "colorTemperature", kelvin: 4000 });
+    } else if (clean.includes("白光") || clean.includes("冷光")) {
+      ops.push({ kind: "colorTemperature", kelvin: 6500 });
     }
 
     if (clean.includes("再暗一点") || clean.includes("暗一点") || clean.includes("调暗一点")) {
@@ -451,9 +677,7 @@ export const LocalIntentParser = {
 
     const explicitDevs = devices.filter((d) => clean.includes(d.name));
     const hasAllScope = clean.includes("所有") || clean.includes("全部") || clean.includes("全屋");
-    const onlyActive = ops.every(
-      (o) => o.kind === "brightnessStep" || o.kind === "temperatureStep"
-    );
+    const onlyActive = ops.every(isRelativeOp);
 
     let candidates: SmartDevice[] = [];
     if (explicitDevs.length > 0) {
@@ -463,65 +687,39 @@ export const LocalIntentParser = {
       const matchedRooms = roomNames.filter(
         (r) => clean.includes(r) || (r === "主卧" && clean.includes("卧室"))
       );
-      const wantsLight =
-        clean.includes("灯") ||
-        ops.some(
-          (o) =>
-            o.kind === "brightness" ||
-            o.kind === "brightnessStep" ||
-            o.kind === "colorTemperature" ||
-            o.kind === "lightEffect"
-        );
-      const wantsAC =
-        clean.includes("空调") ||
-        ops.some(
-          (o) =>
-            o.kind === "hvacMode" ||
-            o.kind === "targetTemperature" ||
-            o.kind === "temperatureStep"
-        );
-      const wantsFan =
-        clean.includes("风扇") || ops.some((o) => o.kind === "oscillation");
+      const implied = impliedCategories(ops);
+      const wanted = new Set<IntentCategory>();
+      if (clean.includes("灯")) wanted.add("light");
+      if (clean.includes("空调")) wanted.add("climate");
+      if (clean.includes("风扇")) wanted.add("fan");
+      const effectiveWanted = wanted.size > 0 ? wanted : implied;
 
       candidates = devices.filter((d) => {
-        if (!d.isOnline) return false;
+        const cat = deviceCategory(d);
+        if (!d.isOnline || !isAssistantControllable(cat)) return false;
         if (onlyActive && !isDeviceActiveOn(d)) return false;
         if (matchedRooms.length > 0 && !matchedRooms.includes(d.roomName)) return false;
-        if (wantsLight) return d.kind.kind === "light";
-        if (wantsAC) return d.kind.kind === "climate" && !d.name.includes("暖");
-        if (wantsFan) return d.kind.kind === "fan";
-        return false;
+        if (effectiveWanted && !effectiveWanted.has(cat)) return false;
+        return effectiveWanted !== null || hasAllScope || matchedRooms.length > 0;
       });
 
       if (!onlyActive && !hasAllScope && matchedRooms.length === 0 && candidates.length !== 1) {
+        if (/[a-zA-Z]/.test(utterance)) return this.parseEnglish(utterance, devices, scenes);
         return null;
       }
     }
 
-    const intents: DeviceIntent[] = [];
-    for (const dev of candidates) {
-      const normOps = ops
-        .map((o) => IntentValidator.normalize(o, dev))
-        .filter((o): o is IntentOperation => o !== null);
-      if (normOps.length !== ops.length) {
-        if (explicitDevs.some((e) => e.id === dev.id)) return null;
-        continue;
-      }
-      for (const no of normOps) {
-        intents.push({ targetId: dev.id, operation: no });
-      }
+    const plan = buildPlanFromCandidates(
+      candidates,
+      new Set(explicitDevs.map((d) => d.id)),
+      ops,
+      devices,
+      scenes
+    );
+    if (!plan && /[a-zA-Z]/.test(utterance)) {
+      return this.parseEnglish(utterance, devices, scenes);
     }
-
-    if (intents.length === 0) {
-      if (/[a-zA-Z]/.test(utterance)) return this.parseEnglish(utterance, devices, scenes);
-      return null;
-    }
-    return {
-      intents,
-      reply: IntentReply.describe(intents, devices, scenes),
-      source: "local",
-      suggestions: [],
-    };
+    return plan;
   },
 
   parseEnglish(
@@ -529,145 +727,203 @@ export const LocalIntentParser = {
     devices: readonly SmartDevice[],
     scenes: readonly HomeScene[]
   ): IntentPlan | null {
-    const lower = utterance.toLowerCase().trim();
-    const ops: IntentOperation[] = [];
+    const lower = utterance
+      .toLowerCase()
+      .replace(/[,!?;:'"“”‘’。，！？、]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!lower) return null;
 
-    if (/\b(?:moonlight|night\s*light|night\s*mode)\b/.test(lower)) {
-      ops.push({ kind: "lightEffect", effect: "Night" });
-    } else if (/\b(?:daylight|day\s*mode)\b/.test(lower)) {
-      ops.push({ kind: "lightEffect", effect: "Day" });
-    }
-
-    if (/\b(?:dimmer|darker|a\s+bit\s+darker|slightly\s+darker)\b/.test(lower)) {
-      ops.push({ kind: "brightnessStep", delta: -20 });
-    } else if (/\b(?:brighter|a\s+bit\s+brighter|slightly\s+brighter)\b/.test(lower)) {
-      ops.push({ kind: "brightnessStep", delta: 20 });
-    } else {
-      const pctMatch = /\b(\d{1,3})\s*%/.exec(lower);
-      if (pctMatch?.[1]) {
-        ops.push({ kind: "brightness", percent: Number(pctMatch[1]) });
+    for (const scene of scenes) {
+      if (!scene.name) continue;
+      const sName = scene.name.toLowerCase();
+      if (
+        lower === `activate ${sName}` ||
+        lower === `run ${sName}` ||
+        lower === `start ${sName}` ||
+        lower === `${sName} scene`
+      ) {
+        const intents: DeviceIntent[] = [{ targetId: scene.id, operation: { kind: "activateScene" } }];
+        return {
+          intents,
+          reply: IntentReply.describe(intents, devices, scenes),
+          source: "local",
+          suggestions: [],
+        };
       }
     }
 
-    const tempMatch = /\b(\d{2}(?:\.\d)?)\s*(?:degrees?|°c|℃|c\b)/.exec(lower);
-    if (tempMatch?.[1]) {
-      ops.push({ kind: "targetTemperature", celsius: Number(tempMatch[1]) });
-    } else if (/\b(?:warmer|hotter)\b/.test(lower)) {
-      ops.push({ kind: "temperatureStep", delta: 1 });
-    } else if (/\b(?:cooler|colder)\b/.test(lower)) {
-      ops.push({ kind: "temperatureStep", delta: -1 });
-    }
+    const state = { rest: ` ${lower} ` };
+    const rawOps: IntentOperation[] = extractEnglishNumericOps(state);
 
-    if (/\b(?:stop|off|disable)\s+(?:swing|oscillat\w*)\b/.test(lower)) {
-      ops.push({ kind: "oscillation", enabled: false });
-    } else if (/\b(?:start\s+)?(?:swing|oscillat\w*)\b/.test(lower)) {
-      ops.push({ kind: "oscillation", enabled: true });
-    }
-
-    if (/\b(?:high\s+speed|speed\s+high|max\s+speed|high\s+fan)\b/.test(lower)) {
-      ops.push({ kind: "fanSpeed", speed: "high" });
-    } else if (/\b(?:medium\s+speed|speed\s+medium|mid\s+speed)\b/.test(lower)) {
-      ops.push({ kind: "fanSpeed", speed: "medium" });
-    } else if (/\b(?:low\s+speed|speed\s+low|min\s+speed|low\s+fan)\b/.test(lower)) {
-      ops.push({ kind: "fanSpeed", speed: "low" });
-    }
-
-    if (ops.length === 0) {
-      if (/\b(?:turn\s+on|switch\s+on|power\s+on|open)\b/.test(lower)) {
-        ops.push({ kind: "power", isOn: true });
-      } else if (/\b(?:turn\s+off|switch\s+off|power\s+off|shut\s+off|close)\b/.test(lower)) {
-        ops.push({ kind: "power", isOn: false });
-      } else {
-        return null;
+    const explicitIds: string[] = [];
+    const sortedDevices = [...devices].sort((a, b) => b.name.length - a.name.length);
+    for (const dev of sortedDevices) {
+      if (!dev.name) continue;
+      if (consumeEnglishPhrase(dev.name.toLowerCase(), state)) {
+        if (!explicitIds.includes(dev.id)) explicitIds.push(dev.id);
       }
     }
 
-    const roomEnToCn: Readonly<Record<string, string[]>> = {
-      study: ["书房"],
-      "living room": ["客厅"],
-      bedroom: ["主卧", "卧室"],
-      "master bedroom": ["主卧", "卧室"],
-      kitchen: ["厨房"],
-    };
-    const matchedRooms: string[] = [];
-    for (const [enRoom, cnRooms] of Object.entries(roomEnToCn)) {
-      if (lower.includes(enRoom)) {
-        for (const r of cnRooms) {
-          if (!matchedRooms.includes(r)) matchedRooms.push(r);
+    const roomKeySet = new Set<string>(Object.keys(EN_ROOM_ALIASES));
+    for (const d of devices) {
+      if (d.roomName) roomKeySet.add(d.roomName.toLowerCase());
+    }
+    const allRoomKeys = Array.from(roomKeySet).sort((a, b) => b.length - a.length);
+    const matchedRoomKeys: string[] = [];
+    for (const roomKey of allRoomKeys) {
+      if (consumeEnglishPhrase(roomKey, state)) {
+        matchedRoomKeys.push(roomKey);
+      }
+    }
+
+    let hasScope = false;
+    for (const scopeWord of EN_SCOPE_WORDS) {
+      if (consumeEnglishPhrase(scopeWord, state)) {
+        hasScope = true;
+      }
+    }
+
+    const oscPhrases: ReadonlyArray<readonly [string, boolean]> = [
+      ["stop oscillating", false], ["stop oscillation", false], ["stop swing", false],
+      ["oscillation off", false], ["swing off", false],
+      ["start oscillating", true], ["oscillation on", true], ["swing on", true],
+      ["oscillate", true], ["oscillation", true], ["swing", true],
+    ];
+    for (const [p, val] of oscPhrases) {
+      if (consumeEnglishPhrase(p, state)) rawOps.push({ kind: "oscillation", enabled: val });
+    }
+
+    const fanPhrases: ReadonlyArray<readonly [string, string]> = [
+      ["fan speed high", "high"], ["high fan speed", "high"], ["high speed", "high"], ["max speed", "high"],
+      ["fan speed medium", "medium"], ["medium fan speed", "medium"], ["medium speed", "medium"],
+      ["fan speed low", "low"], ["low fan speed", "low"], ["low speed", "low"], ["min speed", "low"],
+      ["fan speed auto", "auto"], ["auto fan speed", "auto"], ["auto speed", "auto"],
+    ];
+    for (const [p, val] of fanPhrases) {
+      if (consumeEnglishPhrase(p, state)) rawOps.push({ kind: "fanSpeed", speed: val });
+    }
+
+    const briStepPhrases: ReadonlyArray<readonly [string, number]> = [
+      ["a bit darker", -20], ["a little darker", -20], ["a bit dimmer", -20], ["a little dimmer", -20],
+      ["dimmer", -20], ["darker", -20],
+      ["a bit brighter", 20], ["a little brighter", 20], ["brighter", 20],
+    ];
+    for (const [p, val] of briStepPhrases) {
+      if (consumeEnglishPhrase(p, state)) rawOps.push({ kind: "brightnessStep", delta: val });
+    }
+
+    const tempStepPhrases: ReadonlyArray<readonly [string, number]> = [
+      ["a bit warmer", 1], ["a little warmer", 1], ["warmer", 1], ["hotter", 1],
+      ["a bit cooler", -1], ["a little cooler", -1], ["cooler", -1], ["colder", -1],
+    ];
+    for (const [p, val] of tempStepPhrases) {
+      if (consumeEnglishPhrase(p, state)) rawOps.push({ kind: "temperatureStep", delta: val });
+    }
+
+    const effectPhrases: ReadonlyArray<readonly [string, string]> = [
+      ["moonlight mode", "Night"], ["moonlight", "Night"],
+      ["night light mode", "Night"], ["night light", "Night"], ["night mode", "Night"],
+      ["daylight mode", "Day"], ["daylight", "Day"], ["day mode", "Day"],
+    ];
+    for (const [p, val] of effectPhrases) {
+      if (consumeEnglishPhrase(p, state)) rawOps.push({ kind: "lightEffect", effect: val });
+    }
+
+    const briPhrases: ReadonlyArray<readonly [string, number]> = [
+      ["minimum brightness", 10], ["dimmest", 10], ["dim", 20],
+      ["maximum brightness", 100], ["max brightness", 100], ["full brightness", 100], ["brightest", 100],
+    ];
+    for (const [p, val] of briPhrases) {
+      if (consumeEnglishPhrase(p, state)) rawOps.push({ kind: "brightness", percent: val });
+    }
+
+    const ctPhrases: ReadonlyArray<readonly [string, number]> = [
+      ["warm light", 2700], ["warm white", 2700], ["yellow light", 2700],
+      ["natural light", 4000], ["neutral white", 4000],
+      ["white light", 6500], ["cool white", 6500], ["cold light", 6500],
+    ];
+    for (const [p, val] of ctPhrases) {
+      if (consumeEnglishPhrase(p, state)) rawOps.push({ kind: "colorTemperature", kelvin: val });
+    }
+
+    const hvacPhrases: ReadonlyArray<readonly [string, string]> = [
+      ["cooling mode", "cool"], ["cool mode", "cool"], ["cooling", "cool"], ["cool", "cool"],
+      ["heating mode", "heat"], ["heat mode", "heat"], ["heating", "heat"], ["heat", "heat"],
+      ["dry mode", "dry"], ["dehumidify", "dry"],
+      ["fan only mode", "fan_only"], ["fan only", "fan_only"], ["fan mode", "fan_only"],
+      ["auto mode", "auto"],
+    ];
+    for (const [p, val] of hvacPhrases) {
+      if (consumeEnglishPhrase(p, state)) rawOps.push({ kind: "hvacMode", mode: val });
+    }
+
+    const powerPhrases: ReadonlyArray<readonly [string, boolean]> = [
+      ["turn on", true], ["switch on", true], ["power on", true], ["enable", true], ["open", true],
+      ["turn off", false], ["switch off", false], ["power off", false], ["shut off", false], ["disable", false], ["close", false],
+      ["off", false], ["on", true],
+    ];
+    for (const [p, val] of powerPhrases) {
+      if (consumeEnglishPhrase(p, state)) rawOps.push({ kind: "power", isOn: val });
+    }
+
+    const categories = new Set<IntentCategory>();
+    for (const [phrase, cat] of EN_CATEGORY_WORDS) {
+      if (consumeEnglishPhrase(phrase, state)) {
+        categories.add(cat);
+      }
+    }
+
+    for (const filler of EN_FILLERS) {
+      consumeEnglishPhrase(filler, state);
+    }
+
+    if (state.rest.replaceAll(CONSUMED_MARKER, "").trim().length > 0) {
+      return null;
+    }
+
+    const ops = reconcileOps(rawOps);
+    if (!ops) return null;
+
+    const roomDeviceIds = new Set<string>();
+    for (const key of matchedRoomKeys) {
+      const aliases = EN_ROOM_ALIASES[key] ?? [key];
+      for (const dev of devices) {
+        const rLower = dev.roomName.toLowerCase();
+        if (aliases.some((a) => rLower === a.toLowerCase() || rLower.includes(a.toLowerCase()))) {
+          roomDeviceIds.add(dev.id);
         }
       }
     }
 
-    const hasAll = /\b(?:all|every|whole\s+home)\b/.test(lower);
-    const onlyActive = ops.every(
-      (o) => o.kind === "brightnessStep" || o.kind === "temperatureStep"
-    );
-    const wantsLight =
-      /\b(?:lights?|lamps?|ceiling)\b/.test(lower) ||
-      ops.some(
-        (o) =>
-          o.kind === "brightness" ||
-          o.kind === "brightnessStep" ||
-          o.kind === "colorTemperature" ||
-          o.kind === "lightEffect"
-      );
-    const wantsAC =
-      /\b(?:ac|air\s*conditioner|climate)\b/.test(lower) ||
-      ops.some(
-        (o) =>
-          o.kind === "hvacMode" ||
-          o.kind === "targetTemperature" ||
-          o.kind === "temperatureStep"
-      );
-    const wantsFan =
-      /\bfans?\b/.test(lower) ||
-      ops.some((o) => o.kind === "oscillation" || o.kind === "fanSpeed");
+    const isTurningOff = ops.length === 1 && ops[0]?.kind === "power" && !ops[0].isOn;
+    const mustAcceptIds = new Set<string>(explicitIds);
+    let candidates: SmartDevice[] = [];
 
-    let candidates = devices.filter((d) => {
-      if (!d.isOnline) return false;
-      if (onlyActive && !isDeviceActiveOn(d)) return false;
-      if (matchedRooms.length > 0 && !matchedRooms.includes(d.roomName)) return false;
-      if (wantsLight) return d.kind.kind === "light";
-      if (wantsAC) return d.kind.kind === "climate" && !d.name.includes("暖");
-      if (wantsFan) return d.kind.kind === "fan";
-      return false;
-    });
+    if (explicitIds.length > 0) {
+      const devById = new Map(devices.map((d) => [d.id, d]));
+      candidates = explicitIds.map((id) => devById.get(id)).filter((d): d is SmartDevice => d !== undefined);
+    } else {
+      const implied = impliedCategories(ops);
+      const wanted = categories.size > 0 ? categories : implied;
+      if (wanted === null && !isTurningOff) return null;
+      if (!hasScope && matchedRoomKeys.length === 0 && wanted === null) return null;
 
-    if (
-      wantsLight &&
-      !onlyActive &&
-      !hasAll &&
-      /\blight\b/.test(lower) &&
-      candidates.length > 1 &&
-      !ops.some((o) => o.kind === "lightEffect")
-    ) {
-      const ceiling = candidates.filter((d) => d.name.includes("吸顶"));
-      if (ceiling.length === 1 && !/\bdesk\b/.test(lower)) {
-        candidates = ceiling;
+      const onlyActive = ops.every(isRelativeOp);
+      candidates = devices.filter((dev) => {
+        const cat = deviceCategory(dev);
+        if (!dev.isOnline || !isAssistantControllable(cat)) return false;
+        if (onlyActive && !isDeviceActiveOn(dev)) return false;
+        if (matchedRoomKeys.length > 0 && !roomDeviceIds.has(dev.id)) return false;
+        if (wanted && !wanted.has(cat)) return false;
+        return true;
+      });
+      if (!onlyActive && !hasScope && matchedRoomKeys.length === 0 && candidates.length !== 1) {
+        return null;
       }
     }
 
-    if (!onlyActive && !hasAll && matchedRooms.length === 0 && candidates.length !== 1) {
-      return null;
-    }
-
-    const intents: DeviceIntent[] = [];
-    for (const dev of candidates) {
-      const normOps = ops
-        .map((o) => IntentValidator.normalize(o, dev))
-        .filter((o): o is IntentOperation => o !== null);
-      if (normOps.length !== ops.length) continue;
-      for (const no of normOps) {
-        intents.push({ targetId: dev.id, operation: no });
-      }
-    }
-    if (intents.length === 0) return null;
-    return {
-      intents,
-      reply: IntentReply.describe(intents, devices, scenes),
-      source: "local",
-      suggestions: [],
-    };
+    return buildPlanFromCandidates(candidates, mustAcceptIds, ops, devices, scenes);
   },
 };
 

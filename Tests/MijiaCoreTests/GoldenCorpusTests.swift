@@ -21,88 +21,126 @@ struct GoldenCorpusTests {
         let kind: CorpusKind
 
         func toSmartDevice() -> SmartDevice {
-            let deviceKind: DeviceKind
-            switch kind.kind {
-            case "light":
-                deviceKind = .light(
-                    LightSpec(
-                        entityId: kind.entityId ?? "",
-                        isOn: kind.isOn ?? false,
-                        brightnessPercent: kind.brightnessPercent,
-                        colorTempKelvin: kind.colorTempKelvin,
-                        minKelvin: kind.minKelvin ?? 2700,
-                        maxKelvin: kind.maxKelvin ?? 6500,
-                        currentEffect: kind.currentEffect,
-                        availableEffects: kind.availableEffects ?? []
-                    )
-                )
-            case "climate":
-                deviceKind = .climate(
-                    ClimateSpec(
-                        entityId: kind.entityId ?? "",
-                        isOn: kind.isOn ?? false,
-                        hvacMode: kind.hvacMode ?? "off",
-                        availableModes: kind.availableModes ?? [],
-                        targetTemperature: kind.targetTemperature ?? 26,
-                        currentTemperature: kind.currentTemperature,
-                        minTemp: kind.minTemp ?? 16,
-                        maxTemp: kind.maxTemp ?? 31,
-                        step: kind.step ?? 0.5,
-                        fanMode: kind.fanMode,
-                        availableFanModes: kind.availableFanModes ?? [],
-                        swingMode: kind.swingMode,
-                        availableSwingModes: kind.availableSwingModes ?? []
-                    )
-                )
-            default:
-                deviceKind = .fan(
-                    FanSpec(
-                        entityId: kind.entityId ?? "",
-                        isOn: kind.isOn ?? false,
-                        percentage: kind.percentage,
-                        presetMode: kind.presetMode,
-                        availablePresetModes: kind.availablePresetModes ?? [],
-                        isOscillating: kind.isOscillating
-                    )
-                )
-            }
-            return SmartDevice(
+            SmartDevice(
                 id: id,
                 name: name,
                 roomId: roomId,
                 roomName: roomName,
                 model: model,
                 isOnline: isOnline,
-                kind: deviceKind
+                kind: kind.toDeviceKind()
             )
         }
     }
 
-    private struct CorpusKind: Decodable {
-        let kind: String
-        let entityId: String?
-        let isOn: Bool?
-        let brightnessPercent: Int?
-        let colorTempKelvin: Int?
-        let minKelvin: Int?
-        let maxKelvin: Int?
-        let currentEffect: String?
-        let availableEffects: [String]?
-        let hvacMode: String?
-        let availableModes: [String]?
-        let targetTemperature: Double?
-        let currentTemperature: Double?
-        let minTemp: Double?
-        let maxTemp: Double?
-        let step: Double?
-        let fanMode: String?
-        let availableFanModes: [String]?
-        let swingMode: String?
-        let availableSwingModes: [String]?
-        let percentage: Int?
-        let presetMode: String?
-        let availablePresetModes: [String]?
-        let isOscillating: Bool?
+    private enum CorpusKind: Decodable {
+        case light(LightPayload)
+        case climate(ClimatePayload)
+        case fan(FanPayload)
+
+        private enum CodingKeys: String, CodingKey { case kind }
+
+        struct LightPayload: Decodable {
+            let entityId: String
+            let isOn: Bool
+            let brightnessPercent: Int?
+            let colorTempKelvin: Int?
+            let minKelvin: Int
+            let maxKelvin: Int
+            let currentEffect: String?
+            let availableEffects: [String]
+        }
+
+        struct ClimatePayload: Decodable {
+            let entityId: String
+            let isOn: Bool
+            let hvacMode: String
+            let availableModes: [String]
+            let targetTemperature: Double
+            let currentTemperature: Double?
+            let minTemp: Double
+            let maxTemp: Double
+            let step: Double
+            let fanMode: String?
+            let availableFanModes: [String]
+            let swingMode: String?
+            let availableSwingModes: [String]
+        }
+
+        struct FanPayload: Decodable {
+            let entityId: String
+            let isOn: Bool
+            let percentage: Int?
+            let presetMode: String?
+            let availablePresetModes: [String]
+            let isOscillating: Bool?
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let kind = try container.decode(String.self, forKey: .kind)
+            switch kind {
+            case "light":
+                self = .light(try LightPayload(from: decoder))
+            case "climate":
+                self = .climate(try ClimatePayload(from: decoder))
+            case "fan":
+                self = .fan(try FanPayload(from: decoder))
+            default:
+                throw DecodingError.dataCorruptedError(
+                    forKey: .kind,
+                    in: container,
+                    debugDescription: "Unknown device kind in golden corpus: \(kind)"
+                )
+            }
+        }
+
+        func toDeviceKind() -> DeviceKind {
+            switch self {
+            case .light(let p):
+                return .light(
+                    LightSpec(
+                        entityId: p.entityId,
+                        isOn: p.isOn,
+                        brightnessPercent: p.brightnessPercent,
+                        colorTempKelvin: p.colorTempKelvin,
+                        minKelvin: p.minKelvin,
+                        maxKelvin: p.maxKelvin,
+                        currentEffect: p.currentEffect,
+                        availableEffects: p.availableEffects
+                    )
+                )
+            case .climate(let p):
+                return .climate(
+                    ClimateSpec(
+                        entityId: p.entityId,
+                        isOn: p.isOn,
+                        hvacMode: p.hvacMode,
+                        availableModes: p.availableModes,
+                        targetTemperature: p.targetTemperature,
+                        currentTemperature: p.currentTemperature,
+                        minTemp: p.minTemp,
+                        maxTemp: p.maxTemp,
+                        step: p.step,
+                        fanMode: p.fanMode,
+                        availableFanModes: p.availableFanModes,
+                        swingMode: p.swingMode,
+                        availableSwingModes: p.availableSwingModes
+                    )
+                )
+            case .fan(let p):
+                return .fan(
+                    FanSpec(
+                        entityId: p.entityId,
+                        isOn: p.isOn,
+                        percentage: p.percentage,
+                        presetMode: p.presetMode,
+                        availablePresetModes: p.availablePresetModes,
+                        isOscillating: p.isOscillating
+                    )
+                )
+            }
+        }
     }
 
     private enum ExpectedValue: Decodable, Equatable {
@@ -130,13 +168,13 @@ struct GoldenCorpusTests {
 
     private struct IntentCase: Decodable {
         let utterance: String
-        let expected: [ExpectedIntent]
+        let expected: [ExpectedIntent]?
     }
 
     private struct DelayCase: Decodable {
         let utterance: String
-        let seconds: TimeInterval
-        let remainder: String
+        let seconds: TimeInterval?
+        let remainder: String?
     }
 
     private struct CancelCase: Decodable {
@@ -186,15 +224,23 @@ struct GoldenCorpusTests {
         let devices = corpus.devices.map { $0.toSmartDevice() }
 
         for item in corpus.intentCases {
-            let plan = try #require(LocalIntentParser.parse(item.utterance, devices: devices, scenes: []), "\(item.utterance)")
-            let actual = plan.intents.map(Self.encodeIntent)
-            #expect(actual == item.expected, "\(item.utterance)")
+            if let expected = item.expected {
+                let plan = try #require(LocalIntentParser.parse(item.utterance, devices: devices, scenes: []), "\(item.utterance)")
+                let actual = plan.intents.map(Self.encodeIntent)
+                #expect(actual == expected, "\(item.utterance)")
+            } else {
+                #expect(LocalIntentParser.parse(item.utterance, devices: devices, scenes: []) == nil, "\(item.utterance)")
+            }
         }
 
         for item in corpus.delayCases {
-            let got = try #require(DelayPhrase.extract(item.utterance), "\(item.utterance)")
-            #expect(got.delay == item.seconds, "\(item.utterance)")
-            #expect(got.remainder == item.remainder, "\(item.utterance)")
+            if let seconds = item.seconds, let remainder = item.remainder {
+                let got = try #require(DelayPhrase.extract(item.utterance), "\(item.utterance)")
+                #expect(got.delay == seconds, "\(item.utterance)")
+                #expect(got.remainder == remainder, "\(item.utterance)")
+            } else {
+                #expect(DelayPhrase.extract(item.utterance) == nil, "\(item.utterance)")
+            }
         }
 
         for item in corpus.cancelCases {

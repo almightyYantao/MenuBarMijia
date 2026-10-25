@@ -590,6 +590,26 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         store?.onMissedScheduledCommand = { [weak self] entry in
             self?.deliverMissedTimerNotification(for: entry)
         }
+        store?.notifyMissedScheduledCommandsIfNeeded()
+    }
+
+    private struct MissedTimerNotificationIdentifier {
+        private static let prefix = "missed-timer:"
+        let commandId: UUID
+
+        var rawValue: String { "\(Self.prefix)\(commandId.uuidString)" }
+
+        init(commandId: UUID) {
+            self.commandId = commandId
+        }
+
+        init?(rawValue: String) {
+            guard rawValue.hasPrefix(Self.prefix),
+                  let id = UUID(uuidString: String(rawValue.dropFirst(Self.prefix.count))) else {
+                return nil
+            }
+            self.commandId = id
+        }
     }
 
     private func startSafetyTimer() {
@@ -640,7 +660,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         content.categoryIdentifier = Self.missedTimerCategoryId
 
         let request = UNNotificationRequest(
-            identifier: "missed-timer:\(entry.id.uuidString)",
+            identifier: MissedTimerNotificationIdentifier(commandId: entry.id).rawValue,
             content: content,
             trigger: nil
         )
@@ -657,10 +677,9 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
            let alert = pendingAlertsById[alertId] {
             store?.executeSafetyAlertAction(alert)
         } else if response.actionIdentifier == Self.runMissedTimerActionId,
-                  alertId.hasPrefix("missed-timer:"),
-                  let uuid = UUID(uuidString: String(alertId.dropFirst("missed-timer:".count))) {
+                  let missedId = MissedTimerNotificationIdentifier(rawValue: alertId) {
             Task { @MainActor [weak self] in
-                _ = await self?.store?.runMissedScheduledCommand(id: uuid)
+                _ = await self?.store?.runMissedScheduledCommand(id: missedId.commandId)
             }
         }
         completionHandler()

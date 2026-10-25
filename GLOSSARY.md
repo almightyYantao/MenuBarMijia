@@ -52,6 +52,10 @@ _Avoid_: Local scene（本地场景）、Custom script（自定义脚本）
 自然语言指令经本地规则解析（`LocalIntentParser`）或远端大模型回退（`ModelIntentResolver`）后生成的结构化设备操作列表（`[DeviceIntent]`）与简短反馈文案，经能力校验后由 `HomeStore` 并发下发并支持多设备一键撤销。
 _Avoid_: Prompt output（模型输出）、Action script（动作脚本）
 
+**ScheduledCommand（定时指令）**：
+带有绝对触发时刻 `fireDate` 与已解析 `IntentPlan` 的延时控制任务，持久化在本地 `UserDefaults`（`assistant_scheduled_commands_v1`）。应用重启时未到期项按剩余时间继续倒计时；退出期间已过期项转入 `missedScheduledCommands` 待确认队列并保留在磁盘，必须由用户点击「立即执行」或「忽略」后才执行或移除，绝不在后台静默触发过期硬件动作。
+_Avoid_: Background job（后台任务）、Cron（计划任务）
+
 **ActiveDevice（活跃开启设备）**：
 当前在线且处于工作状态的受控设备（开着的灯、正在制冷/制热的空调或电暖器、运行中的风扇、通电开启的插座、清扫中的扫地机、播放中的音箱），计入顶部「全关」统计；常年通电的基础设施设备（如冰箱、待机电视、纯传感器）不计入。
 _Avoid_: Online device（在线设备）

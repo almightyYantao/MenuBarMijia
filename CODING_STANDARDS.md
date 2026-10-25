@@ -34,3 +34,21 @@ In `ControlCenterPanel` when `isCompactGridMode` is active:
 
 - Keep `MijiaCore` free of `AppKit` / `SwiftUI` imports so all synthesis, optimistic locking, and store state remain fast-testable via `MockHomeProvider`.
 - Align type and property names with [`GLOSSARY.md`](GLOSSARY.md) and [`docs/adr/0001-ha-as-single-source-of-truth.md`](docs/adr/0001-ha-as-single-source-of-truth.md).
+
+## 6. Cross-Platform Intent & Schedule Golden Corpus
+
+When adding or changing spoken command, delay, or undo rules in `Sources/MijiaCore/LocalIntentParser.swift`, `Sources/MijiaCore/AssistantSchedule.swift`, or `windows/src/core/assistant.ts`:
+
+- Add a representative test case to [`Tests/Fixtures/intent_golden.json`](Tests/Fixtures/intent_golden.json) so both `Tests/MijiaCoreTests/GoldenCorpusTests.swift` and `windows/tests/core.test.ts` assert the exact same behavior.
+- Never let one platform silently diverge on Chinese or English command parsing, delay limits (`<= 86400s`), or unknown-word fallback (`nil` / `null`).
+
+## 7. Scheduled Command Persistence & Missed-Timer Confirmation
+
+When modifying `ScheduledCommand` or `HomeStore+Assistant.swift`:
+
+- Persist both `scheduledCommands` and unconfirmed `missedScheduledCommands` to `UserDefaults` (`ScheduledCommand.storageKey`) on every schedule, fire, restore, confirm, dismiss, or cancel transition.
+- Never auto-execute an expired timer silently on launch; keep it in `missedScheduledCommands` (and on disk across restarts) until the user explicitly confirms (`runMissedScheduledCommand`) or dismisses (`dismissMissedScheduledCommand`).
+
+## 8. macOS 14+ Adaptive Glass Boundary
+
+- Isolate macOS 26 `.glassEffect(` and `GlassEffectContainer` calls inside `Sources/MenuBarMijiaApp/ThemeAndMotion.swift` (`View.adaptiveGlass` and `AdaptiveGlassContainer`), guarded by `#available(macOS 26.0, *)` with Material fallback for macOS 14 and 15. Enforced mechanically by `scripts/check.sh`.

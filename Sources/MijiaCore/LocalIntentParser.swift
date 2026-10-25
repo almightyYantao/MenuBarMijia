@@ -479,12 +479,8 @@ public enum LocalIntentParser {
             hasScope = true
         }
 
-        var categories: Set<IntentDeviceCategory> = []
-        for (phrase, cat) in englishCategoryWords where consumeEnglishPhrase(phrase, from: &rest) {
-            categories.insert(cat)
-        }
-
-        // 3. Operations (ordered from specific multi-word phrases to shorter verbs)
+        // 3. Operations (ordered from specific multi-word phrases to shorter verbs, before bare category words
+        // like "light" or "fan" so phrases such as "warm light", "night light", and "fan mode" stay intact)
         let oscPhrases: [(String, Bool)] = [
             ("stop oscillating", false), ("stop oscillation", false), ("stop swing", false),
             ("oscillation off", false), ("swing off", false),
@@ -566,6 +562,11 @@ public enum LocalIntentParser {
         ]
         for (p, val) in powerPhrases where consumeEnglishPhrase(p, from: &rest) {
             ops.append(.power(val))
+        }
+
+        var categories: Set<IntentDeviceCategory> = []
+        for (phrase, cat) in englishCategoryWords where consumeEnglishPhrase(phrase, from: &rest) {
+            categories.insert(cat)
         }
 
         // 4. Fillers
@@ -652,6 +653,24 @@ public enum LocalIntentParser {
                 let dir = ns.substring(with: match.range(at: 1))
                 if let amount = Double(ns.substring(with: match.range(at: 2))) {
                     let sign: Double = (dir == "increase" || dir == "raise" || dir == "up") ? 1 : -1
+                    ops.append(.temperatureStep(sign * amount))
+                }
+            }
+            if !matches.isEmpty {
+                text = regex.stringByReplacingMatches(
+                    in: text, range: NSRange(location: 0, length: ns.length), withTemplate: " \(consumed) "
+                )
+            }
+        }
+
+        let trailingStepPattern = #"(?<![a-z0-9])(\d{1,2})\s*(?:degrees?|deg|℃|°c|°)\s+(warmer|hotter|higher|cooler|colder|lower)(?![a-z])"#
+        if let regex = try? NSRegularExpression(pattern: trailingStepPattern) {
+            let ns = text as NSString
+            let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            for match in matches {
+                if let amount = Double(ns.substring(with: match.range(at: 1))) {
+                    let dir = ns.substring(with: match.range(at: 2))
+                    let sign: Double = (dir == "warmer" || dir == "hotter" || dir == "higher") ? 1 : -1
                     ops.append(.temperatureStep(sign * amount))
                 }
             }

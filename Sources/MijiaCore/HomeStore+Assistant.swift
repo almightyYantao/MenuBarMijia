@@ -212,12 +212,16 @@ extension HomeStore {
         )
         scheduledCommands.append(entry)
         scheduledCommands.sort { $0.fireDate < $1.fireDate }
-        ScheduledCommand.save(scheduledCommands, to: userDefaults)
+        persistAllScheduledCommands()
         startScheduledTask(for: entry, delay: delay)
         var reply = plan
         reply.reply = L10n.tr("好的，", "Scheduled — ") + entry.reply
         setAssistantState(.done(reply.reply))
         return reply
+    }
+
+    private func persistAllScheduledCommands() {
+        ScheduledCommand.save(scheduledCommands + missedScheduledCommands, to: userDefaults)
     }
 
     private func startScheduledTask(for entry: ScheduledCommand, delay: TimeInterval) {
@@ -232,7 +236,7 @@ extension HomeStore {
             _ = await self.executeIntentPlan(entry.plan, recordedUtterance: nil)
             self.scheduledCommands.removeAll { $0.id == entry.id }
             self.scheduledTasks[entry.id] = nil
-            ScheduledCommand.save(self.scheduledCommands, to: self.userDefaults)
+            self.persistAllScheduledCommands()
         }
     }
 
@@ -253,6 +257,7 @@ extension HomeStore {
         let persisted = ScheduledCommand.load(from: userDefaults)
         guard !persisted.isEmpty else {
             scheduledCommands = []
+            missedScheduledCommands = []
             return
         }
 
@@ -267,7 +272,6 @@ extension HomeStore {
         }
 
         scheduledCommands = upcoming.sorted { $0.fireDate < $1.fireDate }
-        ScheduledCommand.save(scheduledCommands, to: userDefaults)
         for entry in scheduledCommands {
             startScheduledTask(for: entry, delay: entry.fireDate.timeIntervalSince(now))
         }
@@ -279,9 +283,10 @@ extension HomeStore {
             isShowingAssistantBar = true
             notifyMissedScheduledCommandsIfNeeded()
         }
+        persistAllScheduledCommands()
     }
 
-    func notifyMissedScheduledCommandsIfNeeded() {
+    public func notifyMissedScheduledCommandsIfNeeded() {
         guard let handler = onMissedScheduledCommand else { return }
         for entry in missedScheduledCommands where !notifiedMissedTimerIds.contains(entry.id) {
             notifiedMissedTimerIds.insert(entry.id)
@@ -294,6 +299,7 @@ extension HomeStore {
         guard let idx = missedScheduledCommands.firstIndex(where: { $0.id == id }) else { return nil }
         let entry = missedScheduledCommands.remove(at: idx)
         notifiedMissedTimerIds.remove(id)
+        persistAllScheduledCommands()
         await waitForInitialSnapshotIfNeeded()
         return await executeIntentPlan(entry.plan, recordedUtterance: nil)
     }
@@ -301,6 +307,7 @@ extension HomeStore {
     public func dismissMissedScheduledCommand(id: UUID) {
         missedScheduledCommands.removeAll { $0.id == id }
         notifiedMissedTimerIds.remove(id)
+        persistAllScheduledCommands()
     }
 
     /// Cancels one pending command, or all of them when `id` is nil. Returns how many were cancelled.
@@ -311,13 +318,13 @@ extension HomeStore {
             scheduledTasks.removeValue(forKey: entry.id)?.cancel()
         }
         scheduledCommands.removeAll { entry in targets.contains { $0.id == entry.id } }
-        ScheduledCommand.save(scheduledCommands, to: userDefaults)
 
         let missedTargets = missedScheduledCommands.filter { id == nil || $0.id == id }
         for entry in missedTargets {
             notifiedMissedTimerIds.remove(entry.id)
         }
         missedScheduledCommands.removeAll { entry in missedTargets.contains { $0.id == entry.id } }
+        persistAllScheduledCommands()
         return targets.count + missedTargets.count
     }
 
