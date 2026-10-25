@@ -2,7 +2,7 @@
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-ROOT_DIR="$(git rev-parse --show-toplevel)"
+ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT_DIR"
 
 search_matches() {
@@ -62,14 +62,14 @@ if search_matches 'event\.keyCode[[:space:]]*==[[:space:]]*[0-9]+' Sources/; the
     exit 1
 fi
 
-for f in $(search_files 'UNUserNotificationCenter\.current\(\)' Sources/ || true); do
+for f in $(search_files 'UNUserNotificationCenter\.current\(\)' Sources || true); do
     if ! search_quiet 'pathExtension == "app"' "$f"; then
         echo "❌ $f 调用了 UNUserNotificationCenter.current()，但缺少 Bundle.main.bundleURL.pathExtension == \"app\" 守卫（会导致 swift test 崩溃）！"
         exit 1
     fi
 done
 
-for f in $(search_files '\.glassEffect\(|GlassEffectContainer' Sources/ || true); do
+for f in $(search_files '\.glassEffect\(|GlassEffectContainer' Sources || true); do
     if [ "$f" != "Sources/MenuBarMijiaApp/ThemeAndMotion.swift" ]; then
         echo "❌ $f 直接使用了 macOS 26 专属的 .glassEffect 或 GlassEffectContainer，请改用 ThemeAndMotion.swift 中的 adaptiveGlass / AdaptiveGlassContainer 以保持 macOS 14+ 兼容！"
         exit 1
@@ -77,11 +77,11 @@ for f in $(search_files '\.glassEffect\(|GlassEffectContainer' Sources/ || true)
 done
 
 if command -v rg >/dev/null 2>&1; then
-    if rg -nU 'return \([^;{}]*await' Sources/; then
+    if rg -nU 'return \([^;{}]*await' Sources; then
         echo "❌ 请勿在 return 元组字面量内直接内联 await（Swift 6.4 -O 协程分片优化会消除元组首字段写入导致 EXC_BAD_ACCESS），请先用 let 变量接收 await 结果再构造返回值！"
         exit 1
     fi
-elif search_matches 'return \([^\n]*await' Sources/; then
+elif search_matches 'return \([^)]*await' Sources; then
     echo "❌ 请勿在 return 元组字面量内直接内联 await（Swift 6.4 -O 协程分片优化会消除元组首字段写入导致 EXC_BAD_ACCESS），请先用 let 变量接收 await 结果再构造返回值！"
     exit 1
 fi
