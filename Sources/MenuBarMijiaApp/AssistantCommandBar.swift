@@ -345,7 +345,7 @@ struct AssistantCommandBar: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .glassEffect(.regular.interactive(), in: shape)
+            .adaptiveGlass(in: shape, interactive: true)
             .overlay(
                 shape.strokeBorder(
                     speech.isListening
@@ -368,6 +368,10 @@ struct AssistantCommandBar: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
+            if !store.missedScheduledCommands.isEmpty {
+                missedScheduledRow
+            }
+
             if !store.scheduledCommands.isEmpty {
                 scheduledRow
             }
@@ -380,6 +384,7 @@ struct AssistantCommandBar: View {
         ))
         .animation(AppleMotion.snappySpring, value: store.assistantState)
         .animation(AppleMotion.snappySpring, value: store.assistantSuggestions)
+        .animation(AppleMotion.snappySpring, value: store.missedScheduledCommands)
         .animation(AppleMotion.snappySpring, value: store.scheduledCommands)
         .animation(AppleMotion.snappySpring, value: speech.isListening)
         .onAppear {
@@ -399,6 +404,37 @@ struct AssistantCommandBar: View {
             lastHandledVoiceRequest = newValue
             speech.toggle(store: store)
         }
+    }
+
+    /// Timers that expired while the app was closed; user can run or dismiss each one.
+    private var missedScheduledRow: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(store.missedScheduledCommands) { entry in
+                HStack(spacing: 5) {
+                    Image(systemName: "exclamationmark.clock.fill")
+                        .foregroundStyle(Color.orange)
+                    Text(L10n.tr("已错过：\(entry.reply)", "Missed: \(entry.reply)"))
+                        .foregroundStyle(.primary.opacity(0.88))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Button(L10n.tr("立即执行", "Run Now")) {
+                        Task { await store.runMissedScheduledCommand(id: entry.id) }
+                    }
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
+                    Button {
+                        store.dismissMissedScheduledCommand(id: entry.id)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(L10n.tr("忽略这个已错过的定时", "Dismiss this missed timer"))
+                }
+                .font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 4)
+            }
+        }
+        .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
     /// Pending "10 分钟后关灯" commands with a live countdown and a cancel button.

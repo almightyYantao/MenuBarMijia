@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Assistant Intent Domain Types
 
-public enum IntentOperation: Equatable, Sendable {
+public enum IntentOperation: Codable, Equatable, Sendable {
     case power(Bool)
     case brightness(Int)          // 1...100
     case colorTemperature(Int)    // kelvin
@@ -26,7 +26,7 @@ public enum IntentOperation: Equatable, Sendable {
     }
 }
 
-public struct DeviceIntent: Equatable, Sendable {
+public struct DeviceIntent: Codable, Equatable, Sendable {
     public let targetId: String
     public let operation: IntentOperation
 
@@ -36,8 +36,8 @@ public struct DeviceIntent: Equatable, Sendable {
     }
 }
 
-public struct IntentPlan: Equatable, Sendable {
-    public enum Source: Equatable, Sendable { case local, model }
+public struct IntentPlan: Codable, Equatable, Sendable {
+    public enum Source: String, Codable, Equatable, Sendable { case local, model }
 
     public var intents: [DeviceIntent]
     public var reply: String

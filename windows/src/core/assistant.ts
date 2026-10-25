@@ -28,14 +28,42 @@ function parseCnOrArabicNumber(s: string): number | null {
   return CN_DIGITS[s] ?? null;
 }
 
+const EN_CANCEL_PHRASES = [
+  "cancel timer", "cancel timers", "cancel all timers",
+  "clear timer", "clear timers", "clear all timers",
+  "stop timer", "stop timers", "stop all timers",
+];
+
 export const DelayPhrase = {
   isCancel(utterance: string): boolean {
+    const lower = utterance.toLowerCase().trim();
+    if (EN_CANCEL_PHRASES.some((p) => lower.includes(p))) return true;
     const clean = utterance.replace(/[，。！？、\s]/g, "");
     return clean === "取消定时" || clean === "取消倒计时" || clean === "取消所有定时" || clean === "清除定时";
   },
 
   extract(utterance: string): ParsedDelay | null {
     const trimmed = utterance.trim();
+    const enLead = /^(?:in|after)\s+(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\b[,\s]*(.+)$/i.exec(trimmed);
+    if (enLead) {
+      const val = Number(enLead[1]);
+      const unit = (enLead[2] ?? "").toLowerCase();
+      const rem = (enLead[3] ?? "").trim();
+      if (val > 0 && rem) {
+        const mult = unit.startsWith("h") ? 3600 : unit.startsWith("m") ? 60 : 1;
+        return { seconds: Math.min(86400, val * mult), remainder: rem };
+      }
+    }
+    const enTrail = /^(.+?)[,\s]+(?:in|after)\s+(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\s*$/i.exec(trimmed);
+    if (enTrail) {
+      const rem = (enTrail[1] ?? "").trim();
+      const val = Number(enTrail[2]);
+      const unit = (enTrail[3] ?? "").toLowerCase();
+      if (val > 0 && rem) {
+        const mult = unit.startsWith("h") ? 3600 : unit.startsWith("m") ? 60 : 1;
+        return { seconds: Math.min(86400, val * mult), remainder: rem };
+      }
+    }
     if (/^半小时(?:以)?后(.+)$/.test(trimmed)) {
       const m = /^半小时(?:以)?后(.+)$/.exec(trimmed);
       const rem = m?.[1]?.trim() ?? "";
@@ -73,8 +101,12 @@ export const DelayPhrase = {
   },
 };
 
+const EN_UNDO_SET = new Set(["undo", "revert", "undo that", "revert that", "cancel that"]);
+
 export const UndoPhrase = {
   isUndo(utterance: string): boolean {
+    const lower = utterance.toLowerCase().replace(/^[，。！？,.!?\s]+|[，。！？,.!?\s]+$/g, "");
+    if (EN_UNDO_SET.has(lower)) return true;
     const clean = utterance.replace(/[，。！？、\s]/g, "");
     return ["撤销", "撤回", "刚才那个撤销", "撤销刚才的操作", "恢复刚才的状态"].includes(clean);
   },
@@ -413,6 +445,7 @@ export const LocalIntentParser = {
     if (ops.length === 0) {
       if (hasOpen) ops = [{ kind: "power", isOn: true }];
       else if (hasClose) ops = [{ kind: "power", isOn: false }];
+      else if (/[a-zA-Z]/.test(utterance)) return this.parseEnglish(utterance, devices, scenes);
       else return null;
     }
 
@@ -479,6 +512,155 @@ export const LocalIntentParser = {
       }
     }
 
+    if (intents.length === 0) {
+      if (/[a-zA-Z]/.test(utterance)) return this.parseEnglish(utterance, devices, scenes);
+      return null;
+    }
+    return {
+      intents,
+      reply: IntentReply.describe(intents, devices, scenes),
+      source: "local",
+      suggestions: [],
+    };
+  },
+
+  parseEnglish(
+    utterance: string,
+    devices: readonly SmartDevice[],
+    scenes: readonly HomeScene[]
+  ): IntentPlan | null {
+    const lower = utterance.toLowerCase().trim();
+    const ops: IntentOperation[] = [];
+
+    if (/\b(?:moonlight|night\s*light|night\s*mode)\b/.test(lower)) {
+      ops.push({ kind: "lightEffect", effect: "Night" });
+    } else if (/\b(?:daylight|day\s*mode)\b/.test(lower)) {
+      ops.push({ kind: "lightEffect", effect: "Day" });
+    }
+
+    if (/\b(?:dimmer|darker|a\s+bit\s+darker|slightly\s+darker)\b/.test(lower)) {
+      ops.push({ kind: "brightnessStep", delta: -20 });
+    } else if (/\b(?:brighter|a\s+bit\s+brighter|slightly\s+brighter)\b/.test(lower)) {
+      ops.push({ kind: "brightnessStep", delta: 20 });
+    } else {
+      const pctMatch = /\b(\d{1,3})\s*%/.exec(lower);
+      if (pctMatch?.[1]) {
+        ops.push({ kind: "brightness", percent: Number(pctMatch[1]) });
+      }
+    }
+
+    const tempMatch = /\b(\d{2}(?:\.\d)?)\s*(?:degrees?|°c|℃|c\b)/.exec(lower);
+    if (tempMatch?.[1]) {
+      ops.push({ kind: "targetTemperature", celsius: Number(tempMatch[1]) });
+    } else if (/\b(?:warmer|hotter)\b/.test(lower)) {
+      ops.push({ kind: "temperatureStep", delta: 1 });
+    } else if (/\b(?:cooler|colder)\b/.test(lower)) {
+      ops.push({ kind: "temperatureStep", delta: -1 });
+    }
+
+    if (/\b(?:stop|off|disable)\s+(?:swing|oscillat\w*)\b/.test(lower)) {
+      ops.push({ kind: "oscillation", enabled: false });
+    } else if (/\b(?:start\s+)?(?:swing|oscillat\w*)\b/.test(lower)) {
+      ops.push({ kind: "oscillation", enabled: true });
+    }
+
+    if (/\b(?:high\s+speed|speed\s+high|max\s+speed|high\s+fan)\b/.test(lower)) {
+      ops.push({ kind: "fanSpeed", speed: "high" });
+    } else if (/\b(?:medium\s+speed|speed\s+medium|mid\s+speed)\b/.test(lower)) {
+      ops.push({ kind: "fanSpeed", speed: "medium" });
+    } else if (/\b(?:low\s+speed|speed\s+low|min\s+speed|low\s+fan)\b/.test(lower)) {
+      ops.push({ kind: "fanSpeed", speed: "low" });
+    }
+
+    if (ops.length === 0) {
+      if (/\b(?:turn\s+on|switch\s+on|power\s+on|open)\b/.test(lower)) {
+        ops.push({ kind: "power", isOn: true });
+      } else if (/\b(?:turn\s+off|switch\s+off|power\s+off|shut\s+off|close)\b/.test(lower)) {
+        ops.push({ kind: "power", isOn: false });
+      } else {
+        return null;
+      }
+    }
+
+    const roomEnToCn: Readonly<Record<string, string[]>> = {
+      study: ["书房"],
+      "living room": ["客厅"],
+      bedroom: ["主卧", "卧室"],
+      "master bedroom": ["主卧", "卧室"],
+      kitchen: ["厨房"],
+    };
+    const matchedRooms: string[] = [];
+    for (const [enRoom, cnRooms] of Object.entries(roomEnToCn)) {
+      if (lower.includes(enRoom)) {
+        for (const r of cnRooms) {
+          if (!matchedRooms.includes(r)) matchedRooms.push(r);
+        }
+      }
+    }
+
+    const hasAll = /\b(?:all|every|whole\s+home)\b/.test(lower);
+    const onlyActive = ops.every(
+      (o) => o.kind === "brightnessStep" || o.kind === "temperatureStep"
+    );
+    const wantsLight =
+      /\b(?:lights?|lamps?|ceiling)\b/.test(lower) ||
+      ops.some(
+        (o) =>
+          o.kind === "brightness" ||
+          o.kind === "brightnessStep" ||
+          o.kind === "colorTemperature" ||
+          o.kind === "lightEffect"
+      );
+    const wantsAC =
+      /\b(?:ac|air\s*conditioner|climate)\b/.test(lower) ||
+      ops.some(
+        (o) =>
+          o.kind === "hvacMode" ||
+          o.kind === "targetTemperature" ||
+          o.kind === "temperatureStep"
+      );
+    const wantsFan =
+      /\bfans?\b/.test(lower) ||
+      ops.some((o) => o.kind === "oscillation" || o.kind === "fanSpeed");
+
+    let candidates = devices.filter((d) => {
+      if (!d.isOnline) return false;
+      if (onlyActive && !isDeviceActiveOn(d)) return false;
+      if (matchedRooms.length > 0 && !matchedRooms.includes(d.roomName)) return false;
+      if (wantsLight) return d.kind.kind === "light";
+      if (wantsAC) return d.kind.kind === "climate" && !d.name.includes("暖");
+      if (wantsFan) return d.kind.kind === "fan";
+      return false;
+    });
+
+    if (
+      wantsLight &&
+      !onlyActive &&
+      !hasAll &&
+      /\blight\b/.test(lower) &&
+      candidates.length > 1 &&
+      !ops.some((o) => o.kind === "lightEffect")
+    ) {
+      const ceiling = candidates.filter((d) => d.name.includes("吸顶"));
+      if (ceiling.length === 1 && !/\bdesk\b/.test(lower)) {
+        candidates = ceiling;
+      }
+    }
+
+    if (!onlyActive && !hasAll && matchedRooms.length === 0 && candidates.length !== 1) {
+      return null;
+    }
+
+    const intents: DeviceIntent[] = [];
+    for (const dev of candidates) {
+      const normOps = ops
+        .map((o) => IntentValidator.normalize(o, dev))
+        .filter((o): o is IntentOperation => o !== null);
+      if (normOps.length !== ops.length) continue;
+      for (const no of normOps) {
+        intents.push({ targetId: dev.id, operation: no });
+      }
+    }
     if (intents.length === 0) return null;
     return {
       intents,

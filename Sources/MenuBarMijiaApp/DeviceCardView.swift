@@ -277,7 +277,7 @@ public struct DeviceCardView: View {
                                 if isExpanded {
                                     Circle()
                                         .fill(Color.primary.opacity(0.08))
-                                        .glassEffect(.regular, in: Circle())
+                                        .adaptiveGlass(in: Circle())
                                 }
                             }
                             .contentShape(Rectangle())
@@ -319,7 +319,7 @@ public struct DeviceCardView: View {
                         )
                     )
                     .frame(width: 33, height: 33)
-                    .glassEffect(.regular.tint(accent.opacity(0.55)), in: Circle())
+                    .adaptiveGlass(in: Circle(), tint: accent.opacity(0.55))
                     .overlay {
                         Circle()
                             .strokeBorder(
@@ -339,7 +339,7 @@ public struct DeviceCardView: View {
                 Circle()
                     .fill(Color.primary.opacity(colorScheme == .dark ? 0.10 : 0.06))
                     .frame(width: 33, height: 33)
-                    .glassEffect(.regular, in: Circle())
+                    .adaptiveGlass(in: Circle())
                     .overlay {
                         Circle()
                             .strokeBorder(
@@ -455,7 +455,7 @@ public struct DeviceCardView: View {
             // Scene Effect Presets (Day / Night / TV / Hospitality)
             if !spec.availableEffects.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    GlassEffectContainer(spacing: 6) {
+                    AdaptiveGlassContainer(spacing: 6) {
                         HStack(spacing: 6) {
                             ForEach(spec.availableEffects, id: \.self) { effect in
                                 let selected = (spec.currentEffect == effect)
@@ -483,7 +483,7 @@ public struct DeviceCardView: View {
                     Image(systemName: "minus")
                         .font(.system(size: 13, weight: .bold))
                         .frame(width: 32, height: 28)
-                        .glassEffect(.regular.interactive(), in: Capsule(style: .continuous))
+                        .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
                 }
                 .buttonStyle(PressableCardButtonStyle())
                 .disabled(!device.isOnline)
@@ -513,7 +513,7 @@ public struct DeviceCardView: View {
                     Image(systemName: "plus")
                         .font(.system(size: 13, weight: .bold))
                         .frame(width: 32, height: 28)
-                        .glassEffect(.regular.interactive(), in: Capsule(style: .continuous))
+                        .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
                 }
                 .buttonStyle(PressableCardButtonStyle())
                 .disabled(!device.isOnline)
@@ -522,7 +522,7 @@ public struct DeviceCardView: View {
 
             // HVAC Modes
             ScrollView(.horizontal, showsIndicators: false) {
-                GlassEffectContainer(spacing: 6) {
+                AdaptiveGlassContainer(spacing: 6) {
                     HStack(spacing: 6) {
                         ForEach(spec.availableModes, id: \.self) { mode in
                             let selected = (spec.hvacMode == mode)
@@ -543,7 +543,7 @@ public struct DeviceCardView: View {
     private func fanDrawer(_ spec: FanSpec) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             if !spec.availablePresetModes.isEmpty {
-                GlassEffectContainer(spacing: 6) {
+                AdaptiveGlassContainer(spacing: 6) {
                     HStack(spacing: 6) {
                         ForEach(spec.availablePresetModes, id: \.self) { mode in
                             let selected = (spec.presetMode == mode)
@@ -625,7 +625,7 @@ public struct DeviceCardView: View {
 
             if !spec.availableModes.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    GlassEffectContainer(spacing: 6) {
+                    AdaptiveGlassContainer(spacing: 6) {
                         HStack(spacing: 6) {
                             ForEach(spec.availableModes, id: \.self) { mode in
                                 Button(mode) {
@@ -689,13 +689,13 @@ public struct DeviceCardView: View {
             }
         }
         .padding(8)
-        .glassEffect(.regular, in: shape)
+        .adaptiveGlass(in: shape)
     }
 
     // MARK: - 6. Vacuum Controls
 
     private func vacuumDrawer(_ spec: VacuumSpec) -> some View {
-        GlassEffectContainer(spacing: 8) {
+        AdaptiveGlassContainer(spacing: 8) {
             HStack(spacing: 8) {
                 Button {
                     store.performVacuumAction(device.id, action: .start)
@@ -733,7 +733,7 @@ public struct DeviceCardView: View {
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(spec.isMuted ? .red : statusColor)
                         .frame(width: 24, height: 22)
-                        .glassEffect(.regular.interactive(), in: Circle())
+                        .adaptiveGlass(in: Circle(), interactive: true)
                 }
                 .buttonStyle(.plain)
                 .help(L10n.tr("切换麦克风/扬声器静音", "Toggle speaker mute"))
@@ -759,7 +759,7 @@ public struct DeviceCardView: View {
                 )
             }
 
-            GlassEffectContainer(spacing: 6) {
+            AdaptiveGlassContainer(spacing: 6) {
                 HStack(spacing: 6) {
                     if let musicBtn = spec.playMusicButtonId {
                         Button {
@@ -788,7 +788,7 @@ public struct DeviceCardView: View {
                         .font(.system(size: 11.5))
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5.5)
-                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .adaptiveGlass(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                         .onSubmit {
                             guard !speakerInputText.isEmpty else { return }
                             store.sendSpeakerText(device.id, text: speakerInputText, asDirective: true)
@@ -870,7 +870,7 @@ public struct DeviceCardView: View {
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
-                GlassEffectContainer(spacing: 6) {
+                AdaptiveGlassContainer(spacing: 6) {
                     HStack(spacing: 6) {
                         Button {
                             store.togglePrimary(device)

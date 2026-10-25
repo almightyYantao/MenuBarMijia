@@ -212,18 +212,95 @@ extension HomeStore {
         )
         scheduledCommands.append(entry)
         scheduledCommands.sort { $0.fireDate < $1.fireDate }
-        let sleep = assistantSleep
-        scheduledTasks[entry.id] = Task { [weak self] in
-            do { try await sleep(.seconds(delay)) } catch { return }
-            guard let self, !Task.isCancelled else { return }
-            self.scheduledCommands.removeAll { $0.id == entry.id }
-            self.scheduledTasks[entry.id] = nil
-            _ = await self.executeIntentPlan(entry.plan, recordedUtterance: nil)
-        }
+        ScheduledCommand.save(scheduledCommands, to: userDefaults)
+        startScheduledTask(for: entry, delay: delay)
         var reply = plan
         reply.reply = L10n.tr("好的，", "Scheduled — ") + entry.reply
         setAssistantState(.done(reply.reply))
         return reply
+    }
+
+    private func startScheduledTask(for entry: ScheduledCommand, delay: TimeInterval) {
+        scheduledTasks[entry.id]?.cancel()
+        let sleep = assistantSleep
+        let waitSeconds = max(0, delay)
+        scheduledTasks[entry.id] = Task { [weak self] in
+            do { try await sleep(.seconds(waitSeconds)) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            await self.waitForInitialSnapshotIfNeeded()
+            guard !Task.isCancelled else { return }
+            _ = await self.executeIntentPlan(entry.plan, recordedUtterance: nil)
+            self.scheduledCommands.removeAll { $0.id == entry.id }
+            self.scheduledTasks[entry.id] = nil
+            ScheduledCommand.save(self.scheduledCommands, to: self.userDefaults)
+        }
+    }
+
+    private func waitForInitialSnapshotIfNeeded() async {
+        for _ in 0..<50 where devices.isEmpty && scenes.isEmpty && !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    /// Restores persisted timers on launch. Future timers resume their countdown; expired timers move to
+    /// `missedScheduledCommands` so an overdue heater or light timer never fires silently hours later.
+    public func restoreScheduledCommands(now: Date = Date()) {
+        for task in scheduledTasks.values {
+            task.cancel()
+        }
+        scheduledTasks.removeAll()
+
+        let persisted = ScheduledCommand.load(from: userDefaults)
+        guard !persisted.isEmpty else {
+            scheduledCommands = []
+            return
+        }
+
+        var upcoming: [ScheduledCommand] = []
+        var missed: [ScheduledCommand] = []
+        for entry in persisted {
+            if entry.fireDate > now {
+                upcoming.append(entry)
+            } else {
+                missed.append(entry)
+            }
+        }
+
+        scheduledCommands = upcoming.sorted { $0.fireDate < $1.fireDate }
+        ScheduledCommand.save(scheduledCommands, to: userDefaults)
+        for entry in scheduledCommands {
+            startScheduledTask(for: entry, delay: entry.fireDate.timeIntervalSince(now))
+        }
+
+        if !missed.isEmpty {
+            for entry in missed where !missedScheduledCommands.contains(where: { $0.id == entry.id }) {
+                missedScheduledCommands.append(entry)
+            }
+            isShowingAssistantBar = true
+            notifyMissedScheduledCommandsIfNeeded()
+        }
+    }
+
+    func notifyMissedScheduledCommandsIfNeeded() {
+        guard let handler = onMissedScheduledCommand else { return }
+        for entry in missedScheduledCommands where !notifiedMissedTimerIds.contains(entry.id) {
+            notifiedMissedTimerIds.insert(entry.id)
+            handler(entry)
+        }
+    }
+
+    @discardableResult
+    public func runMissedScheduledCommand(id: UUID) async -> IntentPlan? {
+        guard let idx = missedScheduledCommands.firstIndex(where: { $0.id == id }) else { return nil }
+        let entry = missedScheduledCommands.remove(at: idx)
+        notifiedMissedTimerIds.remove(id)
+        await waitForInitialSnapshotIfNeeded()
+        return await executeIntentPlan(entry.plan, recordedUtterance: nil)
+    }
+
+    public func dismissMissedScheduledCommand(id: UUID) {
+        missedScheduledCommands.removeAll { $0.id == id }
+        notifiedMissedTimerIds.remove(id)
     }
 
     /// Cancels one pending command, or all of them when `id` is nil. Returns how many were cancelled.
@@ -234,7 +311,14 @@ extension HomeStore {
             scheduledTasks.removeValue(forKey: entry.id)?.cancel()
         }
         scheduledCommands.removeAll { entry in targets.contains { $0.id == entry.id } }
-        return targets.count
+        ScheduledCommand.save(scheduledCommands, to: userDefaults)
+
+        let missedTargets = missedScheduledCommands.filter { id == nil || $0.id == id }
+        for entry in missedTargets {
+            notifiedMissedTimerIds.remove(entry.id)
+        }
+        missedScheduledCommands.removeAll { entry in missedTargets.contains { $0.id == entry.id } }
+        return targets.count + missedTargets.count
     }
 
     private func executeIntentPlan(_ plan: IntentPlan, recordedUtterance: String?) async -> IntentPlan {

@@ -27,6 +27,8 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
 
     private static let turnOffActionId = "TURN_OFF_ACTION"
     private static let safetyCategoryId = "MIJIA_SAFETY_ALERT"
+    private static let runMissedTimerActionId = "RUN_MISSED_TIMER_ACTION"
+    private static let missedTimerCategoryId = "MIJIA_MISSED_TIMER"
 
     private override init() {
         super.init()
@@ -565,7 +567,18 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             intentIdentifiers: [],
             options: []
         )
-        center.setNotificationCategories([category])
+        let runMissedAction = UNNotificationAction(
+            identifier: Self.runMissedTimerActionId,
+            title: L10n.tr("立即补执行", "Run Now"),
+            options: []
+        )
+        let missedCategory = UNNotificationCategory(
+            identifier: Self.missedTimerCategoryId,
+            actions: [runMissedAction],
+            intentIdentifiers: [],
+            options: []
+        )
+        center.setNotificationCategories([category, missedCategory])
 
         Task {
             _ = try? await center.requestAuthorization(options: [.alert, .sound])
@@ -573,6 +586,9 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
 
         store?.onSafetyAlert = { [weak self] alert in
             self?.deliverNotification(for: alert)
+        }
+        store?.onMissedScheduledCommand = { [weak self] entry in
+            self?.deliverMissedTimerNotification(for: entry)
         }
     }
 
@@ -611,6 +627,26 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         UNUserNotificationCenter.current().add(request)
     }
 
+    private func deliverMissedTimerNotification(for entry: ScheduledCommand) {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = L10n.tr("已错过定时任务", "Missed Scheduled Command")
+        content.body = L10n.tr(
+            "应用关闭期间已过期的定时：「\(entry.reply)」。可点击通知按钮立即补执行。",
+            "Expired while the app was closed: \"\(entry.reply)\". Click Run Now to execute it."
+        )
+        content.sound = .default
+        content.categoryIdentifier = Self.missedTimerCategoryId
+
+        let request = UNNotificationRequest(
+            identifier: "missed-timer:\(entry.id.uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
     public func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
@@ -620,6 +656,12 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         if response.actionIdentifier == Self.turnOffActionId,
            let alert = pendingAlertsById[alertId] {
             store?.executeSafetyAlertAction(alert)
+        } else if response.actionIdentifier == Self.runMissedTimerActionId,
+                  alertId.hasPrefix("missed-timer:"),
+                  let uuid = UUID(uuidString: String(alertId.dropFirst("missed-timer:".count))) {
+            Task { @MainActor [weak self] in
+                _ = await self?.store?.runMissedScheduledCommand(id: uuid)
+            }
         }
         completionHandler()
     }

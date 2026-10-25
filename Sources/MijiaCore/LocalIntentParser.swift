@@ -1,6 +1,6 @@
 import Foundation
 
-/// Deterministic, zero-network parser for short Chinese home commands.
+/// Deterministic, zero-network parser for short Chinese and English home commands.
 /// Every recognized phrase is consumed from the utterance; any leftover text means the
 /// command has parts this parser does not understand, so it returns nil and the model takes over.
 public enum LocalIntentParser {

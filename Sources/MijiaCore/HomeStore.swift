@@ -278,6 +278,7 @@ public final class HomeStore {
             self.provider = makeHAProvider(baseURLString: savedURL, token: KeychainHelper.loadToken())
         }
         startListening()
+        restoreScheduledCommands()
         if provider == nil {
             startLGWebOSIfNeeded()
             Task { [weak self] in
@@ -404,6 +405,7 @@ public final class HomeStore {
                     handler(alert)
                 }
             }
+            notifyMissedScheduledCommandsIfNeeded()
         }
     }
 
@@ -1669,8 +1671,12 @@ public final class HomeStore {
     var assistantResetTask: Task<Void, Never>?
     /// Test seam replacing the network resolver built from `assistantConfig`.
     var assistantResolverOverride: ModelIntentResolver?
-    /// Commands waiting on a spoken delay ("10 分钟后关灯"), soonest first. Not persisted across launches.
+    /// Commands waiting on a spoken delay ("10 分钟后关灯"), soonest first. Persisted across launches.
     public internal(set) var scheduledCommands: [ScheduledCommand] = []
+    /// Persisted commands whose fireDate passed while the app was closed. Never auto-executed without user confirmation.
+    public internal(set) var missedScheduledCommands: [ScheduledCommand] = []
+    public var onMissedScheduledCommand: ((ScheduledCommand) -> Void)?
+    var notifiedMissedTimerIds: Set<UUID> = []
     var scheduledTasks: [UUID: Task<Void, Never>] = [:]
     /// The most recent assistant action, kept so "撤销" can restore it after the 5 s banner is gone.
     var lastAssistantUndo: (reply: String, restore: [DeviceCommand], previous: [SmartDevice], at: Date)?

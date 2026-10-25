@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="https://github.com/jryang1997/MenuBarMijia/releases/latest"><img src="https://img.shields.io/github/v/release/jryang1997/MenuBarMijia?color=0A84FF&label=release" alt="Latest Release"></a>
-  <img src="https://img.shields.io/badge/macOS-26%2B-000000?logo=apple&logoColor=white" alt="macOS 26+">
+  <img src="https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Windows_11-Tauri_v2-0078D4?logo=windows11&logoColor=white" alt="Windows 11 Tauri v2">
   <img src="https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white" alt="Swift 6">
   <img src="https://img.shields.io/badge/Backends-Mi_Cloud_QR_%7C_Home_Assistant-30D158" alt="Dual Backends">
@@ -42,8 +42,8 @@ This project is a personal open-source app (`MenuBarMijia.app` on macOS, plus a 
 
 ## Requirements
 
-- macOS 26 or later (`Package.swift` sets `.macOS("26.0")`)
-- Xcode 26 and Swift 6 to build
+- macOS 14 (Sonoma) or later (`Package.swift` sets `.macOS(.v14)`; macOS 26 renders native SwiftUI `.glassEffect` Liquid Glass, while macOS 14 and 15 fall back to `.ultraThinMaterial`; `MijiaCore` also builds on Linux with Swift 6.1)
+- Swift 6 toolchain to build
 
 The Swift package has no third-party Swift dependencies and uses Swift 6 strict concurrency.
 
@@ -88,7 +88,7 @@ Store notary credentials first with `xcrun notarytool store-credentials menumiji
 
 Open the menu-bar icon, then the settings button.
 
-**Mi Cloud (no Home Assistant).** Choose **Mi Cloud direct**, then **Scan to sign in to Mi Home**, and confirm the QR code in the phone Mi Home app. Homes, rooms, and devices sync from your account. The client speaks Miot-Spec over Xiaomi’s RC4-signed `api.io.mi.com` API. `serviceToken` and `ssecurity` stay in the macOS Keychain.
+**Mi Cloud (no Home Assistant).** Choose **Mi Cloud direct**, then **Scan to sign in to Mi Home**, and confirm the QR code in the phone Mi Home app. Homes, rooms, and devices sync from your account. The client speaks Miot-Spec over Xiaomi’s RC4-signed `api.io.mi.com` API. `serviceToken` and `ssecurity` stay in the macOS Keychain. Note: `api.io.mi.com` is an undocumented private client API, and Xiaomi has restricted accounts that use unofficial clients in the past. Use the Home Assistant backend below if you want Xiaomi's official open-source `xiaomi_home` integration.
 
 **Home Assistant (optional).** Choose **Home Assistant**, enter the base URL and a long-lived access token (created on your HA profile page). The default URL is `http://homeassistant.local:8123`. Use the LAN IP if that hostname does not resolve. The Mac app subscribes to `state_changed` over the LAN WebSocket. It works with [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) and [midea_ac_lan](https://github.com/wuwentao/midea_ac_lan). Separate HA entities (switch, power, energy, child lock, gateway light, and similar) are folded into one card per physical device.
 
@@ -128,18 +128,19 @@ Device drawers cover lights (brightness, 2700–6500 K color temperature, and th
 
 ## Spoken commands
 
-Commands are Chinese colloquial speech only. The local parser does not accept English sentences.
+The local parser accepts both Chinese and English commands offline in 0 ms.
 
-| Goal | Example |
-| --- | --- |
-| On or off | 「关客厅灯」「把空调打开」 |
-| Brightness nudge | 「再暗一点」「主卧灯亮一点」 |
-| Temperature nudge | 「调高两度」「温度低一点」 |
-| Fan | 「风扇开高档」「风速调低」「摇头」「停止摇头」 |
-| Timer | 「10 分钟后关灯」「半小时后关空调」; 「取消定时」 |
-| Undo | 「撤销」「刚才那个撤销」 (within 10 minutes) |
+| Goal | Chinese example | English example |
+| --- | --- | --- |
+| On or off | 「关客厅灯」「把空调打开」 | `"turn on study light"`, `"turn off all lights"` |
+| Light mode | 「书房吸顶灯月光模式」 | `"study light moonlight mode"`, `"daylight mode"` |
+| Brightness nudge | 「再暗一点」「主卧灯亮一点」 | `"dimmer"`, `"brighter"`, `"study light 40%"` |
+| Temperature | 「调高两度」「温度低一点」 | `"set living room ac to 24 degrees"`, `"warmer"` |
+| Fan | 「风扇开高档」「风速调低」「摇头」「停止摇头」 | `"fan high speed"`, `"stop swing"` |
+| Timer | 「10 分钟后关灯」「取消定时」 | `"in 10 minutes turn off study light"`, `"cancel timer"` |
+| Undo | 「撤销」「刚才那个撤销」 (within 10 minutes) | `"undo"`, `"revert"` (within 10 minutes) |
 
-A nudge that does not name a device applies only to devices that are already on. Timers run only while the app is running. Quit or restart clears them.
+A nudge that does not name a device applies only to devices that are already on. Timers persist to `UserDefaults` across app restarts. Future timers resume their countdown on launch. Timers that expired while the app was closed are not executed automatically; the app surfaces a missed-timer prompt and notification so you can run or dismiss them.
 
 Phrases the local parser does not understand can be sent to an optional cloud AI model. Set an OpenRouter (or compatible) API key in Settings. The default endpoint is `https://openrouter.ai/api/v1` and the default model is `~typesafe/jev-latest`. If CodexBar on this Mac already has an OpenRouter key, the app can reuse it from the Keychain or that config. You can also set any compatible endpoint yourself. Without an API key, ambiguous commands fail. The model is used only for that fallback. Clear commands stay on the local parser.
 
@@ -182,7 +183,7 @@ Pushes to `main` run core tests, then GitHub Actions builds the Windows installe
 
 ## Privacy
 
-Habits, repeated phrases, and the device list stay on your Mac. Mi Home login material and API keys stay in the Keychain.
+Habits, repeated phrases, and pending timers stay on your Mac in plain-text local `UserDefaults` (`~/Library/Preferences/`, keys `assistant_user_habit_memory_v1` and `assistant_scheduled_commands_v1`). Mi Home login material and API keys stay in the macOS Keychain.
 
 Only utterances the local parser does not handle are sent to the model endpoint you configured. The payload is that utterance, device names, rooms, and states, the time of day, room temperature, and, if enabled, a habit summary. The API key and Mi Home credentials are not included. Settings states this on the configuration page.
 
@@ -195,7 +196,7 @@ bash scripts/check.sh            # secret scan, style checks, swift test
 bash scripts/linux-check/run.sh  # build and test MijiaCore on Linux (Swift 6.1)
 ```
 
-Domain types, the Mi Cloud client, the local parser, and the model client live in `MijiaCore` and can be tested without the UI. Read `CODING_STANDARDS.md` before submitting changes. Terms are in `GLOSSARY.md`. Architecture notes are in `docs/adr/`.
+Domain types, the Mi Cloud client, the local parser, and the model client live in `MijiaCore` (macOS 14+ and Linux) and can be imported as a standalone SwiftPM library or tested without the UI. Cross-platform intent, delay, and undo rules share the golden corpus in `Tests/Fixtures/intent_golden.json` across `swift test` and `windows/tests/core.test.ts`. Read `CODING_STANDARDS.md` before submitting changes. Terms are in `GLOSSARY.md`. Architecture notes are in `docs/adr/`.
 
 ## Third-party components
 

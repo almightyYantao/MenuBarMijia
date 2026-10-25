@@ -15,7 +15,7 @@
 > 本项目是个人开源作品，与小米、米家、美的无关，也未获得其授权或认可。「小米」「米家」「美的」等是各自权利人的商标，本文仅用于说明兼容对象。
 
 <p align="center">
-  <img src="https://img.shields.io/badge/macOS-26%2B-000000?logo=apple&logoColor=white" alt="macOS 26+">
+  <img src="https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white" alt="Swift 6">
   <img src="https://img.shields.io/badge/Jev-System_One_毫秒级决策-7C3AED" alt="Jev System One">
   <img src="https://img.shields.io/badge/连接方式-米家扫码直连_%7C_Home_Assistant-30D158" alt="双后端支持">
@@ -91,7 +91,8 @@
 ### 模式一：米家云端直连（推荐新用户，0 门槛）
 - **手机扫码即用**：打开设置切换到「米家云端直连」，用手机「米家」App 扫一下屏幕上的二维码即可完成绑定。
 - **原生 Miot-Spec 协议与 RC4 端到端加密**：内置 `MiCloudClient` 与 `MiotSynthesizer`，自动拉取你米家账号下的家庭、房间与设备列表，动态解析 `miot-spec-v2` 规格书（含吸顶灯 `mode` 日光/月光枚举、空调温控、插座功率、温湿度计、扫地机、冰箱等）。
-- **隐私安全**：登录凭证（`serviceToken` / `ssecurity`）严格保存在你本机的 **macOS 系统钥匙串（Keychain）** 中，只与小米官方 `api.io.mi.com` 加密通信。
+- **隐私安全**：登录凭证（`serviceToken` / `ssecurity`）严格保存在你本机的 **macOS 系统钥匙串（Keychain）** 中，只与小米 `api.io.mi.com` 加密通信。
+- **账号风控提示**：`api.io.mi.com` 属于逆向的非公开客户端接口，小米历史上曾限制或要求重新登录使用非官方客户端的账号。若介意账号风控，请改用下方基于小米官方开源集成的 Home Assistant 模式。
 
 ### 模式二：Home Assistant 局域网实时连接（适合已有 HA / 跨生态玩家）
 - **毫秒级 WebSocket 状态同步**：通过局域网 WebSocket 订阅 `state_changed`，支持小米官方 [`xiaomi_home`](https://github.com/XiaoMi/ha_xiaomi_home) 与美的 [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) 集成，把米家和美的设备放进同一个面板。
@@ -164,25 +165,26 @@
 
 ## 常用说法
 
-打开指令栏（`⌥M` 或按住菜单栏图标）直接说。下面这些不用联网，本地 0ms 就能听懂：
+打开指令栏（`⌥M` 或按住菜单栏图标）直接说。下面这些中英文口令不用联网，本地 0ms 就能听懂：
 
-| 想做的事 | 可以这样说 |
-| --- | --- |
-| 开关 | 「关客厅灯」「把空调打开」 |
-| 微调亮度 | 「再暗一点」「主卧灯亮一点」 |
-| 微调温度 | 「调高两度」「温度低一点」 |
-| 风扇 | 「风扇开高档」「风速调低」「摇头」「停止摇头」 |
-| 定时 | 「10 分钟后关灯」「半小时后关空调」；「取消定时」 |
-| 撤销 | 「撤销」「刚才那个撤销」（10 分钟内有效） |
+| 想做的事 | 中文说法 | 英文说法 |
+| --- | --- | --- |
+| 开关 | 「关客厅灯」「把空调打开」 | `"turn on study light"`, `"turn off all lights"` |
+| 灯效模式 | 「书房吸顶灯月光模式」 | `"study light moonlight mode"`, `"daylight mode"` |
+| 微调亮度 | 「再暗一点」「主卧灯亮一点」 | `"dimmer"`, `"brighter"`, `"study light 40%"` |
+| 微调温度 | 「调高两度」「温度低一点」 | `"set living room ac to 24 degrees"`, `"warmer"` |
+| 风扇 | 「风扇开高档」「风速调低」「摇头」「停止摇头」 | `"fan high speed"`, `"stop swing"` |
+| 定时 | 「10 分钟后关灯」「半小时后关空调」；「取消定时」 | `"in 10 minutes turn off study light"`, `"cancel timer"` |
+| 撤销 | 「撤销」「刚才那个撤销」（10 分钟内有效） | `"undo"`, `"revert"`（10 分钟内有效） |
 
 > [!NOTE]
-> 没说具体设备的微调（比如「再暗一点」）只作用于**正开着**的设备。定时只在 App 运行期间有效，退出或重启后不会保留。
+> 没说具体设备的微调（比如「再暗一点」）只作用于**正开着**的设备。定时任务会持久化到本地 `UserDefaults`：重启后未到期的定时自动继续倒计时；关闭应用期间已过期的定时不会静默执行，启动时会弹出系统通知并在指令栏提示「已错过」，由你选择立即补执行或忽略。
 
 ---
 
 ## 隐私
 
-- **默认留在本机**：习惯记忆、口头禅、设备列表都存在你的 Mac 上；米家登录信息和 API 密钥存在钥匙串里。
+- **默认留在本机**：习惯记忆、口头禅与待执行定时保存在你 Mac 本机的 `UserDefaults` 明文配置中（`~/Library/Preferences/`，键名 `assistant_user_habit_memory_v1` 与 `assistant_scheduled_commands_v1`）；米家登录信息和 API 密钥保存在系统钥匙串（Keychain）里。
 - **发给 AI 的内容**：只有本地听不懂的话才会发给你配置的模型接口，内容是这句话、设备名称/房间/状态、时间段、室温，以及（如果开着）习惯摘要。API Key 和米家登录信息不会发送。设置页里写得很清楚。
 - **可以关**：设置里能关掉「学习我的使用习惯」（关掉后不再记录，也不会发给 AI），也能逐条删除已记住的习惯。
 - **语音可以只在本机识别**：打开「语音只在本机识别」后，声音不会发给苹果（需要系统支持该语言的离线识别）。
@@ -191,7 +193,7 @@
 
 ## 快速开始
 
-**运行环境**：macOS 26 及以上（从源码编译需 Xcode 26 / Swift 6）。
+**运行环境**：macOS 14（Sonoma）及以上（macOS 26 启用原生 SwiftUI `.glassEffect` 液态玻璃材质，macOS 14 与 15 自动回退到系统 `.ultraThinMaterial` 毛玻璃；核心库 `MijiaCore` 可直接作为 SwiftPM 包引用并在 Linux Swift 6.1 上编译）。
 
 ### 1. 下载安装（或从源码编译）
 
@@ -227,7 +229,7 @@
 
 ## 参与开发与架构说明
 
-纯 Swift Package，**零第三方 Swift 依赖**，开启 Swift 6 严格并发检查（Strict Concurrency）。核心协议、Miot-Spec 合成器、Jev `/v1/systemone` 决策客户端与习惯记忆引擎均位于独立的 `MijiaCore` 库中，可脱离 UI 单独运行单元测试。
+纯 Swift Package，**零第三方 Swift 依赖**，开启 Swift 6 严格并发检查（Strict Concurrency）。核心协议、Miot-Spec 合成器、Jev `/v1/systemone` 决策客户端与习惯记忆引擎均位于独立的 `MijiaCore` 库中（支持 macOS 14+ 与 Linux），既可作为 SwiftPM 库单独引用，也可脱离 UI 运行单元测试。macOS 与 Windows 双端共用 `Tests/Fixtures/intent_golden.json` 黄金测试语料校验中英文意图、延时与撤销解析。
 
 ```bash
 bash scripts/check.sh           # 隐私/密钥扫描 + 编码规范检查 + swift test
@@ -273,10 +275,10 @@ Sources/
 ├── MijiaCore/                          领域、协议与智能决策层（零 UI 依赖）
 │   ├── Models.swift                    统一设备领域模型：SmartDevice / DeviceKind / DeviceCommand
 │   ├── CommandIntent.swift             意图模型（开关、亮度、色温、相对微调、风扇档位、摇头……）与校验
-│   ├── LocalIntentParser.swift         0ms 本地自然语言解析
+│   ├── LocalIntentParser.swift         0ms 本地自然语言解析（中文 + 英文）
 │   ├── ModelIntentResolver.swift       Jev /v1/systemone 概率决策客户端与错误提示
 │   ├── AssistantConfig.swift           模型接口配置
-│   ├── AssistantSchedule.swift         「10 分钟后…」「取消定时」「撤销」的说法识别
+│   ├── AssistantSchedule.swift         「10 分钟后…」「取消定时」「撤销」识别与定时持久化
 │   ├── UserHabitMemory.swift           本地分时段习惯学习与个人口头禅记忆引擎
 │   ├── UpdateChecker.swift             读取 GitHub Releases 检查新版本
 │   ├── MiCloud/                        小米云直连后端（免 Home Assistant）
@@ -288,7 +290,7 @@ Sources/
 │   ├── DeviceSynthesizer.swift         Home Assistant 多实体聚合、房间排序、噪音过滤
 │   ├── HomeProvider.swift              HomeProvider 协议、HA WebSocket 实时流与 MockProvider
 │   ├── HomeStore.swift                 @Observable 状态中心：双后端切换、乐观锁、防抖、5s 撤销
-│   ├── HomeStore+Assistant.swift       指令执行：意图落地、定时、语音撤销
+│   ├── HomeStore+Assistant.swift       指令执行：意图落地、定时恢复、过期确认、语音撤销
 │   └── KeychainAndPrefs.swift          macOS 钥匙串安全存储与偏好设置
 └── MenuBarMijiaApp/                    SwiftUI + AppKit 原生界面层
     ├── MenuBarMijiaApp.swift           应用入口与生命周期绑定
@@ -298,8 +300,10 @@ Sources/
     ├── DeviceCardView.swift            双列 Liquid Glass 磁贴与 8 大品类专属控制抽屉
     ├── HotkeyAndNotificationManager.swift  NSStatusItem 菜单栏长按说话、⌥M 热键与主动安全通知
     ├── SettingsSheetView.swift         双后端连接配置、Jev 决策设置与偏好面板
-    └── ThemeAndMotion.swift            macOS 26 Liquid Glass 材质与阻尼弹簧动效
-Tests/MijiaCoreTests/                   Swift Testing 单元测试套件（覆盖合成、Miot、Jev、习惯记忆等）
+    └── ThemeAndMotion.swift            macOS 26 Liquid Glass 与 macOS 14+ 毛玻璃自适应材质、阻尼弹簧动效
+Tests/
+├── Fixtures/intent_golden.json         双端共用中英文意图、延时与撤销黄金测试语料
+└── MijiaCoreTests/                     Swift Testing 单元测试套件（覆盖合成、Miot、Jev、定时持久化、习惯记忆等）
 scripts/                                打包（build_app.sh）、发布公证（release.sh）、门禁检查（check.sh）、Linux 测试（linux-check/）
 nas/                                    群晖 NAS 一键部署 Home Assistant 脚本（可选）
 docs/                                   ADR、规格文档与 README 实机截图/动图资源

@@ -21,7 +21,7 @@ public struct AssistantContext: Equatable, Sendable {
     }
 }
 
-public struct AssistantSuggestion: Equatable, Sendable, Identifiable {
+public struct AssistantSuggestion: Codable, Equatable, Sendable, Identifiable {
     public let id: String
     public let title: String
     public let confidencePercent: Int?

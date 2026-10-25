@@ -82,6 +82,77 @@ struct AssistantScheduleTests {
         _ = await store.runAssistantCommand("取消定时")
         #expect(store.assistantState == .failed("现在没有定时任务"))
     }
+
+    @Test("Pending timers persist across restarts and resume their remaining countdown")
+    @MainActor
+    func pendingTimerSurvivesRestart() async throws {
+        let suiteName = "test.schedule.persist.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        let futureEntry = ScheduledCommand(
+            reply: "10 分钟后关闭书房吸顶灯",
+            fireDate: Date().addingTimeInterval(300),
+            plan: IntentPlan(
+                intents: [DeviceIntent(targetId: "dev_study_ceiling", operation: .power(false))],
+                reply: "已关闭书房吸顶灯",
+                source: .local
+            )
+        )
+        ScheduledCommand.save([futureEntry], to: defaults)
+
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.ceiling], scenes: []))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suiteName)
+        for _ in 0..<50 where store.devices.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(store.scheduledCommands.map(\.id) == [futureEntry.id])
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(await mock.executedCommands.isEmpty)
+
+        store.assistantSleep = { _ in try await Task.sleep(for: .milliseconds(30)) }
+        store.restoreScheduledCommands(now: Date())
+        for _ in 0..<50 where !store.scheduledCommands.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(ScheduledCommand.load(from: defaults).isEmpty)
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
+    }
+
+    @Test("Expired timers move to missedScheduledCommands on launch and only run when confirmed")
+    @MainActor
+    func expiredTimerRequiresConfirmationOnLaunch() async throws {
+        let suiteName = "test.schedule.missed.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        let expiredEntry = ScheduledCommand(
+            reply: "10 分钟后关闭书房吸顶灯",
+            fireDate: Date().addingTimeInterval(-120),
+            plan: IntentPlan(
+                intents: [DeviceIntent(targetId: "dev_study_ceiling", operation: .power(false))],
+                reply: "已关闭书房吸顶灯",
+                source: .local
+            )
+        )
+        ScheduledCommand.save([expiredEntry], to: defaults)
+
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.ceiling], scenes: []))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suiteName)
+        var notified: [ScheduledCommand] = []
+        store.onMissedScheduledCommand = { notified.append($0) }
+        for _ in 0..<50 where store.devices.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(ScheduledCommand.load(from: defaults).isEmpty)
+        #expect(store.missedScheduledCommands.map(\.id) == [expiredEntry.id])
+        #expect(store.isShowingAssistantBar == true)
+        #expect(notified.map(\.id) == [expiredEntry.id])
+        #expect(await mock.executedCommands.isEmpty)
+
+        _ = await store.runMissedScheduledCommand(id: expiredEntry.id)
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
+    }
 }
 
 /// 方案 v1 第 2 步：语音撤销（"撤销"、"刚才那个撤销"）。

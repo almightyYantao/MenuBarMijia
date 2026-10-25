@@ -127,18 +127,37 @@ public enum DelayPhrase {
 
 /// A resolved plan waiting to run. The plan is resolved when spoken, so a later network failure
 /// can't stop the timer and the user hears exactly what will happen.
-public struct ScheduledCommand: Identifiable, Equatable, Sendable {
+public struct ScheduledCommand: Codable, Identifiable, Equatable, Sendable {
+    public static let storageKey = "assistant_scheduled_commands_v1"
+
     public let id: UUID
     /// "10 分钟后关闭书房吸顶灯"
     public let reply: String
     public let fireDate: Date
-    let plan: IntentPlan
+    public let plan: IntentPlan
 
-    init(id: UUID = UUID(), reply: String, fireDate: Date, plan: IntentPlan) {
+    public init(id: UUID = UUID(), reply: String, fireDate: Date, plan: IntentPlan) {
         self.id = id
         self.reply = reply
         self.fireDate = fireDate
         self.plan = plan
+    }
+
+    public static func load(from defaults: UserDefaults) -> [ScheduledCommand] {
+        guard let data = defaults.data(forKey: storageKey),
+              let decoded = try? JSONDecoder().decode([ScheduledCommand].self, from: data) else {
+            return []
+        }
+        return decoded.sorted { $0.fireDate < $1.fireDate }
+    }
+
+    public static func save(_ commands: [ScheduledCommand], to defaults: UserDefaults) {
+        if commands.isEmpty {
+            defaults.removeObject(forKey: storageKey)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(commands) else { return }
+        defaults.set(data, forKey: storageKey)
     }
 }
 

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import {
   DelayPhrase,
@@ -394,5 +396,54 @@ describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", 
     assert.deepEqual(plan.intents, [
       { targetId: "dev_ceiling", operation: { kind: "lightEffect", effect: "Night" } },
     ]);
+  });
+
+  it("matches the cross-platform golden JSON corpus shared with MijiaCoreTests", () => {
+    const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/intent_golden.json"), "utf8");
+    const corpus = JSON.parse(raw) as {
+      devices: SmartDevice[];
+      intentCases: Array<{
+        utterance: string;
+        expected: Array<{ targetId: string; kind: string; value: boolean | number | string }>;
+      }>;
+      delayCases: Array<{ utterance: string; seconds: number; remainder: string }>;
+      cancelCases: Array<{ utterance: string; isCancel: boolean }>;
+      undoCases: Array<{ utterance: string; isUndo: boolean }>;
+    };
+
+    const encodeOp = (intent: { targetId: string; operation: Record<string, unknown> }) => {
+      const k = String(intent.operation["kind"]);
+      const val =
+        intent.operation["isOn"] ??
+        intent.operation["percent"] ??
+        intent.operation["kelvin"] ??
+        intent.operation["effect"] ??
+        intent.operation["mode"] ??
+        intent.operation["celsius"] ??
+        intent.operation["speed"] ??
+        intent.operation["enabled"] ??
+        intent.operation["delta"] ??
+        true;
+      return { targetId: intent.targetId, kind: k, value: val };
+    };
+
+    for (const item of corpus.intentCases) {
+      const plan = LocalIntentParser.parse(item.utterance, corpus.devices, []);
+      assert.ok(plan, `Expected plan for: ${item.utterance}`);
+      assert.deepEqual(plan.intents.map(encodeOp as never), item.expected, item.utterance);
+    }
+
+    for (const item of corpus.delayCases) {
+      const got = DelayPhrase.extract(item.utterance);
+      assert.deepEqual(got, { seconds: item.seconds, remainder: item.remainder }, item.utterance);
+    }
+
+    for (const item of corpus.cancelCases) {
+      assert.equal(DelayPhrase.isCancel(item.utterance), item.isCancel, item.utterance);
+    }
+
+    for (const item of corpus.undoCases) {
+      assert.equal(UndoPhrase.isUndo(item.utterance), item.isUndo, item.utterance);
+    }
   });
 });

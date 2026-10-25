@@ -73,11 +73,10 @@ public struct PillActionButtonStyle: ButtonStyle {
                         )
                 }
             }
-            .glassEffect(
-                isSelected
-                    ? .regular.tint(tintColor.opacity(0.50)).interactive()
-                    : .regular.interactive(),
-                in: capsule
+            .adaptiveGlass(
+                in: capsule,
+                tint: isSelected ? tintColor.opacity(0.50) : nil,
+                interactive: true
             )
             .overlay {
                 capsule
@@ -205,11 +204,9 @@ public struct GlassTileBackground: ViewModifier {
                         )
                 }
             }
-            .glassEffect(
-                isActive
-                    ? .regular.tint(accent.opacity(colorScheme == .dark ? 0.24 : 0.14))
-                    : .regular,
-                in: shape
+            .adaptiveGlass(
+                in: shape,
+                tint: isActive ? accent.opacity(colorScheme == .dark ? 0.24 : 0.14) : nil
             )
             .overlay {
                 shape
@@ -243,6 +240,64 @@ public struct GlassTileBackground: ViewModifier {
 extension View {
     public func glassTile(isActive: Bool, accent: Color, cornerRadius: CGFloat = 14) -> some View {
         modifier(GlassTileBackground(isActive: isActive, accent: accent, cornerRadius: cornerRadius))
+    }
+
+    @ViewBuilder
+    public func adaptiveGlass<S: Shape>(
+        in shape: S,
+        tint: Color? = nil,
+        interactive: Bool = false,
+        clear: Bool = false
+    ) -> some View {
+        if #available(macOS 26.0, *) {
+            if clear {
+                self.glassEffect(
+                    interactive ? .clear.interactive() : .clear,
+                    in: shape
+                )
+            } else if let tint {
+                self.glassEffect(
+                    interactive ? .regular.tint(tint).interactive() : .regular.tint(tint),
+                    in: shape
+                )
+            } else {
+                self.glassEffect(
+                    interactive ? .regular.interactive() : .regular,
+                    in: shape
+                )
+            }
+        } else {
+            self.background {
+                if clear {
+                    shape.fill(.thinMaterial)
+                } else if let tint {
+                    shape.fill(.ultraThinMaterial)
+                        .overlay(shape.fill(tint))
+                } else {
+                    shape.fill(.ultraThinMaterial)
+                }
+            }
+        }
+    }
+}
+
+public struct AdaptiveGlassContainer<Content: View>: View {
+    public var spacing: CGFloat
+    @ViewBuilder public var content: () -> Content
+
+    public init(spacing: CGFloat = 6, @ViewBuilder content: @escaping () -> Content) {
+        self.spacing = spacing
+        self.content = content
+    }
+
+    public var body: some View {
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) {
+                content()
+            }
+        } else {
+            content()
+        }
     }
 }
 
@@ -323,7 +378,7 @@ public struct LiquidGlassSlider: View {
                             }
                             .clipShape(Capsule(style: .continuous))
                         }
-                        .glassEffect(.regular, in: Capsule(style: .continuous))
+                        .adaptiveGlass(in: Capsule(style: .continuous))
                         .overlay {
                             // Top inner specular rim
                             Capsule(style: .continuous)
@@ -353,7 +408,7 @@ public struct LiquidGlassSlider: View {
                             )
                         )
                         .frame(width: thumbWidth, height: thumbHeight)
-                        .glassEffect(.clear.interactive(), in: Capsule(style: .continuous))
+                        .adaptiveGlass(in: Capsule(style: .continuous), interactive: true, clear: true)
                         .overlay {
                             // Outer meniscus specular highlight
                             Capsule(style: .continuous)

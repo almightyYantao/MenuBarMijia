@@ -242,7 +242,7 @@ public struct ControlCenterPanel: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.primary.opacity(0.78))
                         .frame(width: 26, height: 24)
-                        .glassEffect(.regular.interactive(), in: Capsule(style: .continuous))
+                        .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
                 }
                 .buttonStyle(.plain)
                 .help(L10n.tr("语音指令：点击直接说话控制设备（快捷键 V）", "Voice command: click to speak (shortcut V)"))
@@ -265,11 +265,10 @@ public struct ControlCenterPanel: View {
                                 Capsule(style: .continuous).fill(Color.accentColor)
                             }
                         }
-                        .glassEffect(
-                            store.isShowingAssistantBar
-                                ? .regular.tint(.accentColor.opacity(0.45)).interactive()
-                                : .regular.interactive(),
-                            in: Capsule(style: .continuous)
+                        .adaptiveGlass(
+                            in: Capsule(style: .continuous),
+                            tint: store.isShowingAssistantBar ? .accentColor.opacity(0.45) : nil,
+                            interactive: true
                         )
                 }
                 .buttonStyle(.plain)
@@ -300,7 +299,7 @@ public struct ControlCenterPanel: View {
 
             if !store.environmentReadings.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    GlassEffectContainer(spacing: 6) {
+                    AdaptiveGlassContainer(spacing: 6) {
                         HStack(spacing: 6) {
                             ForEach(store.environmentReadings) { env in
                                 environmentChip(env)
@@ -328,7 +327,7 @@ public struct ControlCenterPanel: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 4.5)
-        .glassEffect(.regular, in: capsule)
+        .adaptiveGlass(in: capsule)
         .overlay(
             capsule
                 .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.20 : 0.48), lineWidth: 0.7)
@@ -362,7 +361,7 @@ public struct ControlCenterPanel: View {
         }
         .padding(.horizontal, 9.5)
         .padding(.vertical, 4.5)
-        .glassEffect(.regular, in: capsule)
+        .adaptiveGlass(in: capsule)
         .overlay(
             capsule
                 .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.20 : 0.48), lineWidth: 0.7)
@@ -386,7 +385,7 @@ public struct ControlCenterPanel: View {
 
     private var quickActionsAndScenesBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            GlassEffectContainer(spacing: 6) {
+            AdaptiveGlassContainer(spacing: 6) {
                 HStack(spacing: 6) {
                     ForEach(QuickAction.allCases) { action in
                         Button {
@@ -441,7 +440,7 @@ public struct ControlCenterPanel: View {
     private var roomFilterBar: some View {
         HStack(spacing: 6) {
             ScrollView(.horizontal, showsIndicators: false) {
-                GlassEffectContainer(spacing: 5) {
+                AdaptiveGlassContainer(spacing: 5) {
                     HStack(spacing: 5) {
                         roomPill(title: L10n.tr("全部", "All"), roomId: nil)
 
@@ -464,7 +463,7 @@ public struct ControlCenterPanel: View {
                 )
             )
 
-            GlassEffectContainer(spacing: 5) {
+            AdaptiveGlassContainer(spacing: 5) {
                 HStack(spacing: 5) {
                     Button {
                         withAnimation(AppleMotion.snappySpring) {
@@ -480,11 +479,10 @@ public struct ControlCenterPanel: View {
                                     Capsule(style: .continuous).fill(Color.accentColor)
                                 }
                             }
-                            .glassEffect(
-                                store.isCompactGridMode
-                                    ? .regular.tint(.accentColor.opacity(0.45)).interactive()
-                                    : .regular.interactive(),
-                                in: Capsule(style: .continuous)
+                            .adaptiveGlass(
+                                in: Capsule(style: .continuous),
+                                tint: store.isCompactGridMode ? .accentColor.opacity(0.45) : nil,
+                                interactive: true
                             )
                     }
                     .buttonStyle(.plain)
@@ -508,11 +506,10 @@ public struct ControlCenterPanel: View {
                                     Capsule(style: .continuous).fill(Color.accentColor)
                                 }
                             }
-                            .glassEffect(
-                                store.hideOfflineDevices
-                                    ? .regular.tint(.accentColor.opacity(0.45)).interactive()
-                                    : .regular.interactive(),
-                                in: Capsule(style: .continuous)
+                            .adaptiveGlass(
+                                in: Capsule(style: .continuous),
+                                tint: store.hideOfflineDevices ? .accentColor.opacity(0.45) : nil,
+                                interactive: true
                             )
                     }
                     .buttonStyle(.plain)
@@ -635,7 +632,7 @@ public struct ControlCenterPanel: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .glassEffect(.regular, in: bannerShape)
+            .adaptiveGlass(in: bannerShape)
             .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 4)
             .padding(.horizontal, 14)
             .padding(.bottom, 42)
@@ -653,7 +650,7 @@ public struct ControlCenterPanel: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
-            .glassEffect(.regular, in: toastShape)
+            .adaptiveGlass(in: toastShape)
             .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 3)
             .padding(.bottom, 42)
             .transition(AppleMotion.drawerTransition)

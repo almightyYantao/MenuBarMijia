@@ -151,8 +151,8 @@ public struct MiAccountSection: View {
     private var loggedOutView: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(L10n.tr(
-                "无需额外部署 Home Assistant，扫码即可通过米家云端直连同步设备与房间。",
-                "No Home Assistant needed. Scan with the Mi Home app to sync devices and rooms directly from Xiaomi Cloud."
+                "无需额外部署 Home Assistant，扫码即可通过米家云端直连同步设备与房间。直连使用非官方客户端接口；若介意账号风控，请改用官方开源的 Home Assistant (xiaomi_home) 模式。",
+                "No Home Assistant needed. Scan with the Mi Home app to sync devices and rooms directly from Xiaomi Cloud. Direct mode uses an unofficial client API; switch to Home Assistant (xiaomi_home) if you prefer Xiaomi's official integration."
             ))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
