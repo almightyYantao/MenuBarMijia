@@ -86,10 +86,15 @@ elif search_matches 'return \([^\n]*await' Sources/; then
     exit 1
 fi
 
+if [ "${1:-}" = "--lint-only" ]; then
+    echo "✅ 密钥与机械性编码规范检查通过！"
+    exit 0
+fi
+
 echo "🧪 [3/4] 运行 Swift 单元测试 (swift test) 与双端黄金语料校验..."
 swift test
 if [ -x "windows/node_modules/.bin/tsx" ]; then
-    (cd windows && ./node_modules/.bin/tsx --test tests/core.test.ts)
+    (cd windows && npm test && npm run typecheck)
 fi
 
 echo "✅ [4/4] 所有门禁检查与单元测试全部通过！"

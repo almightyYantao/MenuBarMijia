@@ -583,6 +583,20 @@ struct AssistantTests {
 
     @Test("AssistantProviderPreset infers providers and isolates provider keys in CodexBar")
     func providerPresetAndCodexBarIsolation() throws {
+        #expect(AssistantProviderPreset.allCases.map(\.rawValue) == [
+            "openrouter_jev",
+            "native_jev",
+            "deepseek",
+            "siliconflow",
+            "dashscope",
+            "zhipu_glm",
+            "moonshot_kimi",
+            "openai",
+            "gemini",
+            "groq",
+            "ollama",
+            "custom"
+        ])
         #expect(AssistantProviderPreset.infer(baseURL: "https://openrouter.ai/api/v1") == .openRouterJev)
         #expect(AssistantProviderPreset.infer(baseURL: "https://api.typesafe.ai/v1") == .nativeJev)
         #expect(AssistantProviderPreset.infer(baseURL: "https://api.deepseek.com/v1") == .deepSeek)

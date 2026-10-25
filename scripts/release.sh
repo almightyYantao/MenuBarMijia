@@ -25,6 +25,10 @@ APP="$ROOT/MenuBarMijia.app"
 DIST="$ROOT/dist"
 DMG="$DIST/MenuBarMijia-$VERSION.dmg"
 
+echo "▶ [0/5] 运行门禁检查与 Release 模式单元测试..."
+bash scripts/check.sh --lint-only
+swift test -c release
+
 echo "▶ [1/5] 编译并签名 MenuBarMijia $VERSION (SIGN_IDENTITY=$DEVELOPER_ID)"
 SIGN_IDENTITY="$DEVELOPER_ID" bash scripts/build_app.sh
 codesign --verify --strict --verbose=2 "$APP"
@@ -58,6 +62,10 @@ else
 fi
 
 echo "▶ [5/5] 最终检查"
+if grep -aq "/Users/" "$APP/Contents/MacOS/MenuBarMijiaApp" "$DMG"; then
+    echo "❌ 检测到安装包内残留本机路径 (/Users/)，已中止发布！"
+    exit 1
+fi
 (cd "$DIST" && shasum -a 256 "$(basename "$DMG")" | tee "$(basename "$DMG").sha256")
 
 echo "✅ 完成：$DMG"

@@ -16,18 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Secret & coding-standard checks
-        run: |
-          if grep -rnE 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' Sources/ Tests/; then
-            echo "Detected hardcoded JWT token" && exit 1
-          fi
-          grep -q 'defaultSeededToken = ""' Sources/MijiaCore/KeychainAndPrefs.swift
-          grep -q 'defaultHost = ""' Sources/MijiaCore/LGWebOSClient.swift
-          if grep -rnE '10\.10\.1\.[0-9]+|4c:ba:d7:c3:e9:9a|localhost:3425' Sources/ Tests/; then
-            echo "Detected hardcoded personal LAN IP/MAC or localhost:3425" && exit 1
-          fi
-          if grep -rnE 'event\.keyCode\s*==\s*[0-9]+' Sources/; then
-            echo "Raw event.keyCode numeric literal found" && exit 1
-          fi
+        run: bash scripts/check.sh --lint-only
       - name: Test MijiaCore on Linux
         run: bash scripts/linux-check/run.sh
 

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import {
+  ASSISTANT_PROVIDER_PRESETS,
   DelayPhrase,
   LocalIntentParser,
   ModelIntentResolver,
@@ -456,6 +457,23 @@ describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", 
   });
 
   it("supports native TypeSafe Jev (/v1/systemone) and DeepSeek (/v1/chat/completions)", async () => {
+    assert.deepEqual(
+      ASSISTANT_PROVIDER_PRESETS.map((p) => p.id),
+      [
+        "openrouter_jev",
+        "native_jev",
+        "deepseek",
+        "siliconflow",
+        "dashscope",
+        "zhipu_glm",
+        "moonshot_kimi",
+        "openai",
+        "gemini",
+        "groq",
+        "ollama",
+        "custom",
+      ]
+    );
     const nativeJevResolver = new ModelIntentResolver(
       {
         baseURL: "https://api.typesafe.ai",
