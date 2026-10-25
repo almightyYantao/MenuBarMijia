@@ -266,16 +266,16 @@ public final class HomeStore {
             self.hiddenDeviceIds = []
         }
 
+        let initialHAToken = (provider == nil && initialBackend == .homeAssistant) ? KeychainHelper.loadToken() : ""
         if let provider {
             self.provider = provider
         } else if initialBackend == .xiaomiCloud {
             self.provider = MiCloudProvider()
         } else {
-            let token = KeychainHelper.loadToken()
-            self.provider = HAWebSocketProvider(baseURLString: savedURL, token: token)
+            self.provider = HAWebSocketProvider(baseURLString: savedURL, token: initialHAToken)
         }
-        if provider == nil, initialBackend == .homeAssistant {
-            self.provider = makeHAProvider(baseURLString: savedURL, token: KeychainHelper.loadToken())
+        if provider == nil, initialBackend == .homeAssistant, !isTestEnvironment {
+            self.provider = makeHAProvider(baseURLString: savedURL, token: initialHAToken)
         }
         startListening()
         restoreScheduledCommands()
@@ -1466,6 +1466,10 @@ public final class HomeStore {
         MiSessionStore.clear()
         self.miSessionMaskedUserId = nil
         if homeBackend == .xiaomiCloud {
+            self.devices = []
+            self.rooms = []
+            self.environmentReadings = []
+            self.scenes = []
             eventTask?.cancel()
             shutdownCurrentProvider()
             self.provider = MiCloudProvider()

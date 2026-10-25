@@ -66,6 +66,7 @@ public actor MiCloudProvider: HomeProvider {
         do {
             try await discover(api)
             try await poll(api, dids: nil)
+            continuation?.yield(.statusChanged(.connected))
         } catch {
             report(error)
         }
@@ -104,6 +105,7 @@ public actor MiCloudProvider: HomeProvider {
             } catch is CancellationError {
                 return
             } catch MiCloudError.sessionExpired {
+                self.api = nil
                 report(MiCloudError.sessionExpired)
                 return
             } catch {

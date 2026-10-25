@@ -29,6 +29,11 @@ mkdir -p "$APP_DIR/Contents/Resources"
 
 cp "$BIN_PATH" "$APP_DIR/Contents/MacOS/MenuBarMijiaApp"
 chmod +x "$APP_DIR/Contents/MacOS/MenuBarMijiaApp"
+strip -S -x "$APP_DIR/Contents/MacOS/MenuBarMijiaApp"
+if nm -ap "$APP_DIR/Contents/MacOS/MenuBarMijiaApp" | grep -q "/Users/"; then
+    echo "❌ MenuBarMijiaApp 符号表中仍残留本地编译路径 (/Users/)！"
+    exit 1
+fi
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

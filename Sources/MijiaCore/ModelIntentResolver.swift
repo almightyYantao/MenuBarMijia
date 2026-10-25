@@ -452,10 +452,10 @@ public struct ModelIntentResolver: Sendable {
     }
 
     static func systemPrompt(catalog: IntentCatalog, context: AssistantContext = AssistantContext()) -> String {
-        var contextBlock = ""
-        if !context.environmentSummary.isEmpty || !context.habitSummary.isEmpty {
-            contextBlock = "\n当前环境与习惯：\(context.timeSummary) \(context.environmentSummary) \(context.habitSummary)\n"
-        }
+        let contextParts = [context.timeSummary, context.environmentSummary, context.activeDevicesSummary, context.habitSummary]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let contextBlock = contextParts.isEmpty ? "" : "\n当前环境与习惯：\(contextParts.joined(separator: "；"))\n"
         return """
         你是智能家居指令解析器。把用户的中文指令转换为 JSON，只输出 JSON，不要解释。\(contextBlock)
         \(catalog.text)
@@ -504,13 +504,16 @@ public struct ModelIntentResolver: Sendable {
             return targetIds.map { DeviceIntent(targetId: $0, operation: op) }
         }
         let intents = IntentValidator.sanitize(raw, devices: devices, scenes: scenes)
+        let primaryTargetIds = Set(intents.map(\.targetId))
         let rawSuggestions = object["suggestions"] as? [[String: Any]] ?? []
         let parsedSuggestions = parseChatSuggestionItems(
             rawSuggestions,
             catalog: catalog,
             devices: devices,
             scenes: scenes
-        )
+        ).filter { suggestion in
+            !suggestion.intents.contains(where: { primaryTargetIds.contains($0.targetId) })
+        }
         let modelReply = (object["reply"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let reply = modelReply.isEmpty ? IntentReply.describe(intents, devices: devices, scenes: scenes) : modelReply
         return IntentPlan(intents: intents, reply: reply, source: .model, suggestions: parsedSuggestions)
@@ -565,7 +568,7 @@ public struct ModelIntentResolver: Sendable {
                     id: "chat:\(primary.targetId):\(idx)",
                     title: title,
                     confidencePercent: pct,
-                    intents: sanitized
+                    intents: [primary]
                 )
             ))
         }

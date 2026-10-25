@@ -988,6 +988,14 @@ export const ASSISTANT_PROVIDER_PRESETS: ReadonlyArray<AssistantProviderPresetIn
     keyPlaceholder: "粘贴智谱开放平台 API Key",
   },
   {
+    id: "moonshot_kimi",
+    title: "Moonshot Kimi (月之暗面)",
+    shortTitle: "Kimi",
+    defaultBaseURL: "https://api.moonshot.cn/v1",
+    defaultModel: "kimi-k2-0711-preview",
+    keyPlaceholder: "粘贴 Moonshot Kimi API Key (sk-...)",
+  },
+  {
     id: "openai",
     title: "OpenAI",
     shortTitle: "OpenAI",
@@ -1002,6 +1010,22 @@ export const ASSISTANT_PROVIDER_PRESETS: ReadonlyArray<AssistantProviderPresetIn
     defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
     defaultModel: "gemini-2.5-flash",
     keyPlaceholder: "粘贴 Google Gemini API Key (AIza...)",
+  },
+  {
+    id: "groq",
+    title: "Groq",
+    shortTitle: "Groq",
+    defaultBaseURL: "https://api.groq.com/openai/v1",
+    defaultModel: "llama-3.3-70b-versatile",
+    keyPlaceholder: "粘贴 Groq API Key (gsk_...)",
+  },
+  {
+    id: "ollama",
+    title: "Ollama 本地模型",
+    shortTitle: "Ollama",
+    defaultBaseURL: "http://localhost:11434/v1",
+    defaultModel: "qwen2.5:7b",
+    keyPlaceholder: "Ollama 本地接口免密（可留空）",
   },
   {
     id: "custom",
@@ -1021,9 +1045,12 @@ export function inferAssistantPreset(baseURL: string): AssistantProviderPresetIn
   if (lower.includes("siliconflow.cn")) return ASSISTANT_PROVIDER_PRESETS[3]!;
   if (lower.includes("aliyuncs.com")) return ASSISTANT_PROVIDER_PRESETS[4]!;
   if (lower.includes("bigmodel.cn")) return ASSISTANT_PROVIDER_PRESETS[5]!;
-  if (lower.includes("openai.com")) return ASSISTANT_PROVIDER_PRESETS[6]!;
-  if (lower.includes("googleapis.com")) return ASSISTANT_PROVIDER_PRESETS[7]!;
-  return ASSISTANT_PROVIDER_PRESETS[8]!;
+  if (lower.includes("moonshot.cn") || lower.includes("moonshot.ai")) return ASSISTANT_PROVIDER_PRESETS[6]!;
+  if (lower.includes("openai.com")) return ASSISTANT_PROVIDER_PRESETS[7]!;
+  if (lower.includes("googleapis.com")) return ASSISTANT_PROVIDER_PRESETS[8]!;
+  if (lower.includes("groq.com")) return ASSISTANT_PROVIDER_PRESETS[9]!;
+  if (lower.includes(":11434")) return ASSISTANT_PROVIDER_PRESETS[10]!;
+  return ASSISTANT_PROVIDER_PRESETS[11]!;
 }
 
 export interface AssistantConfig {
@@ -1051,6 +1078,38 @@ export class ModelIntentResolver {
     const lower = model.trim().toLowerCase();
     if (lower.includes("jev-router")) return false;
     return lower.includes("jev") || lower.includes("clef") || lower.includes("decision");
+  }
+
+  static extractFirstJSONObject(text: string): string | null {
+    const start = text.indexOf("{");
+    if (start < 0) return null;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i]!;
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === "\\") {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+      } else if (ch === "{") {
+        depth += 1;
+      } else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          return text.slice(start, i + 1);
+        }
+      }
+    }
+    return null;
   }
 
   get usesSystemOne(): boolean {
@@ -1333,10 +1392,9 @@ export class ModelIntentResolver {
     if (closeThinkIdx >= 0) {
       content = content.slice(closeThinkIdx + "</think>".length);
     }
-    const start = content.indexOf("{");
-    const end = content.lastIndexOf("}");
-    if (start < 0 || end <= start) throw new Error("AI 返回格式无法解析");
-    const payload = JSON.parse(content.slice(start, end + 1)) as Record<string, unknown>;
+    const jsonSlice = ModelIntentResolver.extractFirstJSONObject(content);
+    if (!jsonSlice) throw new Error("AI 返回格式无法解析");
+    const payload = JSON.parse(jsonSlice) as Record<string, unknown>;
     const actions = (payload["actions"] as Array<Record<string, unknown>>) ?? [];
 
     const raw: DeviceIntent[] = [];

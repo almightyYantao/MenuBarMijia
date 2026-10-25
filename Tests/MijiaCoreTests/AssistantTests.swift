@@ -588,6 +588,9 @@ struct AssistantTests {
         #expect(AssistantProviderPreset.infer(baseURL: "https://api.deepseek.com/v1") == .deepSeek)
         #expect(AssistantProviderPreset.infer(baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1") == .dashScope)
         #expect(AssistantProviderPreset.infer(baseURL: "https://open.bigmodel.cn/api/paas/v4") == .zhipuGLM)
+        #expect(AssistantProviderPreset.infer(baseURL: "https://api.moonshot.cn/v1") == .moonshotKimi)
+        #expect(AssistantProviderPreset.infer(baseURL: "https://api.groq.com/openai/v1") == .groq)
+        #expect(AssistantProviderPreset.infer(baseURL: "http://localhost:11434/v1") == .ollama)
 
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("codexbar-multi-\(UUID().uuidString).json")

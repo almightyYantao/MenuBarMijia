@@ -662,11 +662,17 @@ struct AssistantSettingsSection: View {
                     selection: Binding(
                         get: { selectedPreset },
                         set: { newPreset in
+                            let oldPreset = selectedPreset
                             selectedPreset = newPreset
                             if newPreset != .custom {
                                 baseURLDraft = newPreset.defaultBaseURL
                                 modelDraft = newPreset.defaultModel
                                 apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: newPreset.defaultBaseURL)
+                            } else {
+                                if modelDraft == oldPreset.defaultModel || ModelIntentResolver.isSystemOneModel(modelDraft) {
+                                    modelDraft = "gpt-4o-mini"
+                                }
+                                apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: "https://custom.local/v1")
                             }
                         }
                     )
@@ -689,10 +695,17 @@ struct AssistantSettingsSection: View {
                     text: Binding(
                         get: { baseURLDraft },
                         set: { newValue in
+                            let oldPreset = selectedPreset
                             baseURLDraft = newValue
                             let inferred = AssistantProviderPreset.infer(baseURL: newValue)
-                            if inferred != selectedPreset {
+                            if inferred != oldPreset {
                                 selectedPreset = inferred
+                                apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: newValue)
+                                if !inferred.defaultModel.isEmpty {
+                                    modelDraft = inferred.defaultModel
+                                } else if modelDraft == oldPreset.defaultModel || ModelIntentResolver.isSystemOneModel(modelDraft) {
+                                    modelDraft = "gpt-4o-mini"
+                                }
                             }
                         }
                     )
@@ -751,6 +764,8 @@ struct AssistantSettingsSection: View {
                     baseURLDraft = AssistantConfig.defaultBaseURL
                     modelDraft = AssistantConfig.defaultModel
                     apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: AssistantConfig.defaultBaseURL)
+                    _ = saveCurrentDraft()
+                    store.showToast(L10n.tr("已恢复默认 AI 配置", "Restored default AI configuration"))
                 }
                 .buttonStyle(PillActionButtonStyle())
 
@@ -792,8 +807,9 @@ struct AssistantSettingsSection: View {
         let normalizedBase = baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? (selectedPreset.defaultBaseURL.isEmpty ? AssistantConfig.defaultBaseURL : selectedPreset.defaultBaseURL)
             : baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackModel = selectedPreset.defaultModel.isEmpty ? "gpt-4o-mini" : selectedPreset.defaultModel
         let normalizedModel = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? (selectedPreset.defaultModel.isEmpty ? AssistantConfig.defaultModel : selectedPreset.defaultModel)
+            ? fallbackModel
             : modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         baseURLDraft = normalizedBase
         modelDraft = normalizedModel

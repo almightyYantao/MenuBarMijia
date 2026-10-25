@@ -485,6 +485,7 @@ export class MenuMijiaWindowsApp {
       if (
         this.settings.connectionMode === "xiaomiCloud" &&
         this.settings.miSession &&
+        this.activeSheet === "none" &&
         !this.isSyncingCloud &&
         !this.isPollingQR
       ) {
@@ -2135,8 +2136,6 @@ export class MenuMijiaWindowsApp {
         if (baseEl) baseEl.value = preset.defaultBaseURL;
         if (modelEl) modelEl.value = preset.defaultModel;
         if (apiKeyEl) apiKeyEl.placeholder = preset.keyPlaceholder;
-        this.settings.assistantBaseURL = preset.defaultBaseURL;
-        this.settings.assistantModel = preset.defaultModel;
         this.root.querySelectorAll<HTMLElement>("[data-ai-preset]").forEach((el) => {
           el.classList.toggle("is-active", el.dataset.aiPreset === preset.id);
         });
@@ -2150,7 +2149,9 @@ export class MenuMijiaWindowsApp {
       const habitEl = this.root.querySelector<HTMLInputElement>("#settings-habit");
       if (baseEl) this.settings.assistantBaseURL = baseEl.value.trim() || "https://openrouter.ai/api/v1";
       if (apiKeyEl) this.settings.openRouterApiKey = apiKeyEl.value.trim();
-      if (modelEl) this.settings.assistantModel = modelEl.value.trim() || "~typesafe/jev-latest";
+      const inferredPreset = inferAssistantPreset(this.settings.assistantBaseURL);
+      const fallbackModel = inferredPreset.defaultModel || "gpt-4o-mini";
+      if (modelEl) this.settings.assistantModel = modelEl.value.trim() || fallbackModel;
       if (habitEl) this.settings.habitLearningEnabled = habitEl.checked;
       saveSettings(this.settings);
       this.activeSheet = "none";

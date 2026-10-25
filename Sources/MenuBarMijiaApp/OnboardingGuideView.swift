@@ -245,7 +245,8 @@ public struct OnboardingGuideView: View {
         let effectiveBase = selectedPreset.defaultBaseURL.isEmpty ? store.assistantConfig.baseURL : selectedPreset.defaultBaseURL
         let ambientSource = AssistantConfig.ambientKeySourceLabel(forBaseURL: effectiveBase)
         let hasCustomKey = !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let isReady = hasCustomKey || (ambientSource != nil)
+        let isLoopback = AssistantConfig(baseURL: effectiveBase, model: selectedPreset.defaultModel, apiKey: "").isLoopbackEndpoint
+        let isReady = hasCustomKey || (ambientSource != nil) || isLoopback
 
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
@@ -259,6 +260,10 @@ public struct OnboardingGuideView: View {
                         .foregroundStyle(.green)
                 } else if let ambientSource {
                     Label(L10n.tr("已自动接入 \(ambientSource)", "Linked via \(ambientSource)"), systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.green)
+                } else if isLoopback {
+                    Label(L10n.tr("本机免密接口", "Local Endpoint"), systemImage: "checkmark.circle.fill")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.green)
                 } else {
@@ -285,11 +290,13 @@ public struct OnboardingGuideView: View {
                             selectedPreset = newPreset
                             if newPreset != .custom {
                                 apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: newPreset.defaultBaseURL)
+                            } else {
+                                apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: store.assistantConfig.baseURL)
                             }
                         }
                     )
                 ) {
-                    ForEach(AssistantProviderPreset.allCases.filter { $0 != .custom }) { preset in
+                    ForEach(AssistantProviderPreset.allCases) { preset in
                         Text(preset.shortTitle).tag(preset)
                     }
                 }
@@ -303,13 +310,7 @@ public struct OnboardingGuideView: View {
                     .font(.system(size: 11, design: .monospaced))
 
                 Button(L10n.tr("保存", "Save")) {
-                    let base = selectedPreset.defaultBaseURL.isEmpty ? store.assistantConfig.baseURL : selectedPreset.defaultBaseURL
-                    let model = selectedPreset.defaultModel.isEmpty ? store.assistantConfig.model : selectedPreset.defaultModel
-                    store.assistantConfig = AssistantConfig(
-                        baseURL: base,
-                        model: model,
-                        apiKey: apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                    )
+                    persistOnboardingAssistantDraft()
                     store.showToast(L10n.tr("已保存 \(selectedPreset.shortTitle) 配置", "Saved \(selectedPreset.shortTitle) config"))
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: !apiKeyDraft.isEmpty, tintColor: .accentColor))
@@ -317,6 +318,16 @@ public struct OnboardingGuideView: View {
         }
         .padding(11)
         .glassTile(isActive: false, accent: .accentColor, cornerRadius: 12)
+    }
+
+    private func persistOnboardingAssistantDraft() {
+        let base = selectedPreset.defaultBaseURL.isEmpty ? store.assistantConfig.baseURL : selectedPreset.defaultBaseURL
+        let model = selectedPreset.defaultModel.isEmpty ? store.assistantConfig.model : selectedPreset.defaultModel
+        store.assistantConfig = AssistantConfig(
+            baseURL: base,
+            model: model,
+            apiKey: apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
     }
 
     // MARK: - Step 3: Hold-to-Talk & Shortcuts
@@ -401,6 +412,11 @@ public struct OnboardingGuideView: View {
             Spacer()
 
             Button {
+                let trimmedKey = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                let currentPreset = AssistantProviderPreset.infer(baseURL: store.assistantConfig.baseURL)
+                if !trimmedKey.isEmpty || selectedPreset != currentPreset {
+                    persistOnboardingAssistantDraft()
+                }
                 withAnimation(AppleMotion.snappySpring) {
                     store.completeOnboarding()
                 }

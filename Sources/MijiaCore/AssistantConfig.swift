@@ -10,8 +10,11 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
     case siliconFlow = "siliconflow"
     case dashScope = "dashscope"
     case zhipuGLM = "zhipu_glm"
+    case moonshotKimi = "moonshot_kimi"
     case openAI = "openai"
     case gemini = "gemini"
+    case groq = "groq"
+    case ollama = "ollama"
     case custom = "custom"
 
     public var id: String { rawValue }
@@ -30,10 +33,16 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
             return L10n.tr("通义千问 / 阿里云百炼", "Qwen / Alibaba DashScope")
         case .zhipuGLM:
             return L10n.tr("智谱 GLM (BigModel)", "Zhipu GLM (BigModel)")
+        case .moonshotKimi:
+            return L10n.tr("Moonshot Kimi (月之暗面)", "Moonshot Kimi")
         case .openAI:
             return "OpenAI"
         case .gemini:
             return "Google Gemini"
+        case .groq:
+            return "Groq"
+        case .ollama:
+            return L10n.tr("Ollama 本地模型", "Ollama (Local)")
         case .custom:
             return L10n.tr("自定义兼容接口", "Custom Compatible Endpoint")
         }
@@ -47,8 +56,11 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
         case .siliconFlow: return L10n.tr("硅基流动", "SiliconFlow")
         case .dashScope: return L10n.tr("通义千问", "Qwen")
         case .zhipuGLM: return L10n.tr("智谱 GLM", "Zhipu GLM")
+        case .moonshotKimi: return "Kimi"
         case .openAI: return "OpenAI"
         case .gemini: return "Gemini"
+        case .groq: return "Groq"
+        case .ollama: return "Ollama"
         case .custom: return L10n.tr("自定义", "Custom")
         }
     }
@@ -61,8 +73,11 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
         case .siliconFlow: return "https://api.siliconflow.cn/v1"
         case .dashScope: return "https://dashscope.aliyuncs.com/compatible-mode/v1"
         case .zhipuGLM: return "https://open.bigmodel.cn/api/paas/v4"
+        case .moonshotKimi: return "https://api.moonshot.cn/v1"
         case .openAI: return "https://api.openai.com/v1"
         case .gemini: return "https://generativelanguage.googleapis.com/v1beta/openai"
+        case .groq: return "https://api.groq.com/openai/v1"
+        case .ollama: return "http://localhost:11434/v1"
         case .custom: return ""
         }
     }
@@ -75,8 +90,11 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
         case .siliconFlow: return "deepseek-ai/DeepSeek-V3"
         case .dashScope: return "qwen-plus"
         case .zhipuGLM: return "glm-4-flash"
+        case .moonshotKimi: return "kimi-k2-0711-preview"
         case .openAI: return "gpt-4o-mini"
         case .gemini: return "gemini-2.5-flash"
+        case .groq: return "llama-3.3-70b-versatile"
+        case .ollama: return "qwen2.5:7b"
         case .custom: return ""
         }
     }
@@ -95,10 +113,16 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
             return ["qwen-plus", "qwen-turbo", "qwen-max"]
         case .zhipuGLM:
             return ["glm-4-flash", "glm-4-plus"]
+        case .moonshotKimi:
+            return ["kimi-k2-0711-preview", "moonshot-v1-8k"]
         case .openAI:
             return ["gpt-4o-mini", "gpt-4.1-mini"]
         case .gemini:
             return ["gemini-2.5-flash", "gemini-2.5-pro"]
+        case .groq:
+            return ["llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b"]
+        case .ollama:
+            return ["qwen2.5:7b", "deepseek-r1:8b"]
         case .custom:
             return []
         }
@@ -118,10 +142,16 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
             return L10n.tr("粘贴阿里云百炼 API Key (sk-...)", "Paste DashScope API Key (sk-...)")
         case .zhipuGLM:
             return L10n.tr("粘贴智谱开放平台 API Key", "Paste Zhipu BigModel API Key")
+        case .moonshotKimi:
+            return L10n.tr("粘贴 Moonshot Kimi API Key (sk-...)", "Paste Moonshot Kimi API Key (sk-...)")
         case .openAI:
             return L10n.tr("粘贴 OpenAI API Key (sk-...)", "Paste OpenAI API Key (sk-...)")
         case .gemini:
             return L10n.tr("粘贴 Google Gemini API Key (AIza...)", "Paste Gemini API Key (AIza...)")
+        case .groq:
+            return L10n.tr("粘贴 Groq API Key (gsk_...)", "Paste Groq API Key (gsk_...)")
+        case .ollama:
+            return L10n.tr("Ollama 本地接口免密（可留空）", "Ollama local endpoint requires no key")
         case .custom:
             return L10n.tr("粘贴 API Key (本机接口可留空)", "Paste API Key (optional for localhost)")
         }
@@ -135,8 +165,11 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
         case .siliconFlow: return ["SILICONFLOW_API_KEY"]
         case .dashScope: return ["DASHSCOPE_API_KEY"]
         case .zhipuGLM: return ["ZHIPU_API_KEY", "GLM_API_KEY"]
+        case .moonshotKimi: return ["MOONSHOT_API_KEY", "KIMI_API_KEY"]
         case .openAI: return ["OPENAI_API_KEY"]
         case .gemini: return ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+        case .groq: return ["GROQ_API_KEY"]
+        case .ollama: return []
         case .custom: return ["OPENAI_API_KEY"]
         }
     }
@@ -149,23 +182,30 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
         case .siliconFlow: return ["siliconflow"]
         case .dashScope: return ["dashscope", "qwen", "bailian"]
         case .zhipuGLM: return ["zhipu", "glm", "bigmodel"]
+        case .moonshotKimi: return ["moonshot", "kimi"]
         case .openAI: return ["openai", "codex"]
         case .gemini: return ["gemini", "google"]
+        case .groq: return ["groq"]
+        case .ollama: return ["ollama"]
         case .custom: return []
         }
     }
 
     public static func infer(baseURL: String) -> AssistantProviderPreset {
         let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let host = URL(string: trimmed)?.host?.lowercased() ?? trimmed
+        let parsed = URL(string: trimmed)
+        let host = parsed?.host?.lowercased() ?? trimmed
         if host.contains("openrouter.ai") { return .openRouterJev }
         if host.contains("typesafe.ai") { return .nativeJev }
         if host.contains("deepseek.com") { return .deepSeek }
         if host.contains("siliconflow.cn") { return .siliconFlow }
         if host.contains("aliyuncs.com") { return .dashScope }
         if host.contains("bigmodel.cn") { return .zhipuGLM }
+        if host.contains("moonshot.cn") || host.contains("moonshot.ai") { return .moonshotKimi }
         if host.contains("openai.com") { return .openAI }
         if host.contains("googleapis.com") { return .gemini }
+        if host.contains("groq.com") { return .groq }
+        if parsed?.port == 11434 || trimmed.contains(":11434") { return .ollama }
         return .custom
     }
 }
@@ -205,7 +245,12 @@ public struct AssistantConfig: Equatable, Sendable {
         guard let host = URL(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines))?.host?.lowercased() else {
             return false
         }
-        return host == "localhost" || host == "127.0.0.1" || host == "::1"
+        return host == "localhost"
+            || host == "127.0.0.1"
+            || host == "::1"
+            || host.hasSuffix(".local")
+            || host.hasPrefix("192.168.")
+            || host.hasPrefix("10.")
     }
 
     public static func load(from defaults: UserDefaults, includeAmbientKey: Bool = true) -> AssistantConfig {
@@ -230,7 +275,7 @@ public struct AssistantConfig: Equatable, Sendable {
             resolvedModel = savedModel
         } else {
             let inferredPreset = AssistantProviderPreset.infer(baseURL: resolvedBase)
-            resolvedModel = inferredPreset.defaultModel.isEmpty ? defaultModel : inferredPreset.defaultModel
+            resolvedModel = inferredPreset.defaultModel.isEmpty ? "gpt-4o-mini" : inferredPreset.defaultModel
         }
 
         let effectiveKey: String
@@ -266,9 +311,11 @@ public struct AssistantConfig: Equatable, Sendable {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         defaults.set(trimmedBase, forKey: Self.baseURLKey)
         defaults.set(trimmedModel, forKey: Self.modelKey)
-        KeychainHelper.saveSecret(trimmedKey, account: KeychainHelper.assistantAPIKeyAccount)
         let inferred = AssistantProviderPreset.infer(baseURL: trimmedBase)
         KeychainHelper.saveSecret(trimmedKey, account: KeychainHelper.assistantProviderAPIKeyAccount(for: inferred))
+        if inferred == .openRouterJev {
+            KeychainHelper.saveSecret(trimmedKey, account: KeychainHelper.assistantAPIKeyAccount)
+        }
     }
 
     /// Returns only the user's explicitly saved Keychain API key for the given endpoint (excluding ambient CodexBar/env keys).
@@ -278,15 +325,11 @@ public struct AssistantConfig: Equatable, Sendable {
         if !providerKey.isEmpty {
             return providerKey
         }
-        let genericKey = KeychainHelper.loadSecret(account: KeychainHelper.assistantAPIKeyAccount)
-        guard !genericKey.isEmpty else { return "" }
-        // Prevent an OpenRouter-prefixed key (`sk-or-...`) in the legacy generic slot from leaking into non-OpenRouter presets.
-        if genericKey.lowercased().hasPrefix("sk-or-"),
-           preset != .openRouterJev,
-           preset != .custom {
-            return ""
+        // Pre-v1.0.4 versions stored the OpenRouter key in the generic `assistant_api_key` slot.
+        if preset == .openRouterJev {
+            return KeychainHelper.loadSecret(account: KeychainHelper.assistantAPIKeyAccount)
         }
-        return genericKey
+        return ""
     }
 
     /// Reads an ambient API key from environment variables or `~/.config/codexbar/config.json` matching the provider for `baseURL`.
