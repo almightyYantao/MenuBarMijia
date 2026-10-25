@@ -135,20 +135,49 @@ public struct ModelIntentResolver: Sendable {
         return try Self.plan(fromModelContent: content, catalog: catalog, devices: devices, scenes: scenes)
     }
 
-    /// Proactive zero-input inference using Jev System One: evaluates current time, indoor sensor readings,
+    /// Proactive zero-input inference: evaluates current time, indoor sensor readings,
     /// active devices, and personal habit memory to recommend top actions with calibrated probabilities.
+    /// Supports both System One (`/v1/systemone` for Jev) and OpenAI-compatible `/chat/completions` (for DeepSeek, Qwen, GLM, OpenAI, Gemini, etc.).
     public func recommendProactiveSuggestions(
         devices: [SmartDevice],
         scenes: [HomeScene],
         context: AssistantContext
     ) async throws -> [AssistantSuggestion] {
         let catalog = IntentCatalog(devices: devices, scenes: scenes)
-        let request = try makeProactiveSystemOneRequest(catalog: catalog, devices: devices, context: context)
+        if Self.isSystemOneModel(config.model) {
+            let request = try makeProactiveSystemOneRequest(catalog: catalog, devices: devices, context: context)
+            let (data, response) = try await transport(request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw AssistantError.httpStatus(http.statusCode)
+            }
+            return try Self.proactiveSuggestionsFromSystemOne(data: data, catalog: catalog, devices: devices, scenes: scenes)
+        }
+        let request = try makeProactiveChatRequest(catalog: catalog, context: context)
         let (data, response) = try await transport(request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw AssistantError.httpStatus(http.statusCode)
         }
-        return try Self.proactiveSuggestionsFromSystemOne(data: data, catalog: catalog, devices: devices, scenes: scenes)
+        let content = try Self.messageContent(from: data)
+        return try Self.proactiveSuggestionsFromChat(content: content, catalog: catalog, devices: devices, scenes: scenes)
+    }
+
+    /// Sends a lightweight probe request to verify the configured endpoint, model, and API key, returning round-trip latency in milliseconds.
+    public func testConnection() async throws -> Int {
+        let probeDevice = SmartDevice(
+            id: "probe_study_light",
+            name: "书房灯",
+            roomId: "shu_fang",
+            roomName: "书房",
+            model: "yeelink.light.ceiling20",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.probe_study", isOn: false, availableEffects: ["Day", "Night"]))
+        )
+        let clock = ContinuousClock()
+        let start = clock.now
+        _ = try await resolve("打开书房灯", devices: [probeDevice], scenes: [])
+        let elapsed = clock.now - start
+        let ms = Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000)
+        return max(1, ms)
     }
 
     /// System One protocol (`/v1/systemone`) backs TypeSafe Jev (`~typesafe/jev-latest`),
@@ -325,24 +354,98 @@ public struct ModelIntentResolver: Sendable {
         return request
     }
 
+    func makeProactiveChatRequest(
+        catalog: IntentCatalog,
+        context: AssistantContext
+    ) throws -> URLRequest {
+        let url = try endpointURL(path: "/chat/completions")
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let key = effectiveAPIKey()
+        request.setValue("Bearer \(key.isEmpty ? "local" : key)", forHTTPHeaderField: "Authorization")
+
+        let system = """
+        你是智能家居主动建议引擎。根据当前时间、室内温湿度、开启中的设备与用户习惯，推荐最多 3 个最值得立即执行的设备调整建议，只输出 JSON，不要解释。
+        \(catalog.text)
+        schema: {"suggestions":[{"device":"id","op":"power|brightness|color_temp|effect|hvac_mode|temperature|fan_speed|oscillation|scene","value":...,"confidence":85}]}
+        规则：confidence 为 20-99 的整数置信度；如果当前环境已处于理想状态无需操作，输出 {"suggestions":[]}。只能使用上面列出的 id。
+        """
+        let userState = "时间：\(context.timeSummary)\n环境：\(context.environmentSummary)\n开启中：\(context.activeDevicesSummary)\n习惯：\(context.habitSummary)"
+
+        let body: [String: Any] = [
+            "model": config.model.trimmingCharacters(in: .whitespacesAndNewlines),
+            "messages": [
+                ["role": "system", "content": system],
+                ["role": "user", "content": userState]
+            ],
+            "temperature": 0,
+            "max_tokens": 600,
+            "stream": false
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return request
+    }
+
     private func resolvedSystemOneModel(for url: URL) -> String {
         let trimmedModel = config.model.trimmingCharacters(in: .whitespacesAndNewlines)
-        if url.host()?.contains("openrouter.ai") == true,
-           trimmedModel.lowercased().contains("jev"),
-           !trimmedModel.hasPrefix("~") {
-            return "~typesafe/jev-latest"
+        let lowerModel = trimmedModel.lowercased()
+        let host = url.host?.lowercased() ?? ""
+        if host.contains("openrouter.ai") {
+            if lowerModel.contains("jev"), !trimmedModel.hasPrefix("~") {
+                if lowerModel.hasPrefix("typesafe/") {
+                    return "~" + trimmedModel
+                }
+                return "~typesafe/\(trimmedModel)"
+            }
+            return trimmedModel
         }
-        return trimmedModel
+        // Native TypeSafe endpoint (e.g. api.typesafe.ai) or non-OpenRouter SystemOne gateway:
+        // Strip OpenRouter's "~typesafe/" or "typesafe/" prefix so "jev-latest" is sent cleanly.
+        if lowerModel.hasPrefix("~typesafe/") {
+            return String(trimmedModel.dropFirst("~typesafe/".count))
+        }
+        if lowerModel.hasPrefix("typesafe/") {
+            return String(trimmedModel.dropFirst("typesafe/".count))
+        }
+        return trimmedModel.isEmpty ? "jev-latest" : trimmedModel
     }
 
     private func effectiveAPIKey() -> String {
-        config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        var key = config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if key.lowercased().hasPrefix("bearer ") {
+            key = String(key.dropFirst("bearer ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return key
     }
 
     private func endpointURL(path: String) throws -> URL {
         var base = config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         while base.hasSuffix("/") { base.removeLast() }
-        guard let url = URL(string: base + path), url.scheme?.hasPrefix("http") == true else {
+        for suffix in ["/chat/completions", "/systemone"] {
+            if base.lowercased().hasSuffix(suffix) {
+                base = String(base.dropLast(suffix.count))
+                while base.hasSuffix("/") { base.removeLast() }
+            }
+        }
+        guard let baseURL = URL(string: base),
+              let scheme = baseURL.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = baseURL.host?.lowercased(),
+              !host.isEmpty else {
+            throw AssistantError.invalidBaseURL(config.baseURL)
+        }
+        let basePath = baseURL.path
+        if host.contains("openrouter.ai") {
+            if basePath.isEmpty {
+                base += "/api/v1"
+            } else if basePath == "/api" {
+                base += "/v1"
+            }
+        } else if basePath.isEmpty {
+            base += "/v1"
+        }
+        guard let url = URL(string: base + path) else {
             throw AssistantError.invalidBaseURL(config.baseURL)
         }
         return url
@@ -393,17 +496,83 @@ public struct ModelIntentResolver: Sendable {
             throw AssistantError.malformedResponse
         }
         let actions = object["actions"] as? [[String: Any]] ?? []
-        let raw: [DeviceIntent] = actions.compactMap { action in
+        let raw: [DeviceIntent] = actions.flatMap { action -> [DeviceIntent] in
             guard let alias = action["device"] as? String,
-                  let targetId = catalog.realId(forAlias: alias),
                   let opName = action["op"] as? String,
-                  let op = operation(named: opName, value: action["value"]) else { return nil }
-            return DeviceIntent(targetId: targetId, operation: op)
+                  let op = operation(named: opName, value: action["value"]) else { return [] }
+            let targetIds = catalog.realIds(forTargetChoice: alias)
+            return targetIds.map { DeviceIntent(targetId: $0, operation: op) }
         }
         let intents = IntentValidator.sanitize(raw, devices: devices, scenes: scenes)
+        let rawSuggestions = object["suggestions"] as? [[String: Any]] ?? []
+        let parsedSuggestions = parseChatSuggestionItems(
+            rawSuggestions,
+            catalog: catalog,
+            devices: devices,
+            scenes: scenes
+        )
         let modelReply = (object["reply"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let reply = modelReply.isEmpty ? IntentReply.describe(intents, devices: devices, scenes: scenes) : modelReply
-        return IntentPlan(intents: intents, reply: reply, source: .model)
+        return IntentPlan(intents: intents, reply: reply, source: .model, suggestions: parsedSuggestions)
+    }
+
+    static func proactiveSuggestionsFromChat(
+        content: String,
+        catalog: IntentCatalog,
+        devices: [SmartDevice],
+        scenes: [HomeScene]
+    ) throws -> [AssistantSuggestion] {
+        guard let jsonText = firstJSONObject(in: content),
+              let data = jsonText.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw AssistantError.malformedResponse
+        }
+        let items = (object["suggestions"] as? [[String: Any]])
+            ?? (object["actions"] as? [[String: Any]])
+            ?? []
+        return parseChatSuggestionItems(items, catalog: catalog, devices: devices, scenes: scenes)
+    }
+
+    private static func parseChatSuggestionItems(
+        _ items: [[String: Any]],
+        catalog: IntentCatalog,
+        devices: [SmartDevice],
+        scenes: [HomeScene]
+    ) -> [AssistantSuggestion] {
+        var scored: [(pct: Int, suggestion: AssistantSuggestion)] = []
+        for (idx, item) in items.enumerated() {
+            guard let alias = item["device"] as? String,
+                  let opName = item["op"] as? String,
+                  let op = operation(named: opName, value: item["value"]) else {
+                continue
+            }
+            let targetIds = catalog.realIds(forTargetChoice: alias)
+            let sanitized = IntentValidator.sanitize(
+                targetIds.map { DeviceIntent(targetId: $0, operation: op) },
+                devices: devices,
+                scenes: scenes
+            )
+            guard let primary = sanitized.first,
+                  let title = UserHabitMemory.suggestionTitle(for: primary, devices: devices, scenes: scenes) else {
+                continue
+            }
+            let rawConf = number(from: item["confidence"]) ?? 80
+            let normalizedConf = rawConf <= 1.0 ? Int((rawConf * 100).rounded()) : Int(rawConf.rounded())
+            let pct = max(18, min(99, normalizedConf))
+            scored.append((
+                pct,
+                AssistantSuggestion(
+                    id: "chat:\(primary.targetId):\(idx)",
+                    title: title,
+                    confidencePercent: pct,
+                    intents: sanitized
+                )
+            ))
+        }
+        return scored
+            .sorted { $0.pct > $1.pct }
+            .prefix(3)
+            .map(\.suggestion)
     }
 
     static func planFromSystemOne(
@@ -744,29 +913,65 @@ public struct ModelIntentResolver: Sendable {
         }
     }
 
-    /// Extracts the first balanced `{...}` object, tolerating ```json fences and surrounding prose.
+    /// Extracts the first balanced `{...}` JSON object, tolerating `<think>...</think>` blocks,
+    /// ```json fences, and surrounding prose.
     static func firstJSONObject(in text: String) -> String? {
-        guard let start = text.firstIndex(of: "{") else { return nil }
-        var depth = 0
-        var inString = false
-        var escaped = false
-        var index = start
-        while index < text.endIndex {
-            let ch = text[index]
-            if inString {
-                if escaped { escaped = false }
-                else if ch == "\\" { escaped = true }
-                else if ch == "\"" { inString = false }
-            } else if ch == "\"" {
-                inString = true
-            } else if ch == "{" {
-                depth += 1
-            } else if ch == "}" {
-                depth -= 1
-                if depth == 0 { return String(text[start...index]) }
-            }
-            index = text.index(after: index)
+        let stripped: String
+        if let closeRange = text.range(of: "</think>", options: [.caseInsensitive, .backwards]) {
+            stripped = String(text[closeRange.upperBound...])
+        } else {
+            stripped = text
+        }
+        if let found = extractBalancedJSONObject(from: stripped) {
+            return found
+        }
+        if stripped != text {
+            return extractBalancedJSONObject(from: text)
         }
         return nil
+    }
+
+    private static func extractBalancedJSONObject(from text: String) -> String? {
+        var searchStart = text.startIndex
+        var firstBalanced: String?
+        while searchStart < text.endIndex,
+              let start = text[searchStart...].firstIndex(of: "{") {
+            var depth = 0
+            var inString = false
+            var escaped = false
+            var index = start
+            var matchedEnd: String.Index?
+            while index < text.endIndex {
+                let ch = text[index]
+                if inString {
+                    if escaped { escaped = false }
+                    else if ch == "\\" { escaped = true }
+                    else if ch == "\"" { inString = false }
+                } else if ch == "\"" {
+                    inString = true
+                } else if ch == "{" {
+                    depth += 1
+                } else if ch == "}" {
+                    depth -= 1
+                    if depth == 0 {
+                        matchedEnd = index
+                        break
+                    }
+                }
+                index = text.index(after: index)
+            }
+            if let end = matchedEnd {
+                let candidate = String(text[start...end])
+                if firstBalanced == nil { firstBalanced = candidate }
+                if let data = candidate.data(using: .utf8),
+                   (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) != nil {
+                    return candidate
+                }
+                searchStart = text.index(after: end)
+            } else {
+                break
+            }
+        }
+        return firstBalanced
     }
 }

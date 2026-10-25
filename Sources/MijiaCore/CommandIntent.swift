@@ -296,10 +296,12 @@ public struct IntentCatalog: Sendable {
     public let sceneLines: [String]
     public let criteriaByAlias: [String: String]
     private let realIdsByAlias: [String: [String]]
+    private let fallbackIdsByIdentity: [String: [String]]
 
     public init(devices: [SmartDevice], scenes: [HomeScene]) {
         var lines: [String] = []
         var map: [String: [String]] = [:]
+        var fallback: [String: [String]] = [:]
         var criteria: [String: String] = [:]
         var allLightIds: [String] = []
         var allDeviceIds: [String] = []
@@ -312,6 +314,10 @@ public struct IntentCatalog: Sendable {
             let alias = "d\(index)"
             let summary = Self.stateSummary(device)
             map[alias] = [device.id]
+            fallback[device.id] = [device.id]
+            if fallback[device.name] == nil {
+                fallback[device.name] = [device.id]
+            }
             allDeviceIds.append(device.id)
             if category == .light {
                 allLightIds.append(device.id)
@@ -339,6 +345,10 @@ public struct IntentCatalog: Sendable {
         for (offset, scene) in scenes.enumerated() {
             let alias = "s\(offset + 1)"
             map[alias] = [scene.id]
+            fallback[scene.id] = [scene.id]
+            if fallback[scene.name] == nil {
+                fallback[scene.name] = [scene.id]
+            }
             criteria[alias] = "场景：\(scene.name)"
             sceneLines.append("\(alias)|\(scene.name)")
         }
@@ -346,14 +356,16 @@ public struct IntentCatalog: Sendable {
         self.sceneLines = sceneLines
         self.criteriaByAlias = criteria
         self.realIdsByAlias = map
+        self.fallbackIdsByIdentity = fallback
     }
 
     public func realId(forAlias alias: String) -> String? {
-        realIdsByAlias[alias.trimmingCharacters(in: .whitespacesAndNewlines)]?.first
+        realIds(forTargetChoice: alias).first
     }
 
     public func realIds(forTargetChoice choice: String) -> [String] {
-        realIdsByAlias[choice.trimmingCharacters(in: .whitespacesAndNewlines)] ?? []
+        let trimmed = choice.trimmingCharacters(in: .whitespacesAndNewlines)
+        return realIdsByAlias[trimmed] ?? fallbackIdsByIdentity[trimmed] ?? []
     }
 
     public var text: String {

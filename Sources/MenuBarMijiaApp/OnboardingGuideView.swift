@@ -8,6 +8,7 @@ public struct OnboardingGuideView: View {
 
     @State private var haURLDraft: String = ""
     @State private var haTokenDraft: String = ""
+    @State private var selectedPreset: AssistantProviderPreset = .openRouterJev
     @State private var apiKeyDraft: String = ""
     @State private var voiceAuthorized: Bool = false
     @State private var isRequestingVoice: Bool = false
@@ -48,7 +49,9 @@ public struct OnboardingGuideView: View {
         .onAppear {
             haURLDraft = store.serverURLString
             haTokenDraft = KeychainHelper.loadToken()
-            apiKeyDraft = store.assistantConfig.apiKey
+            let currentBase = store.assistantConfig.baseURL
+            selectedPreset = AssistantProviderPreset.infer(baseURL: currentBase)
+            apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: currentBase)
             voiceAuthorized = SpeechInputController.shared.hasVoicePermissions
             if store.miSessionMaskedUserId == nil,
                haTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -236,25 +239,26 @@ public struct OnboardingGuideView: View {
         .glassTile(isActive: isBackendConnected, accent: .green, cornerRadius: 12)
     }
 
-    // MARK: - Step 2: Jev Decision Model
+    // MARK: - Step 2: AI Decision Model
 
     private var step2JevModelCard: some View {
-        let hasCodexBarKey = (AssistantConfig.loadCodexBarOpenRouterKey() != nil)
-        let hasSavedKey = !store.assistantConfig.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let isReady = hasCodexBarKey || hasSavedKey
+        let effectiveBase = selectedPreset.defaultBaseURL.isEmpty ? store.assistantConfig.baseURL : selectedPreset.defaultBaseURL
+        let ambientSource = AssistantConfig.ambientKeySourceLabel(forBaseURL: effectiveBase)
+        let hasCustomKey = !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let isReady = hasCustomKey || (ambientSource != nil)
 
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
                 stepBadge("2", isDone: isReady)
-                Text(L10n.tr("Jev 极速决策模型（可选）", "Jev Fast Decision Model (Optional)"))
+                Text(L10n.tr("AI 决策模型（支持 Jev / DeepSeek / 自定义 Key）", "AI Decision Model (Jev / DeepSeek / Custom Key)"))
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
-                if hasCodexBarKey {
-                    Label(L10n.tr("已自动接入 CodexBar", "Linked via CodexBar"), systemImage: "checkmark.circle.fill")
+                if hasCustomKey {
+                    Label(L10n.tr("已配置密钥", "Key Configured"), systemImage: "checkmark.circle.fill")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.green)
-                } else if hasSavedKey {
-                    Label(L10n.tr("已配置密钥", "Key Configured"), systemImage: "checkmark.circle.fill")
+                } else if let ambientSource {
+                    Label(L10n.tr("已自动接入 \(ambientSource)", "Linked via \(ambientSource)"), systemImage: "checkmark.circle.fill")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.green)
                 } else {
@@ -265,28 +269,50 @@ public struct OnboardingGuideView: View {
             }
 
             Text(L10n.tr(
-                "常规指令本机 0ms 直接执行；配置 OpenRouter Key 后，复杂场景口语（如「准备写代码，有点热」）由 Jev 决策模型约 280ms 一次统筹多台设备。",
-                "Standard commands run locally in 0ms. With an OpenRouter Key, complex natural phrases (e.g. \"getting ready to code, a bit warm\") are coordinated across devices by Jev in ~280ms."
+                "常规指令本机 0ms 直接执行；支持 OpenRouter Jev、TypeSafe 原生 Jev、DeepSeek、通义千问、智谱 GLM 等，复杂场景口语一次统筹多台设备。",
+                "Standard commands run locally in 0ms. Configure OpenRouter Jev, Native Jev, DeepSeek, Qwen, GLM, or OpenAI to coordinate complex natural phrases."
             ))
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if !hasCodexBarKey {
-                HStack(spacing: 6) {
-                    SecureField(L10n.tr("粘贴 OpenRouter API Key (sk-or-...)", "Paste OpenRouter API Key (sk-or-...)"), text: $apiKeyDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .controlSize(.small)
-                        .font(.system(size: 11, design: .monospaced))
-
-                    Button(L10n.tr("保存", "Save")) {
-                        var cfg = store.assistantConfig
-                        cfg.apiKey = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                        store.assistantConfig = cfg
-                        store.showToast(L10n.tr("已保存 OpenRouter 密钥", "Saved OpenRouter API Key"))
+            HStack(spacing: 6) {
+                Picker(
+                    "",
+                    selection: Binding(
+                        get: { selectedPreset },
+                        set: { newPreset in
+                            selectedPreset = newPreset
+                            if newPreset != .custom {
+                                apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: newPreset.defaultBaseURL)
+                            }
+                        }
+                    )
+                ) {
+                    ForEach(AssistantProviderPreset.allCases.filter { $0 != .custom }) { preset in
+                        Text(preset.shortTitle).tag(preset)
                     }
-                    .buttonStyle(PillActionButtonStyle(isSelected: !apiKeyDraft.isEmpty, tintColor: .accentColor))
                 }
+                .labelsHidden()
+                .frame(width: 96)
+                .controlSize(.small)
+
+                SecureField(selectedPreset.keyPlaceholder, text: $apiKeyDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    .font(.system(size: 11, design: .monospaced))
+
+                Button(L10n.tr("保存", "Save")) {
+                    let base = selectedPreset.defaultBaseURL.isEmpty ? store.assistantConfig.baseURL : selectedPreset.defaultBaseURL
+                    let model = selectedPreset.defaultModel.isEmpty ? store.assistantConfig.model : selectedPreset.defaultModel
+                    store.assistantConfig = AssistantConfig(
+                        baseURL: base,
+                        model: model,
+                        apiKey: apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    )
+                    store.showToast(L10n.tr("已保存 \(selectedPreset.shortTitle) 配置", "Saved \(selectedPreset.shortTitle) config"))
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: !apiKeyDraft.isEmpty, tintColor: .accentColor))
             }
         }
         .padding(11)

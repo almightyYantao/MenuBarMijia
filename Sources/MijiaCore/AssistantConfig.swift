@@ -1,6 +1,175 @@
 import Foundation
 import Security
 
+// MARK: - AI Provider Presets
+
+public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendable {
+    case openRouterJev = "openrouter_jev"
+    case nativeJev = "native_jev"
+    case deepSeek = "deepseek"
+    case siliconFlow = "siliconflow"
+    case dashScope = "dashscope"
+    case zhipuGLM = "zhipu_glm"
+    case openAI = "openai"
+    case gemini = "gemini"
+    case custom = "custom"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .openRouterJev:
+            return L10n.tr("OpenRouter · Jev (默认)", "OpenRouter · Jev (Default)")
+        case .nativeJev:
+            return L10n.tr("TypeSafe · 原生 Jev", "TypeSafe · Native Jev")
+        case .deepSeek:
+            return L10n.tr("DeepSeek 官方", "DeepSeek Official")
+        case .siliconFlow:
+            return L10n.tr("硅基流动 SiliconFlow", "SiliconFlow")
+        case .dashScope:
+            return L10n.tr("通义千问 / 阿里云百炼", "Qwen / Alibaba DashScope")
+        case .zhipuGLM:
+            return L10n.tr("智谱 GLM (BigModel)", "Zhipu GLM (BigModel)")
+        case .openAI:
+            return "OpenAI"
+        case .gemini:
+            return "Google Gemini"
+        case .custom:
+            return L10n.tr("自定义兼容接口", "Custom Compatible Endpoint")
+        }
+    }
+
+    public var shortTitle: String {
+        switch self {
+        case .openRouterJev: return "OpenRouter"
+        case .nativeJev: return L10n.tr("原生 Jev", "Native Jev")
+        case .deepSeek: return "DeepSeek"
+        case .siliconFlow: return L10n.tr("硅基流动", "SiliconFlow")
+        case .dashScope: return L10n.tr("通义千问", "Qwen")
+        case .zhipuGLM: return L10n.tr("智谱 GLM", "Zhipu GLM")
+        case .openAI: return "OpenAI"
+        case .gemini: return "Gemini"
+        case .custom: return L10n.tr("自定义", "Custom")
+        }
+    }
+
+    public var defaultBaseURL: String {
+        switch self {
+        case .openRouterJev: return "https://openrouter.ai/api/v1"
+        case .nativeJev: return "https://api.typesafe.ai/v1"
+        case .deepSeek: return "https://api.deepseek.com/v1"
+        case .siliconFlow: return "https://api.siliconflow.cn/v1"
+        case .dashScope: return "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        case .zhipuGLM: return "https://open.bigmodel.cn/api/paas/v4"
+        case .openAI: return "https://api.openai.com/v1"
+        case .gemini: return "https://generativelanguage.googleapis.com/v1beta/openai"
+        case .custom: return ""
+        }
+    }
+
+    public var defaultModel: String {
+        switch self {
+        case .openRouterJev: return "~typesafe/jev-latest"
+        case .nativeJev: return "jev-latest"
+        case .deepSeek: return "deepseek-chat"
+        case .siliconFlow: return "deepseek-ai/DeepSeek-V3"
+        case .dashScope: return "qwen-plus"
+        case .zhipuGLM: return "glm-4-flash"
+        case .openAI: return "gpt-4o-mini"
+        case .gemini: return "gemini-2.5-flash"
+        case .custom: return ""
+        }
+    }
+
+    public var recommendedModels: [String] {
+        switch self {
+        case .openRouterJev:
+            return ["~typesafe/jev-latest", "deepseek/deepseek-chat", "google/gemini-2.5-flash"]
+        case .nativeJev:
+            return ["jev-latest", "jev-router-latest"]
+        case .deepSeek:
+            return ["deepseek-chat", "deepseek-reasoner"]
+        case .siliconFlow:
+            return ["deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-72B-Instruct"]
+        case .dashScope:
+            return ["qwen-plus", "qwen-turbo", "qwen-max"]
+        case .zhipuGLM:
+            return ["glm-4-flash", "glm-4-plus"]
+        case .openAI:
+            return ["gpt-4o-mini", "gpt-4.1-mini"]
+        case .gemini:
+            return ["gemini-2.5-flash", "gemini-2.5-pro"]
+        case .custom:
+            return []
+        }
+    }
+
+    public var keyPlaceholder: String {
+        switch self {
+        case .openRouterJev:
+            return L10n.tr("留空自动读取 CodexBar，或手动输入 sk-or-...", "Auto-read CodexBar or enter sk-or-...")
+        case .nativeJev:
+            return L10n.tr("粘贴 TypeSafe 原生 Jev API Key", "Paste TypeSafe Native Jev API Key")
+        case .deepSeek:
+            return L10n.tr("粘贴 DeepSeek API Key (sk-...)", "Paste DeepSeek API Key (sk-...)")
+        case .siliconFlow:
+            return L10n.tr("粘贴硅基流动 API Key (sk-...)", "Paste SiliconFlow API Key (sk-...)")
+        case .dashScope:
+            return L10n.tr("粘贴阿里云百炼 API Key (sk-...)", "Paste DashScope API Key (sk-...)")
+        case .zhipuGLM:
+            return L10n.tr("粘贴智谱开放平台 API Key", "Paste Zhipu BigModel API Key")
+        case .openAI:
+            return L10n.tr("粘贴 OpenAI API Key (sk-...)", "Paste OpenAI API Key (sk-...)")
+        case .gemini:
+            return L10n.tr("粘贴 Google Gemini API Key (AIza...)", "Paste Gemini API Key (AIza...)")
+        case .custom:
+            return L10n.tr("粘贴 API Key (本机接口可留空)", "Paste API Key (optional for localhost)")
+        }
+    }
+
+    public var envVarNames: [String] {
+        switch self {
+        case .openRouterJev: return ["OPENROUTER_API_KEY"]
+        case .nativeJev: return ["TYPESAFE_API_KEY", "JEV_API_KEY"]
+        case .deepSeek: return ["DEEPSEEK_API_KEY"]
+        case .siliconFlow: return ["SILICONFLOW_API_KEY"]
+        case .dashScope: return ["DASHSCOPE_API_KEY"]
+        case .zhipuGLM: return ["ZHIPU_API_KEY", "GLM_API_KEY"]
+        case .openAI: return ["OPENAI_API_KEY"]
+        case .gemini: return ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+        case .custom: return ["OPENAI_API_KEY"]
+        }
+    }
+
+    public var codexBarProviderIds: [String] {
+        switch self {
+        case .openRouterJev: return ["openrouter"]
+        case .nativeJev: return ["typesafe", "jev"]
+        case .deepSeek: return ["deepseek"]
+        case .siliconFlow: return ["siliconflow"]
+        case .dashScope: return ["dashscope", "qwen", "bailian"]
+        case .zhipuGLM: return ["zhipu", "glm", "bigmodel"]
+        case .openAI: return ["openai", "codex"]
+        case .gemini: return ["gemini", "google"]
+        case .custom: return []
+        }
+    }
+
+    public static func infer(baseURL: String) -> AssistantProviderPreset {
+        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let host = URL(string: trimmed)?.host?.lowercased() ?? trimmed
+        if host.contains("openrouter.ai") { return .openRouterJev }
+        if host.contains("typesafe.ai") { return .nativeJev }
+        if host.contains("deepseek.com") { return .deepSeek }
+        if host.contains("siliconflow.cn") { return .siliconFlow }
+        if host.contains("aliyuncs.com") { return .dashScope }
+        if host.contains("bigmodel.cn") { return .zhipuGLM }
+        if host.contains("openai.com") { return .openAI }
+        if host.contains("googleapis.com") { return .gemini }
+        return .custom
+    }
+}
+
 // MARK: - Assistant (LLM Fallback) Configuration
 
 public struct AssistantConfig: Equatable, Sendable {
@@ -24,6 +193,10 @@ public struct AssistantConfig: Equatable, Sendable {
         self.apiKey = apiKey
     }
 
+    public var preset: AssistantProviderPreset {
+        AssistantProviderPreset.infer(baseURL: baseURL)
+    }
+
     public var hasAPIKey: Bool {
         !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -41,14 +214,6 @@ public struct AssistantConfig: Equatable, Sendable {
                   !v.isEmpty else { return nil }
             return v
         }
-        let effectiveKey: String
-        if includeAmbientKey {
-            let keychainKey = KeychainHelper.loadSecret(account: KeychainHelper.assistantAPIKeyAccount)
-            let codexBarKey = loadCodexBarOpenRouterKey() ?? ""
-            effectiveKey = keychainKey.isEmpty ? codexBarKey : keychainKey
-        } else {
-            effectiveKey = ""
-        }
 
         let savedBase = nonEmpty(baseURLKey)
         let savedModel = nonEmpty(modelKey)
@@ -64,7 +229,20 @@ public struct AssistantConfig: Equatable, Sendable {
         if let savedModel, !legacyDefaultModels.contains(savedModel) {
             resolvedModel = savedModel
         } else {
-            resolvedModel = defaultModel
+            let inferredPreset = AssistantProviderPreset.infer(baseURL: resolvedBase)
+            resolvedModel = inferredPreset.defaultModel.isEmpty ? defaultModel : inferredPreset.defaultModel
+        }
+
+        let effectiveKey: String
+        if includeAmbientKey {
+            let explicitKey = userStoredAPIKey(forBaseURL: resolvedBase)
+            if !explicitKey.isEmpty {
+                effectiveKey = explicitKey
+            } else {
+                effectiveKey = loadAmbientAPIKey(forBaseURL: resolvedBase) ?? ""
+            }
+        } else {
+            effectiveKey = ""
         }
 
         return AssistantConfig(
@@ -83,28 +261,76 @@ public struct AssistantConfig: Equatable, Sendable {
     }
 
     public func save(to defaults: UserDefaults) {
-        defaults.set(baseURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Self.baseURLKey)
-        defaults.set(model.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Self.modelKey)
-        KeychainHelper.saveSecret(apiKey, account: KeychainHelper.assistantAPIKeyAccount)
+        let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        defaults.set(trimmedBase, forKey: Self.baseURLKey)
+        defaults.set(trimmedModel, forKey: Self.modelKey)
+        KeychainHelper.saveSecret(trimmedKey, account: KeychainHelper.assistantAPIKeyAccount)
+        let inferred = AssistantProviderPreset.infer(baseURL: trimmedBase)
+        KeychainHelper.saveSecret(trimmedKey, account: KeychainHelper.assistantProviderAPIKeyAccount(for: inferred))
     }
 
-    private static let cachedDefaultCodexBarKey: String? = readCodexBarOpenRouterKey(configURL: nil)
+    /// Returns only the user's explicitly saved Keychain API key for the given endpoint (excluding ambient CodexBar/env keys).
+    public static func userStoredAPIKey(forBaseURL baseURL: String) -> String {
+        let preset = AssistantProviderPreset.infer(baseURL: baseURL)
+        let providerKey = KeychainHelper.loadSecret(account: KeychainHelper.assistantProviderAPIKeyAccount(for: preset))
+        if !providerKey.isEmpty {
+            return providerKey
+        }
+        let genericKey = KeychainHelper.loadSecret(account: KeychainHelper.assistantAPIKeyAccount)
+        guard !genericKey.isEmpty else { return "" }
+        // Prevent an OpenRouter-prefixed key (`sk-or-...`) in the legacy generic slot from leaking into non-OpenRouter presets.
+        if genericKey.lowercased().hasPrefix("sk-or-"),
+           preset != .openRouterJev,
+           preset != .custom {
+            return ""
+        }
+        return genericKey
+    }
+
+    /// Reads an ambient API key from environment variables or `~/.config/codexbar/config.json` matching the provider for `baseURL`.
+    public static func loadAmbientAPIKey(forBaseURL baseURL: String, configURL: URL? = nil) -> String? {
+        let preset = AssistantProviderPreset.infer(baseURL: baseURL)
+        if configURL == nil {
+            for envName in preset.envVarNames {
+                if let envKey = ProcessInfo.processInfo.environment[envName]?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                   !envKey.isEmpty {
+                    return envKey
+                }
+            }
+        }
+        guard !preset.codexBarProviderIds.isEmpty else { return nil }
+        return readCodexBarProviderKey(providerIds: preset.codexBarProviderIds, configURL: configURL)
+    }
+
+    /// Human-readable label when an ambient key is available for `baseURL` (e.g., `"CodexBar"` or `"OPENROUTER_API_KEY"`).
+    public static func ambientKeySourceLabel(forBaseURL baseURL: String, configURL: URL? = nil) -> String? {
+        let preset = AssistantProviderPreset.infer(baseURL: baseURL)
+        if configURL == nil {
+            for envName in preset.envVarNames {
+                if let envKey = ProcessInfo.processInfo.environment[envName]?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                   !envKey.isEmpty {
+                    return envName
+                }
+            }
+        }
+        if !preset.codexBarProviderIds.isEmpty,
+           readCodexBarProviderKey(providerIds: preset.codexBarProviderIds, configURL: configURL) != nil {
+            return "CodexBar"
+        }
+        return nil
+    }
 
     /// Reads the OpenRouter API key from `OPENROUTER_API_KEY` or CodexBar's `~/.config/codexbar/config.json`.
     public static func loadCodexBarOpenRouterKey(configURL: URL? = nil) -> String? {
-        if configURL == nil {
-            return cachedDefaultCodexBarKey
-        }
-        return readCodexBarOpenRouterKey(configURL: configURL)
+        loadAmbientAPIKey(forBaseURL: defaultBaseURL, configURL: configURL)
     }
 
-    private static func readCodexBarOpenRouterKey(configURL: URL?) -> String? {
-        if configURL == nil,
-           let envKey = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !envKey.isEmpty {
-            return envKey
-        }
+    private static func readCodexBarProviderKey(providerIds: [String], configURL: URL?) -> String? {
+        let wanted = Set(providerIds.map { $0.lowercased() })
         let url = configURL ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/codexbar/config.json")
         guard let data = try? Data(contentsOf: url),
@@ -112,11 +338,14 @@ public struct AssistantConfig: Equatable, Sendable {
               let providers = root["providers"] as? [[String: Any]] else {
             return nil
         }
-        for provider in providers where (provider["id"] as? String) == "openrouter" {
-            if let key = (provider["apiKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !key.isEmpty {
-                return key
+        for provider in providers {
+            guard let id = (provider["id"] as? String)?.lowercased(),
+                  wanted.contains(id),
+                  let key = (provider["apiKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !key.isEmpty else {
+                continue
             }
+            return key
         }
         return nil
     }
@@ -126,6 +355,10 @@ public struct AssistantConfig: Equatable, Sendable {
 
 extension KeychainHelper {
     public static let assistantAPIKeyAccount = "assistant_api_key"
+
+    public static func assistantProviderAPIKeyAccount(for preset: AssistantProviderPreset) -> String {
+        "assistant_api_key_\(preset.rawValue)"
+    }
 
     public static func loadSecret(account: String) -> String {
         let query: [String: Any] = [

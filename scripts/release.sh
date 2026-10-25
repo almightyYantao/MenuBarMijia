@@ -58,7 +58,7 @@ else
 fi
 
 echo "▶ [5/5] 最终检查"
-shasum -a 256 "$DMG" | tee "$DMG.sha256"
+(cd "$DIST" && shasum -a 256 "$(basename "$DMG")" | tee "$(basename "$DMG").sha256")
 
 echo "✅ 完成：$DMG"
 echo "   发布：gh release upload v${VERSION} \"$DMG\" \"$DMG.sha256\" --clobber"

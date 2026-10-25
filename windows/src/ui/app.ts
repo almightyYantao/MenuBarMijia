@@ -1,10 +1,12 @@
 import {
+  ASSISTANT_PROVIDER_PRESETS,
   DelayPhrase,
   IntentReply,
   IntentValidator,
   LocalIntentParser,
   ModelIntentResolver,
   UndoPhrase,
+  inferAssistantPreset,
 } from "../core/assistant.js";
 import {
   type HttpRequest,
@@ -81,6 +83,7 @@ interface PersistedSettings {
   miSession: MiSession | null;
   haBaseURL: string;
   haToken: string;
+  assistantBaseURL: string;
   openRouterApiKey: string;
   assistantModel: string;
   habitLearningEnabled: boolean;
@@ -332,6 +335,7 @@ function loadSettings(): PersistedSettings {
         miSession,
         haBaseURL: parsed.haBaseURL ?? "",
         haToken: parsed.haToken ?? "",
+        assistantBaseURL: parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1",
         openRouterApiKey: parsed.openRouterApiKey ?? "",
         assistantModel: parsed.assistantModel ?? "~typesafe/jev-latest",
         habitLearningEnabled: parsed.habitLearningEnabled ?? true,
@@ -355,6 +359,7 @@ function loadSettings(): PersistedSettings {
     miSession: null,
     haBaseURL: "",
     haToken: "",
+    assistantBaseURL: "https://openrouter.ai/api/v1",
     openRouterApiKey: "",
     assistantModel: "~typesafe/jev-latest",
     habitLearningEnabled: true,
@@ -681,9 +686,11 @@ export class MenuMijiaWindowsApp {
 
       if (!plan) {
         const apiKey = this.settings.openRouterApiKey.trim();
-        if (!apiKey) {
+        const baseURL = this.settings.assistantBaseURL.trim() || "https://openrouter.ai/api/v1";
+        const isLoopback = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(baseURL);
+        if (!apiKey && !isLoopback) {
           this.replyBanner = {
-            text: "未命中本地规则。请在设置中填写 OpenRouter API Key 以启用 Jev SystemOne 决策模型。",
+            text: "未命中本地规则。请在设置中填写 AI 服务的 API Key（支持 OpenRouter Jev、原生 Jev、DeepSeek 等）。",
             source: "需要 API Key",
             isError: true,
           };
@@ -693,7 +700,7 @@ export class MenuMijiaWindowsApp {
         }
         const resolver = new ModelIntentResolver(
           {
-            baseURL: "https://openrouter.ai/api/v1",
+            baseURL,
             model: this.settings.assistantModel,
             apiKey,
           },
@@ -1722,23 +1729,50 @@ export class MenuMijiaWindowsApp {
           </div>
 
           <div class="cc-field">
-            <label>OpenRouter API Key（驱动 Jev /v1/systemone 毫秒级意图决策）</label>
+            <label>AI 服务商预设（支持 OpenRouter Jev、原生 Jev、DeepSeek、千问、GLM 等）</label>
+            <div class="cc-segmented-pills" style="flex-wrap: wrap;">
+              ${ASSISTANT_PROVIDER_PRESETS.filter((p) => p.id !== "custom")
+                .map((preset) => {
+                  const currentPreset = inferAssistantPreset(this.settings.assistantBaseURL);
+                  return `<button
+                    type="button"
+                    class="cc-seg-pill ${currentPreset.id === preset.id ? "is-active" : ""}"
+                    data-ai-preset="${this.escapeHtml(preset.id)}"
+                  >${this.escapeHtml(preset.shortTitle)}</button>`;
+                })
+                .join("")}
+            </div>
+          </div>
+
+          <div class="cc-field">
+            <label>AI 服务地址（支持 /v1/systemone 与 OpenAI 兼容 /v1/chat/completions）</label>
             <input
-              id="settings-api-key"
+              id="settings-base-url"
               class="cc-input"
-              type="password"
-              placeholder="sk-or-v1-..."
-              value="${this.escapeHtml(this.settings.openRouterApiKey)}"
+              type="text"
+              placeholder="https://openrouter.ai/api/v1"
+              value="${this.escapeHtml(this.settings.assistantBaseURL)}"
             />
           </div>
 
           <div class="cc-field">
-            <label>决策模型（默认 ~typesafe/jev-latest）</label>
+            <label>决策模型（如 ~typesafe/jev-latest、jev-latest、deepseek-chat）</label>
             <input
               id="settings-model"
               class="cc-input"
               type="text"
               value="${this.escapeHtml(this.settings.assistantModel)}"
+            />
+          </div>
+
+          <div class="cc-field">
+            <label>API Key（本机安全保存）</label>
+            <input
+              id="settings-api-key"
+              class="cc-input"
+              type="password"
+              placeholder="${this.escapeHtml(inferAssistantPreset(this.settings.assistantBaseURL).keyPlaceholder)}"
+              value="${this.escapeHtml(this.settings.openRouterApiKey)}"
             />
           </div>
 
@@ -2090,10 +2124,31 @@ export class MenuMijiaWindowsApp {
       });
     });
 
+    this.root.querySelectorAll<HTMLElement>("[data-ai-preset]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const presetId = btn.dataset.aiPreset;
+        const preset = ASSISTANT_PROVIDER_PRESETS.find((p) => p.id === presetId);
+        if (!preset || !preset.defaultBaseURL) return;
+        const baseEl = this.root.querySelector<HTMLInputElement>("#settings-base-url");
+        const modelEl = this.root.querySelector<HTMLInputElement>("#settings-model");
+        const apiKeyEl = this.root.querySelector<HTMLInputElement>("#settings-api-key");
+        if (baseEl) baseEl.value = preset.defaultBaseURL;
+        if (modelEl) modelEl.value = preset.defaultModel;
+        if (apiKeyEl) apiKeyEl.placeholder = preset.keyPlaceholder;
+        this.settings.assistantBaseURL = preset.defaultBaseURL;
+        this.settings.assistantModel = preset.defaultModel;
+        this.root.querySelectorAll<HTMLElement>("[data-ai-preset]").forEach((el) => {
+          el.classList.toggle("is-active", el.dataset.aiPreset === preset.id);
+        });
+      });
+    });
+
     this.root.querySelector("#btn-save-settings")?.addEventListener("click", () => {
+      const baseEl = this.root.querySelector<HTMLInputElement>("#settings-base-url");
       const apiKeyEl = this.root.querySelector<HTMLInputElement>("#settings-api-key");
       const modelEl = this.root.querySelector<HTMLInputElement>("#settings-model");
       const habitEl = this.root.querySelector<HTMLInputElement>("#settings-habit");
+      if (baseEl) this.settings.assistantBaseURL = baseEl.value.trim() || "https://openrouter.ai/api/v1";
       if (apiKeyEl) this.settings.openRouterApiKey = apiKeyEl.value.trim();
       if (modelEl) this.settings.assistantModel = modelEl.value.trim() || "~typesafe/jev-latest";
       if (habitEl) this.settings.habitLearningEnabled = habitEl.checked;

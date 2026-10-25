@@ -455,6 +455,69 @@ describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", 
     ]);
   });
 
+  it("supports native TypeSafe Jev (/v1/systemone) and DeepSeek (/v1/chat/completions)", async () => {
+    const nativeJevResolver = new ModelIntentResolver(
+      {
+        baseURL: "https://api.typesafe.ai",
+        model: "~typesafe/jev-latest",
+        apiKey: "Bearer ts-native-key",
+      },
+      async (req) => {
+        assert.equal(req.url, "https://api.typesafe.ai/v1/systemone");
+        assert.equal(req.headers?.["Authorization"], "Bearer ts-native-key");
+        const body = JSON.parse(req.body ?? "{}") as Record<string, unknown>;
+        assert.equal(body["model"], "jev-latest");
+        return {
+          status: 200,
+          headers: {},
+          body: JSON.stringify({
+            answers: {
+              target: { choice: "d1", confidence: 0.99 },
+              op: { choice: "effect_night", confidence: 0.98 },
+              temp: { choice: "none", confidence: 1.0 },
+            },
+          }),
+        };
+      }
+    );
+    const nativePlan = await nativeJevResolver.resolve("柔和一点", devices, []);
+    assert.deepEqual(nativePlan.intents, [
+      { targetId: "dev_ceiling", operation: { kind: "lightEffect", effect: "Night" } },
+    ]);
+
+    const deepSeekResolver = new ModelIntentResolver(
+      {
+        baseURL: "https://api.deepseek.com",
+        model: "deepseek-reasoner",
+        apiKey: "sk-deepseek-key",
+      },
+      async (req) => {
+        assert.equal(req.url, "https://api.deepseek.com/v1/chat/completions");
+        assert.equal(req.headers?.["Authorization"], "Bearer sk-deepseek-key");
+        const body = JSON.parse(req.body ?? "{}") as Record<string, unknown>;
+        assert.equal(body["model"], "deepseek-reasoner");
+        return {
+          status: 200,
+          headers: {},
+          body: JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content:
+                    '<think>分析 {d1}</think>{"actions":[{"device":"d1","op":"effect","value":"Night"}],"reply":"已切换月光"}',
+                },
+              },
+            ],
+          }),
+        };
+      }
+    );
+    const dsPlan = await deepSeekResolver.resolve("书房月光", devices, []);
+    assert.deepEqual(dsPlan.intents, [
+      { targetId: "dev_ceiling", operation: { kind: "lightEffect", effect: "Night" } },
+    ]);
+  });
+
   it("matches the cross-platform golden JSON corpus shared with MijiaCoreTests", () => {
     const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/intent_golden.json"), "utf8");
     const corpus = JSON.parse(raw) as {

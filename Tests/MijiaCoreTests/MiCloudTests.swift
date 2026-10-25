@@ -517,6 +517,50 @@ struct MiCloudProviderTests {
         await provider.shutdown()
     }
 
+    @Test("Concurrent multi-model spec loading preserves all model keys across async suspension points (Issue #2 regression)")
+    func concurrentMultiModelSpecLoading() async throws {
+        struct DelayedMultiSpecSource: MiotSpecSource {
+            func spec(model: String, specType: String?) async throws -> MiotDeviceSpec? {
+                try await Task.sleep(for: .milliseconds(2))
+                if model.hasSuffix(".fail") {
+                    throw MiCloudError.http(503)
+                }
+                if model.hasPrefix("yeelink.light.model") {
+                    return MiotFixtures.specs["yeelink.light.ceiling22"]
+                }
+                return nil
+            }
+        }
+
+        var devices: [MiDeviceRecord] = []
+        var values: [MiotPropKey: JSONValue] = [:]
+        for i in 0..<20 {
+            let did = "did-\(i)"
+            devices.append(MiDeviceRecord(did: did, name: "灯\(i)", model: "yeelink.light.model\(i)", isOnline: true))
+            values[MiotPropKey(did: did, siid: 2, piid: 1)] = .bool(true)
+            values[MiotPropKey(did: did, siid: 2, piid: 2)] = .number(50)
+            values[MiotPropKey(did: did, siid: 2, piid: 3)] = .number(4000)
+            values[MiotPropKey(did: did, siid: 2, piid: 4)] = .number(0)
+        }
+        devices.append(MiDeviceRecord(did: "gw-1", name: "网关", model: "lumi.gateway.mgl03", isOnline: true))
+        devices.append(MiDeviceRecord(did: "err-1", name: "异常设备", model: "custom.device.fail", isOnline: true))
+
+        let api = StubMiCloudAPI(devices: devices, rooms: [], values: values)
+        let provider = MiCloudProvider(
+            sessionLoader: { fakeSession },
+            apiFactory: { _ in api },
+            specSource: DelayedMultiSpecSource(),
+            pollInterval: .seconds(60)
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        #expect(await log.wait { await !$0.snapshots.isEmpty })
+        let synthesized = await log.snapshots.first?.devices ?? []
+        #expect(synthesized.count == 20)
+        await provider.shutdown()
+    }
+
     @Test("No saved session reports a login prompt; expired session reports re-scan")
     func sessionStates() async {
         let noSession = MiCloudProvider(sessionLoader: { nil }, specSource: StubSpecSource())

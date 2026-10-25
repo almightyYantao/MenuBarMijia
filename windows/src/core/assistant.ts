@@ -929,6 +929,103 @@ export const LocalIntentParser = {
 
 // MARK: - Jev /v1/systemone & /v1/chat/completions Resolver
 
+export interface AssistantProviderPresetInfo {
+  readonly id: string;
+  readonly title: string;
+  readonly shortTitle: string;
+  readonly defaultBaseURL: string;
+  readonly defaultModel: string;
+  readonly keyPlaceholder: string;
+}
+
+export const ASSISTANT_PROVIDER_PRESETS: ReadonlyArray<AssistantProviderPresetInfo> = [
+  {
+    id: "openrouter_jev",
+    title: "OpenRouter · Jev (默认)",
+    shortTitle: "OpenRouter",
+    defaultBaseURL: "https://openrouter.ai/api/v1",
+    defaultModel: "~typesafe/jev-latest",
+    keyPlaceholder: "sk-or-v1-...",
+  },
+  {
+    id: "native_jev",
+    title: "TypeSafe · 原生 Jev",
+    shortTitle: "原生 Jev",
+    defaultBaseURL: "https://api.typesafe.ai/v1",
+    defaultModel: "jev-latest",
+    keyPlaceholder: "粘贴 TypeSafe 原生 Jev API Key",
+  },
+  {
+    id: "deepseek",
+    title: "DeepSeek 官方",
+    shortTitle: "DeepSeek",
+    defaultBaseURL: "https://api.deepseek.com/v1",
+    defaultModel: "deepseek-chat",
+    keyPlaceholder: "粘贴 DeepSeek API Key (sk-...)",
+  },
+  {
+    id: "siliconflow",
+    title: "硅基流动 SiliconFlow",
+    shortTitle: "硅基流动",
+    defaultBaseURL: "https://api.siliconflow.cn/v1",
+    defaultModel: "deepseek-ai/DeepSeek-V3",
+    keyPlaceholder: "粘贴硅基流动 API Key (sk-...)",
+  },
+  {
+    id: "dashscope",
+    title: "通义千问 / 阿里云百炼",
+    shortTitle: "通义千问",
+    defaultBaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    defaultModel: "qwen-plus",
+    keyPlaceholder: "粘贴百炼 DashScope API Key (sk-...)",
+  },
+  {
+    id: "zhipu_glm",
+    title: "智谱 GLM (BigModel)",
+    shortTitle: "智谱 GLM",
+    defaultBaseURL: "https://open.bigmodel.cn/api/paas/v4",
+    defaultModel: "glm-4-flash",
+    keyPlaceholder: "粘贴智谱开放平台 API Key",
+  },
+  {
+    id: "openai",
+    title: "OpenAI",
+    shortTitle: "OpenAI",
+    defaultBaseURL: "https://api.openai.com/v1",
+    defaultModel: "gpt-4o-mini",
+    keyPlaceholder: "粘贴 OpenAI API Key (sk-...)",
+  },
+  {
+    id: "gemini",
+    title: "Google Gemini",
+    shortTitle: "Gemini",
+    defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+    defaultModel: "gemini-2.5-flash",
+    keyPlaceholder: "粘贴 Google Gemini API Key (AIza...)",
+  },
+  {
+    id: "custom",
+    title: "自定义兼容接口",
+    shortTitle: "自定义",
+    defaultBaseURL: "",
+    defaultModel: "",
+    keyPlaceholder: "粘贴 API Key (本机接口可留空)",
+  },
+];
+
+export function inferAssistantPreset(baseURL: string): AssistantProviderPresetInfo {
+  const lower = baseURL.trim().toLowerCase();
+  if (lower.includes("openrouter.ai")) return ASSISTANT_PROVIDER_PRESETS[0]!;
+  if (lower.includes("typesafe.ai")) return ASSISTANT_PROVIDER_PRESETS[1]!;
+  if (lower.includes("deepseek.com")) return ASSISTANT_PROVIDER_PRESETS[2]!;
+  if (lower.includes("siliconflow.cn")) return ASSISTANT_PROVIDER_PRESETS[3]!;
+  if (lower.includes("aliyuncs.com")) return ASSISTANT_PROVIDER_PRESETS[4]!;
+  if (lower.includes("bigmodel.cn")) return ASSISTANT_PROVIDER_PRESETS[5]!;
+  if (lower.includes("openai.com")) return ASSISTANT_PROVIDER_PRESETS[6]!;
+  if (lower.includes("googleapis.com")) return ASSISTANT_PROVIDER_PRESETS[7]!;
+  return ASSISTANT_PROVIDER_PRESETS[8]!;
+}
+
 export interface AssistantConfig {
   readonly baseURL: string;
   readonly model: string;
@@ -950,8 +1047,14 @@ export class ModelIntentResolver {
     this.transport = transport;
   }
 
+  static isSystemOneModel(model: string): boolean {
+    const lower = model.trim().toLowerCase();
+    if (lower.includes("jev-router")) return false;
+    return lower.includes("jev") || lower.includes("clef") || lower.includes("decision");
+  }
+
   get usesSystemOne(): boolean {
-    return this.config.model.toLowerCase().includes("jev");
+    return ModelIntentResolver.isSystemOneModel(this.config.model);
   }
 
   async resolve(
@@ -965,17 +1068,62 @@ export class ModelIntentResolver {
     return this.resolveViaChatCompletions(utterance, devices, scenes);
   }
 
+  private endpointURL(path: string): string {
+    let base = this.config.baseURL.trim().replace(/\/+$/, "");
+    for (const suffix of ["/chat/completions", "/systemone"]) {
+      if (base.toLowerCase().endsWith(suffix)) {
+        base = base.slice(0, -suffix.length).replace(/\/+$/, "");
+      }
+    }
+    try {
+      const parsed = new URL(base);
+      const host = parsed.hostname.toLowerCase();
+      const pathname = parsed.pathname.replace(/\/+$/, "");
+      if (host.includes("openrouter.ai")) {
+        if (pathname === "") base += "/api/v1";
+        else if (pathname === "/api") base += "/v1";
+      } else if (pathname === "") {
+        base += "/v1";
+      }
+    } catch {
+      // Keep original trimmed base if URL parsing fails
+    }
+    return `${base}${path}`;
+  }
+
+  private resolvedSystemOneModel(url: string): string {
+    const trimmed = this.config.model.trim();
+    const lower = trimmed.toLowerCase();
+    if (url.toLowerCase().includes("openrouter.ai")) {
+      if (lower.includes("jev") && !trimmed.startsWith("~")) {
+        return lower.startsWith("typesafe/") ? `~${trimmed}` : `~typesafe/${trimmed}`;
+      }
+      return trimmed;
+    }
+    if (lower.startsWith("~typesafe/")) {
+      return trimmed.slice("~typesafe/".length);
+    }
+    if (lower.startsWith("typesafe/")) {
+      return trimmed.slice("typesafe/".length);
+    }
+    return trimmed || "jev-latest";
+  }
+
+  private effectiveAPIKey(): string {
+    let key = this.config.apiKey.trim();
+    if (key.toLowerCase().startsWith("bearer ")) {
+      key = key.slice("bearer ".length).trim();
+    }
+    return key || "local";
+  }
+
   private async resolveViaSystemOne(
     utterance: string,
     devices: readonly SmartDevice[],
     scenes: readonly HomeScene[]
   ): Promise<IntentPlan> {
-    const base = this.config.baseURL.replace(/\/+$/, "");
-    const url = `${base}/systemone`;
-    const model =
-      url.includes("openrouter.ai") && !this.config.model.startsWith("~")
-        ? `~${this.config.model}`
-        : this.config.model;
+    const url = this.endpointURL("/systemone");
+    const model = this.resolvedSystemOneModel(url);
 
     const targetCriteria: Record<string, string> = { none: "无匹配设备或场景" };
     const aliasToIds = new Map<string, string[]>();
@@ -1045,7 +1193,7 @@ export class ModelIntentResolver {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${this.config.apiKey.trim() || "local"}`,
+        Authorization: `Bearer ${this.effectiveAPIKey()}`,
       },
       body: JSON.stringify({
         model,
@@ -1133,20 +1281,39 @@ export class ModelIntentResolver {
     devices: readonly SmartDevice[],
     scenes: readonly HomeScene[]
   ): Promise<IntentPlan> {
-    const base = this.config.baseURL.replace(/\/+$/, "");
-    const url = `${base}/chat/completions`;
-    const catalogLines = devices.map((d) => `- id=${d.id} 名称=${d.name} 房间=${d.roomName} 类型=${d.kind.kind}`).join("\n");
-    const prompt = `你是智能家居指令解析器。把中文指令转为 JSON：{"actions":[{"device":"id","op":"power|brightness|brightness_step|color_temp|effect|hvac_mode|temperature|temperature_step|fan_speed|oscillation","value":...}],"reply":"中文回执"}\n设备列表：\n${catalogLines}`;
+    const url = this.endpointURL("/chat/completions");
+    const aliasToIds = new Map<string, string[]>();
+    const controllable = devices.filter((d) => d.kind.kind !== "sensor");
+
+    const catalogLines: string[] = [];
+    controllable.forEach((d, idx) => {
+      const alias = `d${idx + 1}`;
+      aliasToIds.set(alias, [d.id]);
+      aliasToIds.set(d.id, [d.id]);
+      aliasToIds.set(d.name, [d.id]);
+      catalogLines.push(`${alias}|${d.name}|${d.roomName}|${d.kind.kind}`);
+    });
+    const sceneLines: string[] = [];
+    scenes.forEach((s, idx) => {
+      const alias = `s${idx + 1}`;
+      aliasToIds.set(alias, [s.id]);
+      aliasToIds.set(s.id, [s.id]);
+      aliasToIds.set(s.name, [s.id]);
+      sceneLines.push(`${alias}|${s.name}`);
+    });
+
+    const sceneSection = sceneLines.length > 0 ? `\n场景(id|名称):\n${sceneLines.join("\n")}` : "";
+    const prompt = `你是智能家居指令解析器。把中文指令转为 JSON，只输出 JSON，不要解释。\n设备(id|名称|房间|类型):\n${catalogLines.join("\n")}${sceneSection}\nschema: {"actions":[{"device":"id","op":"power|brightness|brightness_step|color_temp|effect|hvac_mode|temperature|temperature_step|fan_speed|oscillation|scene","value":...}],"reply":"一句话中文回执"}`;
 
     const resp = await this.transport({
       url,
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${this.config.apiKey.trim() || "local"}`,
+        Authorization: `Bearer ${this.effectiveAPIKey()}`,
       },
       body: JSON.stringify({
-        model: this.config.model,
+        model: this.config.model.trim(),
         messages: [
           { role: "system", content: prompt },
           { role: "user", content: utterance },
@@ -1161,7 +1328,11 @@ export class ModelIntentResolver {
 
     const root = JSON.parse(resp.body) as Record<string, unknown>;
     const choices = (root["choices"] as Array<Record<string, Record<string, unknown>>>) ?? [];
-    const content = String(choices[0]?.["message"]?.["content"] ?? "");
+    let content = String(choices[0]?.["message"]?.["content"] ?? "");
+    const closeThinkIdx = content.toLowerCase().lastIndexOf("</think>");
+    if (closeThinkIdx >= 0) {
+      content = content.slice(closeThinkIdx + "</think>".length);
+    }
     const start = content.indexOf("{");
     const end = content.lastIndexOf("}");
     if (start < 0 || end <= start) throw new Error("AI 返回格式无法解析");
@@ -1170,11 +1341,16 @@ export class ModelIntentResolver {
 
     const raw: DeviceIntent[] = [];
     for (const act of actions) {
-      const targetId = String(act["device"] ?? "");
-      const opName = String(act["op"] ?? "");
+      const alias = String(act["device"] ?? "").trim();
+      const opName = String(act["op"] ?? "").trim();
       const val = act["value"];
       const op = this.decodeChatOp(opName, val);
-      if (targetId && op) raw.push({ targetId, operation: op });
+      const targetIds = aliasToIds.get(alias) ?? (alias ? [alias] : []);
+      if (op) {
+        for (const targetId of targetIds) {
+          raw.push({ targetId, operation: op });
+        }
+      }
     }
     const intents = IntentValidator.sanitize(raw, devices, scenes);
     const reply = String(payload["reply"] ?? "").trim() || IntentReply.describe(intents, devices, scenes);
@@ -1182,17 +1358,43 @@ export class ModelIntentResolver {
   }
 
   private decodeChatOp(name: string, val: unknown): IntentOperation | null {
-    switch (name) {
-      case "power": return { kind: "power", isOn: Boolean(val) };
-      case "brightness": return typeof val === "number" ? { kind: "brightness", percent: val } : null;
-      case "brightness_step": return typeof val === "number" ? { kind: "brightnessStep", delta: val } : null;
-      case "color_temp": return typeof val === "number" ? { kind: "colorTemperature", kelvin: val } : null;
-      case "effect": return typeof val === "string" ? { kind: "lightEffect", effect: val } : null;
-      case "hvac_mode": return typeof val === "string" ? { kind: "hvacMode", mode: val } : null;
-      case "temperature": return typeof val === "number" ? { kind: "targetTemperature", celsius: val } : null;
-      case "temperature_step": return typeof val === "number" ? { kind: "temperatureStep", delta: val } : null;
-      case "fan_speed": return typeof val === "string" ? { kind: "fanSpeed", speed: val } : null;
-      case "oscillation": return { kind: "oscillation", enabled: Boolean(val) };
+    const numVal = typeof val === "number" ? val : typeof val === "string" ? Number(val.replace(/[%°CcKk\s]/g, "")) : NaN;
+    const boolVal =
+      typeof val === "boolean"
+        ? val
+        : typeof val === "number"
+          ? val !== 0
+          : typeof val === "string"
+            ? ["true", "on", "1", "开"].includes(val.trim().toLowerCase())
+            : false;
+
+    switch (name.toLowerCase()) {
+      case "power": return { kind: "power", isOn: boolVal };
+      case "brightness": return Number.isFinite(numVal) ? { kind: "brightness", percent: Math.round(numVal) } : null;
+      case "brightness_step": return Number.isFinite(numVal) ? { kind: "brightnessStep", delta: Math.round(numVal) } : null;
+      case "color_temp":
+      case "color_temperature":
+        return Number.isFinite(numVal) ? { kind: "colorTemperature", kelvin: Math.round(numVal) } : null;
+      case "effect":
+      case "light_effect":
+        return typeof val === "string" ? { kind: "lightEffect", effect: val } : null;
+      case "hvac_mode":
+      case "mode":
+        return typeof val === "string" ? { kind: "hvacMode", mode: val } : null;
+      case "temperature":
+      case "target_temperature":
+        return Number.isFinite(numVal) ? { kind: "targetTemperature", celsius: numVal } : null;
+      case "temperature_step":
+        return Number.isFinite(numVal) ? { kind: "temperatureStep", delta: numVal } : null;
+      case "fan_speed":
+      case "fan_mode":
+      case "preset":
+        return typeof val === "string" ? { kind: "fanSpeed", speed: val } : null;
+      case "oscillation":
+      case "swing":
+        return { kind: "oscillation", enabled: boolVal };
+      case "scene":
+        return { kind: "activateScene" };
       default: return null;
     }
   }

@@ -53,7 +53,7 @@ The Swift package has no third-party Swift dependencies and uses Swift 6 strict 
 
 Releases: <https://github.com/jryang1997/MenuBarMijia/releases>
 
-**v1.0.3** is the latest. It includes `MenuBarMijia-1.0.3.dmg` for macOS 14+ (with full English & Simplified Chinese UI, voice commands, and persistent scheduled timers) and Windows installers.
+**v1.0.4** is the latest. It includes `MenuBarMijia-1.0.4.dmg` for macOS 14+ (with full English & Simplified Chinese UI, voice commands, multi-provider AI presets, and persistent scheduled timers) and Windows installers.
 
 The macOS app is ad-hoc signed and not notarized. On first launch, open **System Settings → Privacy & Security** and choose **Open Anyway**, or run:
 
@@ -142,7 +142,7 @@ The local parser accepts both Chinese and English commands offline in 0 ms.
 
 A nudge that does not name a device applies only to devices that are already on. Timers persist to `UserDefaults` across app restarts. Future timers resume their countdown on launch. Timers that expired while the app was closed are not executed automatically; the app surfaces a missed-timer prompt and notification so you can run or dismiss them.
 
-Phrases the local parser does not understand can be sent to an optional cloud AI model. Set an OpenRouter (or compatible) API key in Settings. The default endpoint is `https://openrouter.ai/api/v1` and the default model is `~typesafe/jev-latest`. If CodexBar on this Mac already has an OpenRouter key, the app can reuse it from the Keychain or that config. You can also set any compatible endpoint yourself. Without an API key, ambiguous commands fail. The model is used only for that fallback. Clear commands stay on the local parser.
+Phrases the local parser does not understand can be sent to an optional cloud or local AI model. Settings includes one-click presets for **OpenRouter (`~typesafe/jev-latest`)**, **Native TypeSafe Jev (`https://api.typesafe.ai/v1`)**, **DeepSeek (`deepseek-chat`)**, **Qwen**, **Zhipu GLM**, **Moonshot Kimi**, **SiliconFlow**, **OpenAI**, **Groq**, **Ollama (local)**, and custom OpenAI-compatible endpoints. Provide your own API key in Settings (or reuse an existing OpenRouter key from CodexBar on macOS). Without an API key, ambiguous commands fail while clear commands continue to run offline in 0 ms on the local parser.
 
 The app also stores, on this Mac, time-of-day habits and short phrases you repeat (for example a phrase you use when you start working or go to sleep) and can attach a short habit summary to those cloud requests. Turn off **Learn my habits** in Settings to stop recording and stop sending that summary. You can delete stored habits one by one.
 
@@ -179,7 +179,7 @@ npx tauri build   # on Windows: NSIS .exe and .msi
 
 Packaging needs Visual Studio “Desktop development with C++”, the Windows SDK, and the MSVC Rust toolchain. Build from an x64 Native Tools prompt. If `CC` or `CXX` points at another compiler, set them to `cl.exe` in that prompt.
 
-Pushes to `main` run core tests, then GitHub Actions builds the Windows installers and uploads them as the `MenuBarMijia-Windows-x64` artifact. Release assets and SHA-256 files are attached to GitHub Releases. Ordinary pushes do not replace a published installer. The latest release is [v1.0.3](https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.3), which includes the macOS DMG and Windows installers.
+Pushes to `main` run core tests, then GitHub Actions builds the Windows installers and uploads them as the `MenuBarMijia-Windows-x64` artifact. Release assets and SHA-256 files are attached to GitHub Releases. Ordinary pushes do not replace a published installer. The latest release is [v1.0.4](https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.4), which includes the macOS DMG and Windows installers.
 
 ## Privacy
 

@@ -460,6 +460,156 @@ struct AssistantTests {
         #expect(store.devices.first(where: { $0.id == "dev_bedside" })?.isActiveOn == true)
     }
 
+    @Test("Native TypeSafe Jev strips ~typesafe/ prefix and normalizes bare api.typesafe.ai endpoint")
+    func nativeTypeSafeJevResolver() async throws {
+        let systemOnePayload: [String: Any] = [
+            "answers": [
+                "target": ["choice": "d1", "confidence": 0.99],
+                "op": ["choice": "effect_night", "confidence": 0.98],
+                "temp": ["choice": "none", "confidence": 1.0]
+            ]
+        ]
+        let responseData = try JSONSerialization.data(withJSONObject: systemOnePayload)
+
+        let resolver = ModelIntentResolver(
+            config: AssistantConfig(
+                baseURL: "https://api.typesafe.ai",
+                model: "~typesafe/jev-latest",
+                apiKey: "Bearer ts-native-key-123"
+            ),
+            transport: { request in
+                #expect(request.url?.absoluteString == "https://api.typesafe.ai/v1/systemone")
+                #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer ts-native-key-123")
+                let body = try #require(request.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+                #expect(body["model"] as? String == "jev-latest")
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (responseData, response)
+            }
+        )
+
+        let plan = try await resolver.resolve("书房柔和一点", devices: Self.devices, scenes: Self.scenes)
+        #expect(plan.intents == [
+            DeviceIntent(targetId: "dev_study_ceiling", operation: .lightEffect("Night"))
+        ])
+    }
+
+    @Test("DeepSeek and OpenAI-compatible models resolve chat intents, strip <think> blocks, and support proactive suggestions")
+    func deepSeekChatAndProactiveResolver() async throws {
+        let reasoningContent = """
+        <think>
+        用户说屋里有点热，准备看书，应该考虑 {dev_study_ceiling} 和 {dev_living_ac}。
+        </think>
+        ```json
+        {
+          "actions": [
+            {"device": "room_lights:书房", "op": "power", "value": true},
+            {"device": "客厅空调", "op": "hvac_mode", "value": "cool"},
+            {"device": "d3", "op": "temperature", "value": "25°C"}
+          ],
+          "suggestions": [
+            {"device": "d4", "op": "power", "value": false, "confidence": 82}
+          ],
+          "reply": "已开启书房灯光并将客厅空调调至 25°C 制冷"
+        }
+        ```
+        """
+        let chatEnvelope: [String: Any] = ["choices": [["message": ["role": "assistant", "content": reasoningContent]]]]
+        let chatData = try JSONSerialization.data(withJSONObject: chatEnvelope)
+
+        let resolver = ModelIntentResolver(
+            config: AssistantConfig(
+                baseURL: "https://api.deepseek.com",
+                model: "deepseek-reasoner",
+                apiKey: "sk-deepseek-user-key"
+            ),
+            transport: { request in
+                #expect(request.url?.absoluteString == "https://api.deepseek.com/v1/chat/completions")
+                #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer sk-deepseek-user-key")
+                let body = try #require(request.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+                #expect(body["model"] as? String == "deepseek-reasoner")
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (chatData, response)
+            }
+        )
+
+        let plan = try await resolver.resolve("准备看书，有点热", devices: Self.devices, scenes: Self.scenes)
+        #expect(plan.intents == [
+            DeviceIntent(targetId: "dev_study_ceiling", operation: .power(true)),
+            DeviceIntent(targetId: "dev_study_desk", operation: .power(true)),
+            DeviceIntent(targetId: "dev_living_ac", operation: .hvacMode("cool")),
+            DeviceIntent(targetId: "dev_living_ac", operation: .targetTemperature(25))
+        ])
+        #expect(plan.suggestions == [
+            AssistantSuggestion(
+                id: "chat:dev_bedside:0",
+                title: "关闭主卧床头灯",
+                confidencePercent: 82,
+                intents: [DeviceIntent(targetId: "dev_bedside", operation: .power(false))]
+            )
+        ])
+
+        // Proactive suggestions on DeepSeek must call /chat/completions instead of /systemone
+        let proactiveContent = #"{"suggestions":[{"device":"d1","op":"effect","value":"Night","confidence":91}]}"#
+        let proactiveEnvelope: [String: Any] = ["choices": [["message": ["role": "assistant", "content": proactiveContent]]]]
+        let proactiveData = try JSONSerialization.data(withJSONObject: proactiveEnvelope)
+
+        let proactiveResolver = ModelIntentResolver(
+            config: AssistantConfig(
+                baseURL: "https://api.deepseek.com/v1",
+                model: "deepseek-chat",
+                apiKey: "sk-deepseek-user-key"
+            ),
+            transport: { request in
+                #expect(request.url?.absoluteString == "https://api.deepseek.com/v1/chat/completions")
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (proactiveData, response)
+            }
+        )
+
+        let suggestions = try await proactiveResolver.recommendProactiveSuggestions(
+            devices: Self.devices,
+            scenes: Self.scenes,
+            context: AssistantContext(timeSummary: "深夜 23:40", environmentSummary: "书房 26.0°C")
+        )
+        #expect(suggestions == [
+            AssistantSuggestion(
+                id: "chat:dev_study_ceiling:0",
+                title: "书房吸顶灯·月光模式",
+                confidencePercent: 91,
+                intents: [DeviceIntent(targetId: "dev_study_ceiling", operation: .lightEffect("Night"))]
+            )
+        ])
+    }
+
+    @Test("AssistantProviderPreset infers providers and isolates provider keys in CodexBar")
+    func providerPresetAndCodexBarIsolation() throws {
+        #expect(AssistantProviderPreset.infer(baseURL: "https://openrouter.ai/api/v1") == .openRouterJev)
+        #expect(AssistantProviderPreset.infer(baseURL: "https://api.typesafe.ai/v1") == .nativeJev)
+        #expect(AssistantProviderPreset.infer(baseURL: "https://api.deepseek.com/v1") == .deepSeek)
+        #expect(AssistantProviderPreset.infer(baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1") == .dashScope)
+        #expect(AssistantProviderPreset.infer(baseURL: "https://open.bigmodel.cn/api/paas/v4") == .zhipuGLM)
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codexbar-multi-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let fakeConfig = """
+        {
+          "version": 1,
+          "providers": [
+            { "id": "openrouter", "enabled": true, "apiKey": "sk-or-test" },
+            { "id": "typesafe", "enabled": true, "apiKey": "ts-native-test" }
+          ]
+        }
+        """
+        try fakeConfig.write(to: tempURL, atomically: true, encoding: .utf8)
+
+        #expect(AssistantConfig.loadAmbientAPIKey(forBaseURL: "https://openrouter.ai/api/v1", configURL: tempURL) == "sk-or-test")
+        #expect(AssistantConfig.loadAmbientAPIKey(forBaseURL: "https://api.typesafe.ai/v1", configURL: tempURL) == "ts-native-test")
+        // DeepSeek is not in the fake CodexBar config, so it must NOT leak the OpenRouter key
+        #expect(AssistantConfig.loadAmbientAPIKey(forBaseURL: "https://api.deepseek.com/v1", configURL: tempURL) == nil)
+    }
+
     // MARK: - Live (opt-in)
 
     @Test("ModelIntentResolver resolves against live OpenRouter ~typesafe/jev-latest when ASSISTANT_RUN_LIVE_TEST=1")

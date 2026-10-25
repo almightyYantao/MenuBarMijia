@@ -468,7 +468,8 @@ struct AssistantCommandBar: View {
     }
 
     private var suggestionsRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        let isJev = ModelIntentResolver.isSystemOneModel(store.assistantConfig.model)
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 Button {
                     Task { await store.requestProactiveJevSuggestions() }
@@ -482,7 +483,7 @@ struct AssistantCommandBar: View {
                             Image(systemName: "wand.and.stars")
                                 .font(.system(size: 10, weight: .semibold))
                         }
-                        Text(L10n.tr("Jev 猜你想做", "Jev Suggests"))
+                        Text(isJev ? L10n.tr("Jev 猜你想做", "Jev Suggests") : L10n.tr("AI 猜你想做", "AI Suggests"))
                             .font(.system(size: 10.5, weight: .semibold))
                     }
                     .foregroundStyle(Color.accentColor)
@@ -493,8 +494,8 @@ struct AssistantCommandBar: View {
                 .buttonStyle(.plain)
                 .disabled(store.isProactiveRecommending)
                 .help(L10n.tr(
-                    "让 Jev 结合当前室温、时间段与你的个人习惯，实时推演最可能执行的设备操作",
-                    "Let Jev infer your most likely device actions based on room temperature, time of day, and habits"
+                    "结合当前室温、时间段与你的个人习惯，实时推演最可能执行的设备操作",
+                    "Infer your most likely device actions based on room temperature, time of day, and habits"
                 ))
 
                 ForEach(store.assistantSuggestions) { suggestion in
@@ -522,7 +523,7 @@ struct AssistantCommandBar: View {
                     .buttonStyle(.plain)
                     .help(
                         suggestion.confidencePercent != nil
-                            ? L10n.tr("Jev 概率分布推演建议（点击立即执行）", "Jev probability-based suggestion (click to execute)")
+                            ? L10n.tr("AI 置信度推演建议（点击立即执行）", "AI confidence-ranked suggestion (click to execute)")
                             : L10n.tr("你在当前时间段的常用习惯（点击立即执行）", "Your frequent habit in this time slot (click to execute)")
                     )
                 }
@@ -608,9 +609,11 @@ struct AssistantCommandBar: View {
 struct AssistantSettingsSection: View {
     let store: HomeStore
 
+    @State private var selectedPreset: AssistantProviderPreset = .openRouterJev
     @State private var baseURLDraft: String = ""
     @State private var modelDraft: String = ""
     @State private var apiKeyDraft: String = ""
+    @State private var isTestingConnection = false
     @State private var isShowingHabits = false
     /// Habit memory lives in UserDefaults (not observed), so bump this to redraw after edits.
     @State private var habitRevision = 0
@@ -620,49 +623,121 @@ struct AssistantSettingsSection: View {
         let _ = habitRevision
         let habitItems = store.userHabitMemory.readableItems(devices: store.devices, scenes: store.scenes)
         let habitCount = habitItems.count
+        let hasCustomKey = !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let ambientSource = AssistantConfig.ambientKeySourceLabel(forBaseURL: baseURLDraft)
+        let isLoopback = AssistantConfig(baseURL: baseURLDraft, model: modelDraft, apiKey: "").isLoopbackEndpoint
+        let isSystemOne = ModelIntentResolver.isSystemOneModel(modelDraft)
+
         VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Text(L10n.tr("AI 决策与习惯记忆 (Jev)", "AI Decision & Habit Memory (Jev)"))
+                Text(L10n.tr("AI 决策模型与习惯记忆", "AI Decision Model & Habit Memory"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if AssistantConfig.loadCodexBarOpenRouterKey() != nil {
-                    Text(L10n.tr("● 已自动接入 CodexBar", "● Linked via CodexBar"))
+                if hasCustomKey {
+                    Text(L10n.tr("● 已配置自定义密钥", "● Custom API Key Set"))
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(.green)
-                } else if !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(L10n.tr("● 已配置 API Key", "● API Key Configured"))
+                } else if let ambientSource {
+                    Text(L10n.tr("● 已自动接入 \(ambientSource)", "● Linked via \(ambientSource)"))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.green)
+                } else if isLoopback {
+                    Text(L10n.tr("● 本机免密接口", "● Local Endpoint"))
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(.green)
                 } else {
-                    Text(L10n.tr("● 未配置 Key（常规指令本地可用）", "● No Key (Local Rules Active)"))
+                    Text(L10n.tr("● 待填 API Key（常规指令本地可用）", "● No Key (Local Rules Active)"))
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                 }
             }
 
-            labeledField(L10n.tr(
-                "服务地址 (默认 OpenRouter /v1，支持 System One 决策协议)",
-                "Endpoint URL (Default OpenRouter /v1, System One Protocol)"
-            )) {
-                TextField(AssistantConfig.defaultBaseURL, text: $baseURLDraft)
-                    .textFieldStyle(.roundedBorder)
+            HStack {
+                Text(L10n.tr("AI 服务商预设", "AI Provider"))
+                    .font(.system(size: 11.5))
+                Spacer()
+                Picker(
+                    "",
+                    selection: Binding(
+                        get: { selectedPreset },
+                        set: { newPreset in
+                            selectedPreset = newPreset
+                            if newPreset != .custom {
+                                baseURLDraft = newPreset.defaultBaseURL
+                                modelDraft = newPreset.defaultModel
+                                apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: newPreset.defaultBaseURL)
+                            }
+                        }
+                    )
+                ) {
+                    ForEach(AssistantProviderPreset.allCases) { preset in
+                        Text(preset.title).tag(preset)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 210)
+                .controlSize(.small)
             }
 
             labeledField(L10n.tr(
-                "模型 (默认 ~typesafe/jev-latest，支持全屋多头并行概率决策)",
-                "Model (Default ~typesafe/jev-latest, Multi-Head Probabilistic Decision)"
+                "服务地址 (支持 /v1/systemone 协议与 OpenAI 兼容 /v1/chat/completions)",
+                "Endpoint URL (Supports /v1/systemone & OpenAI-compatible /v1/chat/completions)"
             )) {
-                TextField(AssistantConfig.defaultModel, text: $modelDraft)
-                    .textFieldStyle(.roundedBorder)
+                TextField(
+                    selectedPreset.defaultBaseURL.isEmpty ? AssistantConfig.defaultBaseURL : selectedPreset.defaultBaseURL,
+                    text: Binding(
+                        get: { baseURLDraft },
+                        set: { newValue in
+                            baseURLDraft = newValue
+                            let inferred = AssistantProviderPreset.infer(baseURL: newValue)
+                            if inferred != selectedPreset {
+                                selectedPreset = inferred
+                            }
+                        }
+                    )
+                )
+                .textFieldStyle(.roundedBorder)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 4) {
+                    Text(isSystemOne
+                         ? L10n.tr("模型 (System One 协议 · 单次多头并发决策)", "Model (System One · Multi-Head Decision)")
+                         : L10n.tr("模型 (OpenAI 兼容 Chat Completions)", "Model (OpenAI-Compatible Chat)"))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    ForEach(selectedPreset.recommendedModels.prefix(2), id: \.self) { candidate in
+                        Button(candidate) {
+                            modelDraft = candidate
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 9.5, weight: modelDraft == candidate ? .semibold : .regular, design: .monospaced))
+                        .foregroundStyle(modelDraft == candidate ? Color.accentColor : Color.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(
+                            (modelDraft == candidate ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.05)),
+                            in: Capsule()
+                        )
+                    }
+                }
+                TextField(
+                    selectedPreset.defaultModel.isEmpty ? AssistantConfig.defaultModel : selectedPreset.defaultModel,
+                    text: $modelDraft
+                )
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                .font(.system(size: 11.5, design: .monospaced))
             }
 
             labeledField(L10n.tr(
-                "API Key (留空将自动读取 CodexBar 的 OpenRouter Key)",
-                "API Key (Leave blank to auto-read OpenRouter Key from CodexBar)"
+                "API Key（安全存入本机钥匙串；自定义密钥优先于环境配置）",
+                "API Key (Stored in Keychain; custom key takes priority)"
             )) {
                 SecureField(
-                    L10n.tr("留空自动读取 CodexBar，或手动输入存入钥匙串", "Auto-read CodexBar or enter manually (stored in Keychain)"),
+                    selectedPreset.keyPlaceholder,
                     text: $apiKeyDraft
                 )
                 .textFieldStyle(.roundedBorder)
@@ -670,21 +745,31 @@ struct AssistantSettingsSection: View {
 
             privacySection(habitItems: habitItems, habitCount: habitCount)
 
-            HStack {
-                Button(L10n.tr("恢复 Jev 默认", "Restore Defaults")) {
+            HStack(spacing: 6) {
+                Button(L10n.tr("恢复默认", "Restore Defaults")) {
+                    selectedPreset = .openRouterJev
                     baseURLDraft = AssistantConfig.defaultBaseURL
                     modelDraft = AssistantConfig.defaultModel
+                    apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: AssistantConfig.defaultBaseURL)
                 }
                 .buttonStyle(PillActionButtonStyle())
+
+                Button(isTestingConnection ? L10n.tr("测试中…", "Testing…") : L10n.tr("测试连接", "Test AI")) {
+                    let saved = saveCurrentDraft()
+                    isTestingConnection = true
+                    Task {
+                        let result = await store.verifyAssistantConfig(saved)
+                        isTestingConnection = false
+                        store.showToast(result.message, isError: !result.isSuccess)
+                    }
+                }
+                .buttonStyle(PillActionButtonStyle())
+                .disabled(isTestingConnection)
 
                 Spacer()
 
                 Button(L10n.tr("保存 AI 配置", "Save AI Config")) {
-                    store.assistantConfig = AssistantConfig(
-                        baseURL: baseURLDraft,
-                        model: modelDraft,
-                        apiKey: apiKeyDraft
-                    )
+                    _ = saveCurrentDraft()
                     store.showToast(L10n.tr("已保存 AI 指令配置", "Saved AI configuration"))
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
@@ -697,8 +782,28 @@ struct AssistantSettingsSection: View {
             let config = store.assistantConfig
             baseURLDraft = config.baseURL
             modelDraft = config.model
-            apiKeyDraft = config.apiKey
+            selectedPreset = AssistantProviderPreset.infer(baseURL: config.baseURL)
+            apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: config.baseURL)
         }
+    }
+
+    @discardableResult
+    private func saveCurrentDraft() -> AssistantConfig {
+        let normalizedBase = baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? (selectedPreset.defaultBaseURL.isEmpty ? AssistantConfig.defaultBaseURL : selectedPreset.defaultBaseURL)
+            : baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedModel = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? (selectedPreset.defaultModel.isEmpty ? AssistantConfig.defaultModel : selectedPreset.defaultModel)
+            : modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        baseURLDraft = normalizedBase
+        modelDraft = normalizedModel
+        let cfg = AssistantConfig(
+            baseURL: normalizedBase,
+            model: normalizedModel,
+            apiKey: apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        store.assistantConfig = cfg
+        return cfg
     }
 
     @ViewBuilder

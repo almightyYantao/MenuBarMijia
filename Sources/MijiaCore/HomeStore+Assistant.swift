@@ -82,8 +82,8 @@ extension HomeStore {
         )
     }
 
-    /// Uses Jev System One to infer personalized proactive suggestions from current room temp/humidity,
-    /// time of day, active devices, and the user's learned habit memory.
+    /// Uses the configured AI model (Jev System One or OpenAI-compatible Chat) to infer personalized proactive suggestions
+    /// from current room temp/humidity, time of day, active devices, and the user's learned habit memory.
     public func requestProactiveJevSuggestions() async {
         guard !isProactiveRecommending else { return }
         let config = assistantConfig
@@ -104,7 +104,8 @@ extension HomeStore {
             )
             if !inferred.isEmpty {
                 assistantSuggestions = inferred
-                setAssistantState(.done(L10n.tr("Jev 已结合室温与习惯生成建议", "Jev generated suggestions from room climate & habits")))
+                let label = ModelIntentResolver.isSystemOneModel(config.model) ? "Jev" : "AI"
+                setAssistantState(.done(L10n.tr("\(label) 已结合室温与习惯生成建议", "\(label) generated suggestions from room climate & habits")))
             } else {
                 let fallback = userHabitMemory.topSuggestions(devices: devices, scenes: scenes, limit: 3)
                 assistantSuggestions = fallback
@@ -112,6 +113,33 @@ extension HomeStore {
             }
         } catch {
             setAssistantState(.failed(AssistantError.userMessage(for: error)))
+        }
+    }
+
+    /// Verifies the given AI configuration against the live endpoint and returns `(isSuccess, statusMessage)`.
+    public func verifyAssistantConfig(_ draftConfig: AssistantConfig) async -> (isSuccess: Bool, message: String) {
+        let trimmedKey = draftConfig.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveKey = trimmedKey.isEmpty
+            ? (AssistantConfig.loadAmbientAPIKey(forBaseURL: draftConfig.baseURL) ?? "")
+            : trimmedKey
+        let resolved = AssistantConfig(
+            baseURL: draftConfig.baseURL,
+            model: draftConfig.model,
+            apiKey: effectiveKey
+        )
+        let resolver = assistantResolverOverride ?? ModelIntentResolver(config: resolved)
+        do {
+            let ms = try await resolver.testConnection()
+            let presetLabel = resolved.preset.shortTitle
+            return (
+                true,
+                L10n.tr(
+                    "连接成功 (\(presetLabel) · \(ms) ms)",
+                    "Connected (\(presetLabel) · \(ms) ms)"
+                )
+            )
+        } catch {
+            return (false, AssistantError.userMessage(for: error))
         }
     }
 

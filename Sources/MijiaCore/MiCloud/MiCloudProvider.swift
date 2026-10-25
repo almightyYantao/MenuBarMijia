@@ -155,6 +155,12 @@ public actor MiCloudProvider: HomeProvider {
         }
     }
 
+    private struct SpecLoadOutcome: Sendable {
+        let model: String
+        let spec: MiotDeviceSpec?
+        let errorDescription: String?
+    }
+
     private func loadMissingSpecs() async {
         var pending: [String: String?] = [:]
         for d in devices where specsByModel[d.model] == nil {
@@ -162,25 +168,26 @@ public actor MiCloudProvider: HomeProvider {
         }
         guard !pending.isEmpty else { return }
         let source = specSource
-        let loaded = await withTaskGroup(of: (String, MiotDeviceSpec?, String?).self) { group in
+        let loaded = await withTaskGroup(of: SpecLoadOutcome.self) { group in
             for (model, specType) in pending {
                 group.addTask {
                     do {
-                        return (model, try await source.spec(model: model, specType: specType), nil)
+                        let spec = try await source.spec(model: model, specType: specType)
+                        return SpecLoadOutcome(model: model, spec: spec, errorDescription: nil)
                     } catch {
-                        return (model, nil, error.localizedDescription)
+                        return SpecLoadOutcome(model: model, spec: nil, errorDescription: error.localizedDescription)
                     }
                 }
             }
-            var out: [(String, MiotDeviceSpec?, String?)] = []
+            var out: [SpecLoadOutcome] = []
             for await r in group { out.append(r) }
             return out
         }
-        for (model, spec, error) in loaded {
-            if let spec {
-                specsByModel[model] = spec
-            } else if let error {
-                logger.error("Spec load failed for \(model, privacy: .public): \(error, privacy: .public)")
+        for outcome in loaded {
+            if let spec = outcome.spec {
+                specsByModel[outcome.model] = spec
+            } else if let error = outcome.errorDescription {
+                logger.error("Spec load failed for \(outcome.model, privacy: .public): \(error, privacy: .public)")
             }
         }
     }

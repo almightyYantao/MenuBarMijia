@@ -76,6 +76,11 @@ for f in $(search_files '\.glassEffect\(|GlassEffectContainer' Sources/ || true)
     fi
 done
 
+if search_matches 'return \([^\n]*await' Sources/; then
+    echo "❌ 请勿在 return 元组字面量内直接内联 await（Swift 6.4 -O 协程分片优化会消除元组首字段写入导致 EXC_BAD_ACCESS），请先用 let 变量接收 await 结果再构造返回值！"
+    exit 1
+fi
+
 echo "🧪 [3/4] 运行 Swift 单元测试 (swift test) 与双端黄金语料校验..."
 swift test
 if [ -x "windows/node_modules/.bin/tsx" ]; then
