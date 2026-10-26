@@ -9,6 +9,10 @@ public struct ControlCenterPanel: View {
     @AppStorage(DeviceLayoutPrefs.orderKey) private var orderRaw: String = "[]"
     @State private var isEditingLayout = false
     @State private var draggingId: String?
+    // In-memory mirrors of the saved order/sizes: @AppStorage publishes changes outside the
+    // current animation transaction, so moves made through it alone snap instead of sliding.
+    @State private var liveOrder: [String]?
+    @State private var liveSizes: [String: TileSize]?
     @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
     @Namespace private var roomPillNamespace
     public let store: HomeStore
@@ -152,12 +156,15 @@ public struct ControlCenterPanel: View {
     }
 
     /// Moves `dragged` to `target`'s slot in the saved order (seeded from the full device list).
+    private var currentOrder: [String] { liveOrder ?? DeviceLayoutPrefs.decodeOrder(orderRaw) }
+
     private func moveDevice(_ dragged: String, to target: String) {
-        var order = DeviceLayoutPrefs.decodeOrder(orderRaw)
+        var order = currentOrder
         for id in store.devices.map(\.id) where !order.contains(id) { order.append(id) }
         guard let from = order.firstIndex(of: dragged), let to = order.firstIndex(of: target) else { return }
         order.remove(at: from)
         order.insert(dragged, at: to)
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { liveOrder = order }
         orderRaw = DeviceLayoutPrefs.encodeOrder(order)
     }
 
@@ -168,11 +175,10 @@ public struct ControlCenterPanel: View {
         case .full: next = .panel
         case .panel, .auto: next = .half
         }
-        var sizes = DeviceLayoutPrefs.decode(tileSizesRaw)
+        var sizes = liveSizes ?? DeviceLayoutPrefs.decode(tileSizesRaw)
         sizes[device.id] = next
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-            tileSizesRaw = DeviceLayoutPrefs.encode(sizes)
-        }
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.8)) { liveSizes = sizes }
+        tileSizesRaw = DeviceLayoutPrefs.encode(sizes)
     }
 
     private var doneEditingButton: some View {
@@ -195,7 +201,7 @@ public struct ControlCenterPanel: View {
     /// The device's card size with `.auto` resolved; full and panel sizes take a whole row.
     private func tileSize(_ device: SmartDevice) -> TileSize {
         DeviceLayoutPrefs.resolved(
-            DeviceLayoutPrefs.cachedSize(raw: tileSizesRaw, id: device.id),
+            liveSizes?[device.id] ?? DeviceLayoutPrefs.cachedSize(raw: tileSizesRaw, id: device.id),
             device: device,
             compactGrid: store.isCompactGridMode,
             climatePanel: climatePanelModule
@@ -233,7 +239,7 @@ public struct ControlCenterPanel: View {
         showRoomBadge: Bool,
         quickIndexMap: [String: Int]
     ) -> some View {
-        let ordered = DeviceLayoutPrefs.apply(order: DeviceLayoutPrefs.decodeOrder(orderRaw), to: devices)
+        let ordered = DeviceLayoutPrefs.apply(order: currentOrder, to: devices)
         let spanMap = spans(for: ordered)
         let bento = skin == .bento && store.isCompactGridMode
         // Every card is its own child keyed by device id, so a reorder slides cards instead of rebuilding rows.
@@ -255,6 +261,7 @@ public struct ControlCenterPanel: View {
                 .layoutValue(key: TileSpanKey.self, value: span)
             }
         }
+        .animation(.spring(response: 0.38, dampingFraction: 0.78), value: ordered.map { "\($0.id):\(spanMap[$0.id] ?? 6)" })
         .id(skin.isClassic ? "rows" : "rows_\(store.selectedRoomId ?? "all")")
     }
 
