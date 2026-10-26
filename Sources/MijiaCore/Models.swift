@@ -393,8 +393,10 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
     /// Whether this device has an expandable secondary control drawer
     public var hasDetailDrawer: Bool {
         switch kind {
-        case .light, .climate, .fan, .plug, .fridge, .vacuum, .speaker, .tv:
+        case .light, .climate, .fan, .fridge, .vacuum, .speaker, .tv:
             return true
+        case .plug(let s):
+            return s.powerWatts != nil || s.energyKwh != nil || s.childLockEntityId != nil
         case .sensor:
             return false
         }
@@ -417,6 +419,12 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
         case .plug(let s):
             if name.contains("咖啡") {
                 return s.isOn ? "cup.and.heat.waves.fill" : "cup.and.saucer.fill"
+            }
+            if name.contains("灯") {
+                return s.isOn ? "lightbulb.fill" : "lightbulb"
+            }
+            if model.contains(".switch.") {
+                return s.isOn ? "lightswitch.on.fill" : "lightswitch.off"
             }
             return s.isOn ? "powerplug.fill" : "powerplug"
         case .fridge:

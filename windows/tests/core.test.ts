@@ -285,7 +285,14 @@ describe("MiotSynthesizer & MiotCommandMapper", () => {
     const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/miot_golden.json"), "utf8");
     const corpus = JSON.parse(raw) as {
       specs: Record<string, unknown>;
-      devices: Array<{ did: string; name: string; model: string; isOnline: boolean }>;
+      devices: Array<{
+        did: string;
+        name: string;
+        model: string;
+        isOnline: boolean;
+        splitParentDid?: string | null;
+        splitSiid?: number | null;
+      }>;
       rooms: Array<{ id: string; name: string; dids: string[] }>;
       values: Array<{ did: string; siid: number; piid: number; value: unknown }>;
       expectedKinds: Record<string, unknown>;
@@ -336,6 +343,41 @@ describe("MiotSynthesizer & MiotCommandMapper", () => {
       const actualWrite = MiotCommandMapper.map(item.command, spec);
       assert.deepEqual(actualWrite, item.expected, `${item.model} ${item.command.kind}`);
     }
+    const dev2 = home.devices.find((d) => d.id === "did_panel.s2");
+    assert.equal(dev2?.roomName, "客厅");
+  });
+
+  it("parses split Mesh switch keys and multi-home rooms with room-less home dids", () => {
+    const parsedDevices = MiCloudClient.parseDeviceList({
+      list: [
+        { did: "1109223163", name: "Mesh双键", model: "lemesh.switch.sw2f12", isOnline: true },
+        {
+          did: "1109223163.s2",
+          name: "筒灯",
+          model: "lemesh.switch.sw2f12",
+          isOnline: true,
+          extra: { split: { parentId: 1109223163, moduleId: 2 } },
+        },
+      ],
+    });
+    assert.equal(parsedDevices.length, 2);
+    assert.equal(parsedDevices[1]?.splitParentDid, "1109223163");
+    assert.equal(parsedDevices[1]?.splitSiid, 2);
+
+    const parsedRooms = MiCloudClient.parseRooms({
+      homelist: [
+        {
+          id: 9001,
+          name: "我的家",
+          dids: ["unassigned_did"],
+          roomlist: [{ id: 101, name: "客厅", dids: ["1109223163"] }],
+        },
+      ],
+    });
+    assert.deepEqual(parsedRooms, [
+      { id: "101", name: "客厅", dids: ["1109223163"], homeId: "9001", homeName: "我的家" },
+      { id: "home_9001", name: "", dids: ["unassigned_did"], homeId: "9001", homeName: "我的家" },
+    ]);
   });
 });
 

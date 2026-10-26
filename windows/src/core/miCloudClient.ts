@@ -257,6 +257,8 @@ export interface MiRoom {
   readonly id: string;
   readonly name: string;
   readonly dids: readonly string[];
+  readonly homeId?: string;
+  readonly homeName?: string;
 }
 
 export interface MiotPropKey {
@@ -409,20 +411,32 @@ export class MiCloudClient {
     const rooms: MiRoom[] = [];
     for (const home of homelist) {
       if (!home || typeof home !== "object") continue;
-      const roomlist = (home as Record<string, unknown>)["roomlist"];
-      if (!Array.isArray(roomlist)) continue;
-      for (const rm of roomlist) {
-        if (!rm || typeof rm !== "object") continue;
-        const r = rm as Record<string, unknown>;
-        const id = asIdString(r["id"]);
-        if (!id) continue;
-        const rawDids = Array.isArray(r["dids"]) ? r["dids"] : [];
-        const dids = rawDids.map(asIdString).filter((d): d is string => d !== null);
-        rooms.push({
-          id,
-          name: typeof r["name"] === "string" ? r["name"] : "",
-          dids,
-        });
+      const h = home as Record<string, unknown>;
+      const homeId = asIdString(h["id"]) ?? "";
+      const homeName = typeof h["name"] === "string" ? h["name"] : "";
+      const roomlist = h["roomlist"];
+      if (Array.isArray(roomlist)) {
+        for (const rm of roomlist) {
+          if (!rm || typeof rm !== "object") continue;
+          const r = rm as Record<string, unknown>;
+          const id = asIdString(r["id"]);
+          if (!id) continue;
+          const rawDids = Array.isArray(r["dids"]) ? r["dids"] : [];
+          const dids = rawDids.map(asIdString).filter((d): d is string => d !== null);
+          rooms.push({
+            id,
+            name: typeof r["name"] === "string" ? r["name"] : "",
+            dids,
+            homeId,
+            homeName,
+          });
+        }
+      }
+      const homeDids = Array.isArray(h["dids"])
+        ? h["dids"].map(asIdString).filter((d): d is string => d !== null)
+        : [];
+      if (homeId && homeDids.length > 0) {
+        rooms.push({ id: `home_${homeId}`, name: "", dids: homeDids, homeId, homeName });
       }
     }
     return rooms;
@@ -1085,7 +1099,9 @@ export const MiotSynthesizer = {
           this.buildDeviceKind(record.did, inferFallbackSpec(record), values);
       if (!built) continue;
 
-      const room = roomByDid.get(record.did);
+      const room =
+        roomByDid.get(record.did) ??
+        (record.splitParentDid ? roomByDid.get(record.splitParentDid) : undefined);
       const roomName = room?.name.trim() || "全屋";
       const roomId = room ? `room_${room.id}` : "other";
 
@@ -1244,6 +1260,7 @@ export const MiotSynthesizer = {
           ? Math.max(0, Math.min(100, Math.round(maxBri > 0 && maxBri !== 100 ? (briNum / maxBri) * 100 : briNum)))
           : null;
 
+      const isLightGroup = did.startsWith("group.");
       return {
         kind: "light",
         entityId: makeMiotAddress(did, primaryService.iid),
@@ -1252,8 +1269,8 @@ export const MiotSynthesizer = {
         colorTempKelvin: typeof ct?.val === "number" ? Math.round(ct.val) : null,
         minKelvin: Math.round(ct?.prop.valueRange?.[0] ?? 2700),
         maxKelvin: Math.round(ct?.prop.valueRange?.[1] ?? 6500),
-        currentEffect,
-        availableEffects: mode?.prop.valueList?.map((i) => i.description) ?? [],
+        currentEffect: isLightGroup ? null : currentEffect,
+        availableEffects: isLightGroup ? [] : (mode?.prop.valueList?.map((i) => i.description) ?? []),
       };
     }
 

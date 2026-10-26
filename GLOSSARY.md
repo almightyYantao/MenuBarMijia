@@ -34,6 +34,14 @@ _Avoid_: Schema（模式）、Profile（配置表）
 物理空间的归属划分（如客厅、书房、卧室、次卧、厨房），以 Home Assistant 的区域注册表或米家家庭房间列表为准并经过名称归一化。
 _Avoid_: Zone（防区）、Group（分组）
 
+**HomeOption（米家家庭）**：
+小米账号下的独立家庭空间（由 `homeroom/gethome` 的 `homelist` 返回，含家庭 ID、名称与去重设备数），支持在面板顶部切换查看单个家庭或合并查看全部家庭。
+_Avoid_: Workspace（工作区）、Account（账号）
+
+**SplitDevice（多键分键设备）**：
+多键 Mesh 墙壁开关等复合设备由 `v2/home/device_list_page` 拆分出的独立按键记录（`did` 形如 `<parentDid>.s2`，携带 `splitParentDid` 与 `splitSiid`）；合成时隐藏父面板并以各分键作为独立 `SmartDevice` 展示，MIoT 读写仍寻址父 `did` 与对应 `siid`。
+_Avoid_: Sub-entity（子实体）、Virtual plug（虚拟插座）
+
 **EnvironmentReading（环境读数）**：
 从各房间温湿度计提取并置顶展示在面板顶部与 macOS 菜单栏的实时温湿度指标。
 _Avoid_: Weather（天气）、Telemetry（遥测）
@@ -69,5 +77,5 @@ _Avoid_: Mini card（迷你卡片）、Widget（小组件）
 _Avoid_: Alarm（警报）、Push notification（远程推送）
 
 **ViewPreference（本地视图偏好）**：
-仅作用于当前 Mac 客户端的展示配置（包括星标常用置顶、自定义排序、隐藏特定设备、隐藏离线设备、单/双列视图模式、菜单栏常驻指标选择），存储在本地且不回写远端数据源。
+仅作用于当前 Mac 客户端的展示配置（包括星标常用置顶、自定义分组 `DeviceGroup`、长按拖拽排序与分页面卡片尺寸 `TileSize`、隐藏特定设备、隐藏离线设备、面板皮肤 `AppSkin` 与高度 `PanelHeight`、菜单栏常驻指标选择），存储在本地且不回写远端数据源。
 _Avoid_: Device config（设备配置）、Profile（档案）

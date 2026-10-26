@@ -147,6 +147,12 @@
 
 无论是手动点错，还是语音 / Jev 并发执行了多台设备，面板底部都会浮起一条 **5 秒撤销横幅**——点一下「**撤销**」，所有被改动的设备立即恢复到执行前的精确状态（含原亮度、色温、灯效与空调温度）。
 
+### 多家庭切换、Mesh 分键识别、9 套主题皮肤与自定义分组布局
+
+- **多家庭一键切换 & 多键 Mesh 面板自动拆键**：账号下有多个米家家庭时，直接点击面板顶部的家庭名称即可切换家庭（或查看全部家庭）；凌动/情景多键 Mesh 墙壁开关（如 `xxx.s2`、`xxx.s3` 分键设备）自动拆分为独立开关卡片，并对不支持情景模式的灯组自动隐藏无效情景按钮。
+- **9 套视觉皮肤 & 面板高度调节**：在设置中可随时切换 **经典（Classic）**、**暖纸（Warm Paper）**、**便当盒（Bento Grid）**、**瑞士网格（Swiss Grid）**、**软陶新拟物（Soft Clay）**、**终端（Terminal）**、**波普（Playful Pop）**、**墨水屏（E-Ink）** 与 **通透玻璃（Translucent Glass）** 共 9 套主题，并支持紧凑 / 标准 / 加高 / 超高四档面板高度。
+- **长按拖拽排版 & 自定义折叠分组**：长按任意设备卡片（或右键菜单选择「调整布局」）即可进入编辑模式，自由拖拽调整卡片顺序、跨区移入「常用控制」或自定义分组，并可按房间独立切换卡片尺寸（半宽 `1/2`、整行 `1x`、大面板 `Panel` 直出空调温控模块）。
+
 ---
 
 ## 菜单栏常驻与主动安全守护
@@ -322,6 +328,13 @@ docs/                                   ADR、规格文档与 README 实机截�
 | Home Assistant | [home-assistant/core](https://github.com/home-assistant/core) | Apache-2.0 |
 
 本仓库的 MIT 许可覆盖本项目自身的全部源码。
+
+## 贡献者与致谢
+
+感谢为 MenuBarMijia 提交代码、修补协议细节与打磨交互体验的贡献者：
+
+- [@jryang1997](https://github.com/jryang1997)（一群小羊说）— 项目发起与维护
+- [@almightyYantao](https://github.com/almightyYantao)（Alimighty.Yantao）— 多键 Mesh 开关分键设备识别与合成（[#6](https://github.com/jryang1997/MenuBarMijia/issues/6)、[#7](https://github.com/jryang1997/MenuBarMijia/pull/7)）、米家多家庭切换与灯组情景过滤（[#8](https://github.com/jryang1997/MenuBarMijia/pull/8)）、多主题面板皮肤、空调/温湿度计独立模块、长按拖拽自由布局与自定义分组（[#9](https://github.com/jryang1997/MenuBarMijia/pull/9)）
 
 ## License
 

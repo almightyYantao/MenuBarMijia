@@ -705,12 +705,51 @@ struct MiCloudClientTests {
 
     @Test("Each home becomes a HomeOption; room-less home devices land in an unnamed room")
     func homes() throws {
-        let json = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"homelist":[{"id":"h1","name":"东澜府","dids":["9"],"roomlist":[{"id":"r1","name":"客厅","dids":["1","2"]}]},{"id":"h2","name":"果果家","roomlist":[{"id":"r2","name":"卧室","dids":["3"]}]}]}"#.utf8))
+        let json = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"homelist":[{"id":"h1","name":"东澜府","dids":["1","9"],"roomlist":[{"id":"r1","name":"客厅","dids":["1","2"]}]},{"id":"h2","name":"果果家","roomlist":[{"id":"r2","name":"卧室","dids":["3"]}]}]}"#.utf8))
         let rooms = MiCloudClient.parseRooms(json)
-        #expect(rooms.last(where: { $0.homeId == "h1" }) == MiRoom(id: "home_h1", name: "", dids: ["9"], homeId: "h1", homeName: "东澜府"))
+        #expect(rooms.last(where: { $0.homeId == "h1" }) == MiRoom(id: "home_h1", name: "", dids: ["1", "9"], homeId: "h1", homeName: "东澜府"))
         #expect(MiCloudProvider.homeOptions(from: rooms) == [
             HomeOption(id: "h1", name: "东澜府", deviceCount: 3),
             HomeOption(id: "h2", name: "果果家", deviceCount: 1),
         ])
+    }
+
+    @Test("Split switch keys without power or child-lock hide detail drawer and use switch/light SF Symbols")
+    func switchKeyPresentation() {
+        let downlightKey = SmartDevice(
+            id: "1109223163.s2",
+            name: "筒灯",
+            roomId: "living_room",
+            roomName: "客厅",
+            model: "lemesh.switch.sw2f12",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:1109223163:2", isOn: true))
+        )
+        #expect(downlightKey.hasDetailDrawer == false)
+        #expect(downlightKey.sfSymbolName == "lightbulb.fill")
+
+        let wallSwitchKey = SmartDevice(
+            id: "1109223163.s3",
+            name: "玄关开关",
+            roomId: "living_room",
+            roomName: "客厅",
+            model: "lemesh.switch.sw2f12",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:1109223163:3", isOn: false))
+        )
+        #expect(wallSwitchKey.hasDetailDrawer == false)
+        #expect(wallSwitchKey.sfSymbolName == "lightswitch.off")
+
+        let smartPlug = SmartDevice(
+            id: "did_plug",
+            name: "桌面插座",
+            roomId: "study",
+            roomName: "书房",
+            model: "cuco.plug.v3",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:did_plug:2", isOn: true, powerWatts: 42.0))
+        )
+        #expect(smartPlug.hasDetailDrawer == true)
+        #expect(smartPlug.sfSymbolName == "powerplug.fill")
     }
 }

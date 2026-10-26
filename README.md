@@ -126,6 +126,12 @@ Device drawers cover lights (brightness, 2700–6500 K color temperature, and th
 
 **All off** turns off lights, air conditioners, heaters, fans, and plugs that are on. Shortcuts also include whole-home lights off, a dim night-light scene, and climate plus fans off.
 
+### Skins, custom groups, and multi-home switching
+
+- **Multiple Mi Homes & split Mesh panels**: When your Xiaomi account has multiple homes, click the home title in the header to switch between them or view all homes together. Multi-key Mesh wall panels (split keys with IDs like `<parent>.s2`, `<parent>.s3`) are automatically unpacked into individual switch cards.
+- **9 visual skins & adjustable height**: Switch between **Classic**, **Warm Paper**, **Bento Grid**, **Swiss Grid**, **Soft Clay**, **Terminal**, **Playful Pop**, **E-Ink**, and **Translucent Glass** in Settings, along with four panel height presets.
+- **Drag-to-reorder & custom groups**: Long-press any device card (or right-click → **Edit Layout**) to drag cards across positions and sections, cycle card sizes (`½ Width`, `Full Width`, or `Panel` for inline climate controls), and organize devices into collapsible custom groups.
+
 ## Spoken commands
 
 The local parser accepts both Chinese and English commands offline in 0 ms.
@@ -207,6 +213,13 @@ This repo does not ship these. The NAS script downloads them onto your machine o
 | Xiaomi Home Integration (`xiaomi_home`) | [XiaoMi/ha_xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) | Xiaomi’s license, see [LICENSE.md](https://github.com/XiaoMi/ha_xiaomi_home/blob/main/LICENSE.md) |
 | Midea AC LAN (`midea_ac_lan`) | [wuwentao/midea_ac_lan](https://github.com/wuwentao/midea_ac_lan) | MIT, see [LICENSE](https://github.com/wuwentao/midea_ac_lan/blob/master/LICENSE) |
 | Home Assistant | [home-assistant/core](https://github.com/home-assistant/core) | Apache-2.0 |
+
+## Contributors
+
+Thanks to everyone who has contributed features, fixes, and feedback:
+
+- [@jryang1997](https://github.com/jryang1997) (一群小羊说) — Creator & maintainer
+- [@almightyYantao](https://github.com/almightyYantao) (Alimighty.Yantao) — Multi-key Mesh switch split-device synthesis ([#6](https://github.com/jryang1997/MenuBarMijia/issues/6), [#7](https://github.com/jryang1997/MenuBarMijia/pull/7)), multi-home switcher & light-group scene filtering ([#8](https://github.com/jryang1997/MenuBarMijia/pull/8)), visual skin system, inline climate module, drag-to-reorder layout & custom device groups ([#9](https://github.com/jryang1997/MenuBarMijia/pull/9))
 
 ## License
 

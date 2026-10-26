@@ -261,6 +261,7 @@ public final class HomeStore {
         let initialBackend = ud.string(forKey: "home_backend").flatMap(HomeBackend.init(rawValue:)) ?? .homeAssistant
         self.homeBackend = initialBackend
         self.miSessionMaskedUserId = MiSessionStore.load(defaults: ud)?.maskedUserId
+        self.selectedMiHomeId = ud.string(forKey: MiCloudProvider.selectedHomeKey)
         self.lgConfig = LGWebOSConfig.load(from: ud)
         self.homeName = ud.string(forKey: "home_name") ?? KeychainHelper.localizedDefaultHomeName
         self.isHabitLearningEnabled = boolOrDefaultTrue("assistant_habit_learning_enabled")
@@ -449,7 +450,7 @@ public final class HomeStore {
         }
         // Automatically star online controllable devices on first launch
         let initial = devices
-            .filter { $0.isOnline && $0.hasDetailDrawer }
+            .filter { $0.isOnline && ($0.isPrimaryToggleable || $0.hasDetailDrawer) }
             .prefix(6)
             .map(\.id)
         if !initial.isEmpty {
@@ -1654,9 +1655,15 @@ public final class HomeStore {
     /// Switches the visible Mi Home; nil shows every home's devices.
     public func selectMiHome(_ id: String?) {
         if let id {
-            UserDefaults.standard.set(id, forKey: MiCloudProvider.selectedHomeKey)
+            userDefaults.set(id, forKey: MiCloudProvider.selectedHomeKey)
+            if userDefaults !== UserDefaults.standard {
+                UserDefaults.standard.set(id, forKey: MiCloudProvider.selectedHomeKey)
+            }
         } else {
-            UserDefaults.standard.removeObject(forKey: MiCloudProvider.selectedHomeKey)
+            userDefaults.removeObject(forKey: MiCloudProvider.selectedHomeKey)
+            if userDefaults !== UserDefaults.standard {
+                UserDefaults.standard.removeObject(forKey: MiCloudProvider.selectedHomeKey)
+            }
         }
         selectedMiHomeId = id
         selectedRoomId = nil

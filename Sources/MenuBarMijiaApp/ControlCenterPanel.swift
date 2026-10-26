@@ -70,6 +70,23 @@ public struct ControlCenterPanel: View {
         .onChange(of: tileSizesRaw) { _, raw in
             withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { liveSizes = DeviceLayoutPrefs.decode(raw) }
         }
+        .onChange(of: store.favoriteOrder) { _, favOrder in
+            guard !favOrder.isEmpty else { return }
+            var order = currentOrder
+            guard !order.isEmpty else { return }
+            let favSet = Set(favOrder)
+            var favIdx = 0
+            for i in order.indices where favSet.contains(order[i]) {
+                if favIdx < favOrder.count {
+                    order[i] = favOrder[favIdx]
+                    favIdx += 1
+                }
+            }
+            if order != currentOrder {
+                withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { liveOrder = order }
+                orderRaw = DeviceLayoutPrefs.encodeOrder(order)
+            }
+        }
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.newGroupForDevice)
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingGroupId)
         .frame(width: skin.isClassic ? 356 : 376, height: (PanelHeight(rawValue: panelHeightRaw) ?? .standard).points)
@@ -96,8 +113,7 @@ public struct ControlCenterPanel: View {
                     .transition(AppleMotion.drawerTransition)
             }
 
-            // Skins follow the demo layout: no quick-scene strip.
-            if store.showQuickActionsBar && skin.isClassic {
+            if store.showQuickActionsBar {
                 quickActionsAndScenesBar
                     .padding(.horizontal, 14)
                     .padding(.bottom, 8)
@@ -111,15 +127,16 @@ public struct ControlCenterPanel: View {
                 .overlay(Color.primary.opacity(0.07))
 
             ScrollView(.vertical, showsIndicators: false) {
+                let sections = pageSections
                 let quickIndexMap = Dictionary(
-                    uniqueKeysWithValues: store.orderedVisibleDevices.prefix(9).enumerated().map { ($1.id, $0 + 1) }
+                    uniqueKeysWithValues: sections.flatMap(\.devices).prefix(9).enumerated().map { ($1.id, $0 + 1) }
                 )
 
                 VStack(alignment: .leading, spacing: 11) {
                     if store.filteredDevices.isEmpty {
                         emptyStateView
                     } else {
-                        ForEach(pageSections) { section in
+                        ForEach(sections) { section in
                             if section.title != nil {
                                 groupHeader(section)
                             }
@@ -191,23 +208,25 @@ public struct ControlCenterPanel: View {
     private var pageSections: [PageSection] {
         let known = Set(groups.map(\.id))
         let map = groupMap.filter { known.contains($0.value) }
+        let order = currentOrder
         var sections: [PageSection] = []
         let pool: [SmartDevice]
         if store.selectedRoomId == nil {
             if !store.favoriteDevices.isEmpty {
-                sections.append(PageSection(id: "fav", title: L10n.tr("常用控制", "Favorites"), devices: store.favoriteDevices, groupId: nil))
+                let orderedFavs = DeviceLayoutPrefs.apply(order: order, to: store.favoriteDevices)
+                sections.append(PageSection(id: "fav", title: L10n.tr("常用控制", "Favorites"), devices: orderedFavs, groupId: nil))
             }
             pool = store.nonFavoriteDevices
         } else {
             pool = store.filteredDevices
         }
         for group in groups {
-            let members = pool.filter { map[$0.id] == group.id }
+            let members = DeviceLayoutPrefs.apply(order: order, to: pool.filter { map[$0.id] == group.id })
             if !members.isEmpty {
                 sections.append(PageSection(id: group.id, title: group.name, devices: members, groupId: group.id))
             }
         }
-        let rest = pool.filter { map[$0.id] == nil }
+        let rest = DeviceLayoutPrefs.apply(order: order, to: pool.filter { map[$0.id] == nil })
         if !rest.isEmpty {
             let titled = !sections.isEmpty
             let title: String? = store.selectedRoomId == nil
@@ -476,7 +495,12 @@ public struct ControlCenterPanel: View {
         guard let t = order.firstIndex(of: target) else { return }
         order.insert(dragged, at: after ? t + 1 : t)
         guard order != currentOrder else { return }
-        withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { liveOrder = order }
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
+            liveOrder = order
+            if store.favoriteDeviceIds.contains(dragged) {
+                store.favoriteOrder = order.filter { store.favoriteDeviceIds.contains($0) }
+            }
+        }
         orderRaw = DeviceLayoutPrefs.encodeOrder(order)
     }
 
@@ -738,7 +762,7 @@ public struct ControlCenterPanel: View {
             } label: {
                 HStack(spacing: 4) {
                     Text(selectedHomeTitle)
-                        .font(.system(size: 15, weight: .bold))
+                        .font(.system(size: skin.isClassic ? 15 : 17, weight: .bold))
                         .tracking(-0.2)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9.5, weight: .bold))
@@ -749,10 +773,10 @@ public struct ControlCenterPanel: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help(L10n.tr("切换家庭", "Switch home"))
+            .skinHelp(L10n.tr("切换家庭", "Switch home"))
         } else {
             Text(store.homeName)
-                .font(.system(size: 15, weight: .bold))
+                .font(.system(size: skin.isClassic ? 15 : 17, weight: .bold))
                 .tracking(-0.2)
         }
     }

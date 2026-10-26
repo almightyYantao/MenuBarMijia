@@ -65,6 +65,9 @@ public actor MiCloudProvider: HomeProvider {
             restartLoop()
             return
         }
+        if !devices.isEmpty {
+            emitSnapshot()
+        }
         do {
             try await discover(api)
             try await poll(api, dids: nil)
@@ -222,13 +225,11 @@ public actor MiCloudProvider: HomeProvider {
         if let selected, homes.contains(where: { $0.id == selected }) {
             visibleRooms = rooms.filter { $0.homeId == selected }
             let dids = Set(visibleRooms.flatMap(\.dids))
-            visibleDevices = devices.filter { dids.contains($0.did) }
+            visibleDevices = devices.filter { dids.contains($0.did) || ($0.splitParentDid.map(dids.contains) ?? false) }
             // Keep parents of included split keys so their spec and values stay available.
-            let parents = Set(dids.compactMap { did -> String? in
-                guard let r = did.range(of: ".s", options: .backwards), Int(did[r.upperBound...]) != nil else { return nil }
-                return String(did[..<r.lowerBound])
-            })
-            visibleDevices += devices.filter { parents.contains($0.did) && !dids.contains($0.did) }
+            let parents = Set(visibleDevices.compactMap(\.splitParentDid))
+            let includedIds = Set(visibleDevices.map(\.did))
+            visibleDevices += devices.filter { parents.contains($0.did) && !includedIds.contains($0.did) }
         }
         var home = MiotSynthesizer.synthesize(devices: visibleDevices, rooms: visibleRooms, specs: specsByModel, values: values)
         home.homes = homes
@@ -245,12 +246,12 @@ public actor MiCloudProvider: HomeProvider {
     static func homeOptions(from rooms: [MiRoom]) -> [HomeOption] {
         var order: [String] = []
         var names: [String: String] = [:]
-        var counts: [String: Int] = [:]
+        var didsByHome: [String: Set<String>] = [:]
         for room in rooms where !room.homeId.isEmpty {
             if names[room.homeId] == nil { order.append(room.homeId); names[room.homeId] = room.homeName }
-            counts[room.homeId, default: 0] += room.dids.count
+            didsByHome[room.homeId, default: []].formUnion(room.dids)
         }
-        return order.map { HomeOption(id: $0, name: names[$0] ?? "", deviceCount: counts[$0] ?? 0) }
+        return order.map { HomeOption(id: $0, name: names[$0] ?? "", deviceCount: didsByHome[$0]?.count ?? 0) }
     }
 
     // MARK: Commands
@@ -259,7 +260,8 @@ public actor MiCloudProvider: HomeProvider {
         let entityId = command.targetEntityId
         guard let (did, _) = MiotAddress.parse(entityId) else { throw MiotCommandError.invalidAddress(entityId) }
         guard let api else { throw MiCloudError.notLoggedIn }
-        guard let record = devices.first(where: { $0.miotDid == did }), let spec = specsByModel[record.model] else {
+        guard let record = devices.first(where: { $0.did == did }) ?? devices.first(where: { $0.miotDid == did }),
+              let spec = specsByModel[record.model] else {
             throw MiotCommandError.unsupported("设备规格未加载")
         }
         let write = try MiotCommandMapper.map(command, spec: spec)

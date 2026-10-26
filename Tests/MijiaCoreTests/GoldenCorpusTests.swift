@@ -312,6 +312,8 @@ struct GoldenCorpusTests {
         let name: String
         let model: String
         let isOnline: Bool
+        let splitParentDid: String?
+        let splitSiid: Int?
     }
 
     private struct MiotRoomEntry: Decodable {
@@ -466,7 +468,14 @@ struct GoldenCorpusTests {
         let corpus = try JSONDecoder().decode(MiotCorpus.self, from: data)
 
         let records = corpus.devices.map {
-            MiDeviceRecord(did: $0.did, name: $0.name, model: $0.model, isOnline: $0.isOnline)
+            MiDeviceRecord(
+                did: $0.did,
+                name: $0.name,
+                model: $0.model,
+                isOnline: $0.isOnline,
+                splitParentDid: $0.splitParentDid,
+                splitSiid: $0.splitSiid
+            )
         }
         let rooms = corpus.rooms.map {
             MiRoom(id: $0.id, name: $0.name, dids: $0.dids)
