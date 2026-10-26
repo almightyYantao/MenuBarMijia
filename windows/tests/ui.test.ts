@@ -330,3 +330,20 @@ describe("Timers the PC slept through (#22)", () => {
     }
   });
 });
+
+describe("全关 (#23)", () => {
+  it("needs a hold in the classic skin and leaves the plug on", async () => {
+    startDemo();
+    const button = element("#btn-all-off");
+    assert.match(button.textContent ?? "", /全关 \(3\)/);
+    button.click();
+    await setImmediate();
+    assert.match(tile("light.living_ceiling"), /已开启/);
+
+    button.dispatchEvent(new Event("pointerdown"));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await setImmediate();
+    assert.doesNotMatch(tile("light.living_ceiling"), /已开启/);
+    assert.match(tile("plug.entry_socket"), /供电中/);
+  });
+});

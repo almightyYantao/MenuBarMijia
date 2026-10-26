@@ -27,7 +27,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/jev-demo.gif" width="420" alt="Live demo: hold the menu-bar icon, speak, and execute multi-device changes with 5s undo">
+  <img src="docs/assets/jev-demo.gif" width="420" alt="Live demo: hold the menu-bar icon, speak, and execute multi-device changes with one-tap undo">
 </p>
 
 <p align="center">
@@ -158,7 +158,7 @@ The app also stores, on this Mac, time-of-day habits and short phrases you repea
 
 ## Undo
 
-A multi-device change raises an undo bar for 5 seconds. Choosing **Undo** restores the previous state of the devices that changed, including brightness, color temperature, light mode, and air-conditioner setpoint.
+A multi-device change raises an undo bar for 10 seconds. **All Off** needs a 0.6 s hold in every skin and only affects what is on screen (the selected room, no hidden devices); smart plugs and vacuums are left out unless you include them from the device menu (Windows: in Settings). Choosing **Undo** restores the previous state of the devices that changed, including brightness, color temperature, light mode, and air-conditioner setpoint.
 
 Saying 「撤销」 within 10 minutes rolls back the assistant’s last action.
 

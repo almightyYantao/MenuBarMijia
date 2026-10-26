@@ -298,6 +298,16 @@ public struct DeviceCardView: View {
                 }
             }
 
+            Button {
+                store.setJoinsAllOff(!store.joinsAllOff(device), deviceId: device.id)
+            } label: {
+                if store.joinsAllOff(device) {
+                    Label(L10n.tr("不参与「全关」", "Leave Out of All Off"), systemImage: "power.circle")
+                } else {
+                    Label(L10n.tr("参与「全关」", "Include in All Off"), systemImage: "power.circle.fill")
+                }
+            }
+
             Divider()
 
             Button(role: .destructive) {

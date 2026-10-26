@@ -91,6 +91,11 @@ public final class HomeStore {
         }
     }
 
+    /// Per-device choice for 全关; a missing entry means the default from `joinsAllOffByDefault` (#23).
+    public var allOffOverrides: [String: Bool] {
+        didSet { userDefaults.set(allOffOverrides, forKey: "all_off_overrides") }
+    }
+
     public var menuBarDisplayMode: MenuBarDisplayMode {
         didSet { userDefaults.set(menuBarDisplayMode.rawValue, forKey: "menubar_display_mode") }
     }
@@ -294,6 +299,7 @@ public final class HomeStore {
         } else {
             self.hiddenDeviceIds = []
         }
+        self.allOffOverrides = ud.dictionary(forKey: "all_off_overrides") as? [String: Bool] ?? [:]
 
         if !self.isTestEnvironment && ud === UserDefaults.standard {
             KeychainHelper.synchronizeFallbackCredentialsBeforeUpdate(defaults: ud)
@@ -1392,11 +1398,77 @@ public final class HomeStore {
         }
     }
 
-    // MARK: - Turn All Off with 5-Second Undo
+    // MARK: - Turn All Off with Undo
+
+    /// Plugs often power a router, fridge or NAS, and 全关 should not send a cleaning vacuum home (#23).
+    public nonisolated static func joinsAllOffByDefault(_ device: SmartDevice) -> Bool {
+        switch device.kind {
+        case .plug, .vacuum: return false
+        default: return true
+        }
+    }
+
+    public func joinsAllOff(_ device: SmartDevice) -> Bool {
+        allOffOverrides[device.id] ?? Self.joinsAllOffByDefault(device)
+    }
+
+    public func setJoinsAllOff(_ joins: Bool, deviceId: String) {
+        guard let device = devices.first(where: { $0.id == deviceId }) else { return }
+        allOffOverrides[deviceId] = joins == Self.joinsAllOffByDefault(device) ? nil : joins
+    }
+
+    /// What 全关 turns off: devices on screen right now (current room, not hidden) that are on,
+    /// take part in 全关, and can actually be switched off from here.
+    public var allOffTargets: [SmartDevice] {
+        filteredDevices.filter { $0.isActiveOn && joinsAllOff($0) && Self.allOffChange(for: $0) != nil }
+    }
+
+    /// The room 全关 is limited to, or nil for the whole visible home.
+    public var allOffRoomName: String? {
+        guard let roomId = selectedRoomId else { return nil }
+        return rooms.first(where: { $0.id == roomId })?.name
+    }
+
+    /// The command that switches `device` off, the one that brings it back, and the optimistic state.
+    nonisolated static func allOffChange(for device: SmartDevice) -> (off: DeviceCommand, restore: DeviceCommand, kind: DeviceKind)? {
+        switch device.kind {
+        case .light(var s):
+            s.isOn = false
+            return (.setLightPower(entityId: s.entityId, isOn: false), .setLightPower(entityId: s.entityId, isOn: true), .light(s))
+        case .climate(var s):
+            let prevMode = s.hvacMode
+            s.isOn = false
+            s.hvacMode = "off"
+            return (
+                .setClimatePower(entityId: s.entityId, isOn: false, fallbackMode: prevMode),
+                .setClimatePower(entityId: s.entityId, isOn: true, fallbackMode: prevMode),
+                .climate(s)
+            )
+        case .fan(var s):
+            s.isOn = false
+            return (.setFanPower(entityId: s.entityId, isOn: false), .setFanPower(entityId: s.entityId, isOn: true), .fan(s))
+        case .plug(var s):
+            s.isOn = false
+            return (.setSwitch(entityId: s.switchEntityId, isOn: false), .setSwitch(entityId: s.switchEntityId, isOn: true), .plug(s))
+        case .vacuum(var s):
+            s.status = "returning"
+            return (.vacuumAction(entityId: s.entityId, action: .returnToBase), .vacuumAction(entityId: s.entityId, action: .start), .vacuum(s))
+        case .tv(var s):
+            guard LGWebOSProtocol.isLGEntity(s.mediaEntityId) else { return nil }
+            s.state = "standby"
+            return (
+                .setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: false),
+                .setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: true),
+                .tv(s)
+            )
+        case .speaker, .fridge, .sensor:
+            return nil
+        }
+    }
 
     public func turnAllOff() {
-        let activeDevs = devices.filter(\.isActiveOn)
-        guard !activeDevs.isEmpty else {
+        let targetIds = Set(allOffTargets.map(\.id))
+        guard !targetIds.isEmpty else {
             showToast(L10n.tr("当前没有开启的设备", "No active devices are currently on"))
             return
         }
@@ -1405,55 +1477,12 @@ public final class HomeStore {
         var offCommands: [DeviceCommand] = []
         var restoreCommands: [DeviceCommand] = []
 
-        for idx in devices.indices {
-            guard devices[idx].isActiveOn else { continue }
-            let devId = devices[idx].id
-            lockOptimistic(devId, duration: .seconds(3.0))
-
-            switch devices[idx].kind {
-            case .light(var s):
-                offCommands.append(.setLightPower(entityId: s.entityId, isOn: false))
-                restoreCommands.append(.setLightPower(entityId: s.entityId, isOn: true))
-                s.isOn = false
-                devices[idx].kind = .light(s)
-
-            case .climate(var s):
-                let prevMode = s.hvacMode
-                offCommands.append(.setClimatePower(entityId: s.entityId, isOn: false, fallbackMode: prevMode))
-                restoreCommands.append(.setClimatePower(entityId: s.entityId, isOn: true, fallbackMode: prevMode))
-                s.isOn = false
-                s.hvacMode = "off"
-                devices[idx].kind = .climate(s)
-
-            case .fan(var s):
-                offCommands.append(.setFanPower(entityId: s.entityId, isOn: false))
-                restoreCommands.append(.setFanPower(entityId: s.entityId, isOn: true))
-                s.isOn = false
-                devices[idx].kind = .fan(s)
-
-            case .plug(var s):
-                offCommands.append(.setSwitch(entityId: s.switchEntityId, isOn: false))
-                restoreCommands.append(.setSwitch(entityId: s.switchEntityId, isOn: true))
-                s.isOn = false
-                devices[idx].kind = .plug(s)
-
-            case .vacuum(var s):
-                offCommands.append(.vacuumAction(entityId: s.entityId, action: .returnToBase))
-                restoreCommands.append(.vacuumAction(entityId: s.entityId, action: .start))
-                s.status = "returning"
-                devices[idx].kind = .vacuum(s)
-
-            case .tv(var s):
-                if LGWebOSProtocol.isLGEntity(s.mediaEntityId) {
-                    offCommands.append(.setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: false))
-                    restoreCommands.append(.setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: true))
-                    s.state = "standby"
-                    devices[idx].kind = .tv(s)
-                }
-
-            default:
-                break
-            }
+        for idx in devices.indices where targetIds.contains(devices[idx].id) {
+            guard let change = Self.allOffChange(for: devices[idx]) else { continue }
+            lockOptimistic(devices[idx].id, duration: .seconds(3.0))
+            offCommands.append(change.off)
+            restoreCommands.append(change.restore)
+            devices[idx].kind = change.kind
         }
 
         scheduleUndoBanner(
@@ -1469,6 +1498,9 @@ public final class HomeStore {
         }
     }
 
+    /// How long the 撤销 banner stays after 全关 and similar bulk actions (#23).
+    nonisolated static let undoBannerSeconds: Double = 10
+
     func scheduleUndoBanner(
         title: String,
         restoreCommands: [DeviceCommand],
@@ -1482,7 +1514,7 @@ public final class HomeStore {
         self.undoBanner = banner
         undoTimerTask?.cancel()
         undoTimerTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5.0))
+            try? await Task.sleep(for: .seconds(Self.undoBannerSeconds))
             guard !Task.isCancelled else { return }
             if self?.undoBanner?.id == banner.id {
                 self?.undoBanner = nil

@@ -449,12 +449,12 @@ struct HoldToConfirmButton: View {
                 .monospacedDigit()
                 .contentTransition(.numericText(value: Double(count)))
         }
-        .foregroundStyle(skin == .capsule ? Color.white : p.onAccent)
+        .foregroundStyle(skin == .capsule || skin.isClassic ? Color.white : p.onAccent)
         .padding(.horizontal, 11)
         .padding(.vertical, 5)
         .background {
             ZStack(alignment: .leading) {
-                Capsule(style: .continuous).fill(skin == .capsule ? AnyShapeStyle(Color(red: 1, green: 0.27, blue: 0.23)) : AnyShapeStyle(p.accentGradient))
+                Capsule(style: .continuous).fill(fillStyle(p))
                 GeometryReader { geo in
                     Rectangle()
                         .fill(Color.black.opacity(0.2))
@@ -473,7 +473,20 @@ struct HoldToConfirmButton: View {
         } onPressingChanged: { pressing in
             withAnimation(pressing ? .linear(duration: 0.6) : .easeOut(duration: 0.2)) { holding = pressing }
         }
-        .skinHelp(L10n.tr("按住 0.6 秒全部关闭", "Hold 0.6s to turn everything off"))
+        .skinHelp(L10n.tr("按住 0.6 秒关闭这 \(count) 台设备", "Hold 0.6s to turn off these \(count) devices"))
+        // VoiceOver cannot long-press easily; give it an explicit, clearly named action instead.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("\(title) (\(count))"))
+        .accessibilityHint(Text(L10n.tr("按住 0.6 秒关闭", "Hold 0.6 seconds to turn off")))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(named: Text(L10n.tr("关闭这 \(count) 台设备", "Turn off these \(count) devices")), onConfirm)
+    }
+
+    private func fillStyle(_ p: SkinPalette) -> AnyShapeStyle {
+        if skin == .capsule { return AnyShapeStyle(Color(red: 1, green: 0.27, blue: 0.23)) }
+        // Keeps the classic skin's orange 全关 pill.
+        if skin.isClassic { return AnyShapeStyle(Color(red: 0.90, green: 0.44, blue: 0.08)) }
+        return AnyShapeStyle(p.accentGradient)
     }
 }
 

@@ -25,7 +25,13 @@ import {
   type MiotDeviceSpec,
 } from "../src/core/miCloudClient.js";
 import { MiCloudCrypto, RC4 } from "../src/core/miCloudCrypto.js";
-import { partitionDueTimers, type ScheduledCommand, type SmartDevice } from "../src/core/models.js";
+import {
+  allOffTargets,
+  joinsAllOffByDefault,
+  partitionDueTimers,
+  type ScheduledCommand,
+  type SmartDevice,
+} from "../src/core/models.js";
 
 const Vectors = {
   ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
@@ -857,5 +863,26 @@ describe("Timers the PC slept through wait for the user (#22)", () => {
     assert.deepEqual(result.run.map((t) => t.id), ["on-time"]);
     assert.deepEqual(result.missed.map((t) => t.id), ["slept"]);
     assert.deepEqual(result.remaining.map((t) => t.id), ["future"]);
+  });
+});
+
+describe("全关 leaves plugs and vacuums alone unless asked (#23)", () => {
+  const lamp: SmartDevice = {
+    id: "lamp", name: "台灯", roomId: "study", roomName: "书房", model: "yeelink.light.lamp4", isOnline: true,
+    kind: {
+      kind: "light", entityId: "miot:lamp:2", isOn: true, brightnessPercent: 50, colorTempKelvin: null,
+      minKelvin: 2700, maxKelvin: 6500, currentEffect: null, availableEffects: [],
+    },
+  };
+  const router: SmartDevice = {
+    id: "router", name: "路由器插座", roomId: "study", roomName: "书房", model: "cuco.plug.v3", isOnline: true,
+    kind: { kind: "plug", switchEntityId: "miot:router:2", isOn: true, powerWatts: 9, childLockEntityId: null, isChildLocked: false },
+  };
+
+  it("skips plugs by default and follows the user's choice", () => {
+    assert.equal(joinsAllOffByDefault(router), false);
+    assert.equal(joinsAllOffByDefault(lamp), true);
+    assert.deepEqual(allOffTargets([lamp, router], {}).map((d) => d.id), ["lamp"]);
+    assert.deepEqual(allOffTargets([lamp, router], { router: true, lamp: false }).map((d) => d.id), ["router"]);
   });
 });

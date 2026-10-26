@@ -172,6 +172,23 @@ export interface ScheduledCommand {
   readonly reply: string;
 }
 
+/** Plugs often power a router, fridge or NAS, and 全关 should not send a cleaning vacuum home (#23). */
+export function joinsAllOffByDefault(device: SmartDevice): boolean {
+  return device.kind.kind !== "plug" && device.kind.kind !== "vacuum";
+}
+
+export function joinsAllOff(device: SmartDevice, overrides: Readonly<Record<string, boolean>>): boolean {
+  return overrides[device.id] ?? joinsAllOffByDefault(device);
+}
+
+/** What 全关 turns off: the devices on screen that are on and take part in 全关. */
+export function allOffTargets(
+  visible: readonly SmartDevice[],
+  overrides: Readonly<Record<string, boolean>>
+): SmartDevice[] {
+  return visible.filter((d) => isDeviceActiveOn(d) && joinsAllOff(d, overrides));
+}
+
 /** A timer that comes due more than this late (the PC slept, the app was frozen) waits for the user (#22). */
 export const LATE_TIMER_GRACE_MS = 60_000;
 

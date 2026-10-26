@@ -37,8 +37,11 @@ import {
   type IntentPlan,
   type ScheduledCommand,
   type SmartDevice,
+  allOffTargets,
   deviceStatusSummary,
   isDeviceActiveOn,
+  joinsAllOff,
+  joinsAllOffByDefault,
   partitionDueTimers,
 } from "../core/models.js";
 import {
@@ -120,6 +123,8 @@ interface PersistedSettings {
   assistantKeyEndpoint: string | null;
   /** Cloud AI services (host[:port]) the user allowed to receive commands; asked once per service (#20). */
   cloudConsentEndpoints: string[];
+  /** Per-device choice for 全关; missing means the default (plugs and vacuums stay out) (#23). */
+  allOffOverrides: Record<string, boolean>;
   assistantModel: string;
   habitLearningEnabled: boolean;
   learnedShortcuts: LearnedShortcut[];
@@ -388,6 +393,12 @@ function loadSettings(): PersistedSettings {
         cloudConsentEndpoints: Array.isArray(parsed.cloudConsentEndpoints)
           ? parsed.cloudConsentEndpoints.filter((e): e is string => typeof e === "string")
           : [],
+        allOffOverrides:
+          parsed.allOffOverrides && typeof parsed.allOffOverrides === "object"
+            ? Object.fromEntries(
+                Object.entries(parsed.allOffOverrides).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"),
+              )
+            : {},
         assistantModel: parsed.assistantModel ?? "~typesafe/jev-latest",
         habitLearningEnabled: parsed.habitLearningEnabled ?? true,
         learnedShortcuts: parsed.learnedShortcuts ?? [],
@@ -419,6 +430,7 @@ function loadSettings(): PersistedSettings {
     openRouterApiKey: "",
     assistantKeyEndpoint: null,
     cloudConsentEndpoints: [],
+    allOffOverrides: {},
     assistantModel: "~typesafe/jev-latest",
     habitLearningEnabled: true,
     learnedShortcuts: [],
@@ -729,14 +741,19 @@ export class MenuMijiaWindowsApp {
     return h ? h.name : this.homes.length > 1 ? "全部家庭" : "我的米家";
   }
 
+  /** Devices 全关 would switch off: on screen (current room), on, and taking part (#23). */
+  private get allOffTargets(): SmartDevice[] {
+    return allOffTargets(this.filteredDevices, this.settings.allOffOverrides);
+  }
+
   private async turnAllOff(): Promise<void> {
-    const activeDevices = this.devices.filter((d) => isDeviceActiveOn(d));
-    if (activeDevices.length === 0) return;
-    const intents: DeviceIntent[] = activeDevices.map((d) => ({
+    const targets = this.allOffTargets;
+    if (targets.length === 0) return;
+    const intents: DeviceIntent[] = targets.map((d) => ({
       targetId: d.id,
       operation: { kind: "power", isOn: false },
     }));
-    await this.executeIntents(intents, `已关闭 ${activeDevices.length} 台开启中的设备`, "一键全关");
+    await this.executeIntents(intents, `已关闭 ${targets.length} 台开启中的设备`, "一键全关");
   }
 
   private async handleNaturalCommand(rawInput: string, fromScheduled = false): Promise<void> {
@@ -1411,11 +1428,11 @@ export class MenuMijiaWindowsApp {
               ${
                 this.isEditingLayout
                   ? `<button class="cc-all-off-pill is-done" id="btn-done-editing">完成</button>`
-                  : this.activeDeviceCount > 0
-                  ? `<button class="cc-all-off-pill ${this.skin === "classic" ? "" : "is-hold"}" id="btn-all-off" title="${this.skin === "classic" ? "一键关闭所有开启中的设备" : "按住 0.6 秒全部关闭"}">
+                  : this.allOffTargets.length > 0
+                  ? `<button class="cc-all-off-pill is-hold" id="btn-all-off" title="按住 0.6 秒关闭这 ${this.allOffTargets.length} 台（插座、扫地机默认不参与，可在设置里调整）">
                       <span class="cc-hold-fill"></span>
                       ${SF_ICONS.power}
-                      <span>全关 (${this.activeDeviceCount})</span>
+                      <span>${this.selectedRoom === "全部" ? "全关" : `全关·${this.escapeHtml(this.selectedRoom)}`} (${this.allOffTargets.length})</span>
                     </button>`
                   : ""
               }
@@ -2299,6 +2316,22 @@ export class MenuMijiaWindowsApp {
           }
 
           <div class="cc-field">
+            <label>「全关」包含哪些设备（插座、扫地机默认不包含）</label>
+            <div class="cc-timers-stack">
+              ${this.devices
+                .filter((d) => d.kind.kind !== "sensor")
+                .map(
+                  (d) => `
+                <label class="cc-checkbox">
+                  <input type="checkbox" data-alloff-device="${this.escapeHtml(d.id)}" ${joinsAllOff(d, this.settings.allOffOverrides) ? "checked" : ""} />
+                  <span>${this.escapeHtml(d.name)}${d.roomName ? ` · ${this.escapeHtml(d.roomName)}` : ""}</span>
+                </label>`,
+                )
+                .join("")}
+            </div>
+          </div>
+
+          <div class="cc-field">
             <label class="cc-checkbox">
               <input type="checkbox" id="settings-habit" ${this.settings.habitLearningEnabled ? "checked" : ""} />
               <span>自动记住自然语言习惯（相同表达下次 0ms 本地直达）</span>
@@ -2355,10 +2388,9 @@ export class MenuMijiaWindowsApp {
       }
     });
 
+    // Every skin asks for a 0.6 s hold (#23).
     const allOff = this.root.querySelector<HTMLElement>("#btn-all-off");
-    if (allOff && this.skin === "classic") {
-      allOff.addEventListener("click", () => void this.turnAllOff());
-    } else if (allOff) {
+    if (allOff) {
       let holdTimer: number | undefined;
       let fired = false;
       allOff.addEventListener("pointerdown", () => {
@@ -2377,7 +2409,7 @@ export class MenuMijiaWindowsApp {
       allOff.addEventListener("pointerup", () => {
         cancel();
         if (!fired) {
-          this.replyBanner = { text: "按住 0.6 秒全部关闭", source: "提示" };
+          this.replyBanner = { text: `按住 0.6 秒关闭这 ${this.allOffTargets.length} 台（插座、扫地机默认不参与）`, source: "提示" };
           this.render();
         }
       });
@@ -2813,6 +2845,21 @@ export class MenuMijiaWindowsApp {
       this.pendingCloudConsent = null;
       this.replyBanner = { text: "没有发送。「打开书房灯」这类简单指令不用联网。", source: "已取消" };
       this.render();
+    });
+
+    this.root.querySelectorAll<HTMLInputElement>("[data-alloff-device]").forEach((box) => {
+      box.addEventListener("change", () => {
+        const id = box.dataset.alloffDevice ?? "";
+        const device = this.devices.find((d) => d.id === id);
+        if (!device) return;
+        if (box.checked === joinsAllOffByDefault(device)) {
+          delete this.settings.allOffOverrides[id];
+        } else {
+          this.settings.allOffOverrides[id] = box.checked;
+        }
+        saveSettings(this.settings);
+        this.render();
+      });
     });
 
     this.root.querySelector("#btn-revoke-cloud")?.addEventListener("click", () => {

@@ -774,38 +774,23 @@ public struct ControlCenterPanel: View {
                 if isEditingLayout {
                     doneEditingButton
                         .transition(.scale(scale: 0.8).combined(with: .opacity))
-                } else if store.activeDeviceCount > 0 && !skin.isClassic {
+                } else if !store.allOffTargets.isEmpty {
+                    // Every skin asks for a 0.6 s hold, and the label says what will be switched off (#23).
+                    let count = store.allOffTargets.count
                     HoldToConfirmButton(
-                        title: L10n.tr("全关", "All Off"),
-                        count: store.activeDeviceCount,
+                        title: store.allOffRoomName.map { L10n.tr("全关·\($0)", "All Off · \($0)") } ?? L10n.tr("全关", "All Off"),
+                        count: count,
                         onConfirm: {
                             withAnimation(AppleMotion.snappySpring) { store.turnAllOff() }
                         },
                         onTap: {
-                            store.showToast(L10n.tr("按住 0.6 秒全部关闭", "Hold 0.6s to turn everything off"), isError: false)
+                            store.showToast(
+                                L10n.tr("按住 0.6 秒关闭这 \(count) 台（插座、扫地机默认不参与）", "Hold 0.6s to turn off these \(count) (plugs and vacuums are left out by default)"),
+                                isError: false
+                            )
                         }
                     )
                     .transition(.scale(scale: 0.8).combined(with: .opacity))
-                } else if store.activeDeviceCount > 0 {
-                    Button {
-                        withAnimation(AppleMotion.snappySpring) {
-                            store.turnAllOff()
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "power")
-                                .font(.system(size: 10.5, weight: .bold))
-                            Text(L10n.tr("全关 (\(store.activeDeviceCount))", "All Off (\(store.activeDeviceCount))"))
-                                .font(.system(size: 11.5, weight: .semibold))
-                                .monospacedDigit()
-                        }
-                    }
-                    .buttonStyle(
-                        PillActionButtonStyle(
-                            isSelected: true,
-                            tintColor: Color(red: 0.90, green: 0.44, blue: 0.08)
-                        )
-                    )
                 }
             }
 
