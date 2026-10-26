@@ -51,6 +51,13 @@ public protocol HomeProvider: Sendable {
     func events() -> AsyncStream<HomeProviderEvent>
     func execute(_ command: DeviceCommand) async throws
     func refreshNow() async
+    /// Tells a polling provider whether the panel is open and the Mac is awake, so it can slow down or pause (#26).
+    func setPollingContext(_ context: PollingContext) async
+}
+
+extension HomeProvider {
+    /// Push-based providers (Home Assistant) have nothing to slow down.
+    public func setPollingContext(_ context: PollingContext) async {}
 }
 
 // MARK: - Live Home Assistant WebSocket + REST Provider
@@ -435,6 +442,8 @@ public actor MockHomeProvider: HomeProvider {
     private var snapshot: SynthesizedHome
     private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
     public private(set) var executedCommands: [DeviceCommand] = []
+    /// Every polling context the store sent, in order (#26).
+    public private(set) var pollingContexts: [PollingContext] = []
     public var shouldFailCommands: Bool = false
 
     public init(snapshot: SynthesizedHome = .init()) {
@@ -443,6 +452,10 @@ public actor MockHomeProvider: HomeProvider {
 
     public func setShouldFail(_ fail: Bool) {
         self.shouldFailCommands = fail
+    }
+
+    public func setPollingContext(_ context: PollingContext) async {
+        pollingContexts.append(context)
     }
 
     public nonisolated func events() -> AsyncStream<HomeProviderEvent> {

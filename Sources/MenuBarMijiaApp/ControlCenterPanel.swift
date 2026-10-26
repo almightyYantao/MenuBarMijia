@@ -119,6 +119,9 @@ public struct ControlCenterPanel: View {
             syncMenuBarWindowSize()
             withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true }
         }
+        // Mi cloud polls every 6 s only while the panel is on screen (#26).
+        .onChange(of: isPresented) { _, visible in store.setPanelVisible(visible) }
+        .onDisappear { store.setPanelVisible(false) }
         .environment(\.isEditingLayout, isEditingLayout)
         .skinRoot(skin)
         .task {

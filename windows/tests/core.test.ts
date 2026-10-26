@@ -29,6 +29,9 @@ import {
   allOffTargets,
   joinsAllOffByDefault,
   partitionDueTimers,
+  cloudRefreshDue,
+  CLOUD_REFRESH_HIDDEN_MS,
+  CLOUD_REFRESH_VISIBLE_MS,
   type ScheduledCommand,
   type SmartDevice,
 } from "../src/core/models.js";
@@ -863,6 +866,25 @@ describe("Timers the PC slept through wait for the user (#22)", () => {
     assert.deepEqual(result.run.map((t) => t.id), ["on-time"]);
     assert.deepEqual(result.missed.map((t) => t.id), ["slept"]);
     assert.deepEqual(result.remaining.map((t) => t.id), ["future"]);
+  });
+});
+
+describe("cloud refresh slows down while the panel is hidden (#26)", () => {
+  it("refreshes every 12 s with the panel open and every 60 s in the tray", () => {
+    const last = 1_000_000;
+    assert.equal(CLOUD_REFRESH_VISIBLE_MS, 12_000);
+    assert.equal(CLOUD_REFRESH_HIDDEN_MS, 60_000);
+    assert.equal(cloudRefreshDue(last + 11_999, last, true), false);
+    assert.equal(cloudRefreshDue(last + 12_000, last, true), true);
+    assert.equal(cloudRefreshDue(last + 30_000, last, false), false);
+    assert.equal(cloudRefreshDue(last + 60_000, last, false), true);
+  });
+
+  it("opening the panel after a while refreshes at once; the first refresh never waits", () => {
+    const last = 1_000_000;
+    assert.equal(cloudRefreshDue(last + 40_000, last, false), false);
+    assert.equal(cloudRefreshDue(last + 40_000, last, true), true);
+    assert.equal(cloudRefreshDue(5, null, false), true);
   });
 });
 

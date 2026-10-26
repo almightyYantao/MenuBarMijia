@@ -225,6 +225,9 @@ public final class HomeStore {
     private let isTestEnvironment: Bool
     private var latestLGDevice: SmartDevice?
     private var eventTask: Task<Void, Never>?
+    /// Panel open, Mac awake, Low Power Mode; the provider paces polling with it (#26).
+    public private(set) var pollingContext = PollingContext()
+    private var pollingContextSync: Task<Void, Never>?
     private var debounceTasks: [String: Task<Void, Never>] = [:]
     var undoTimerTask: Task<Void, Never>?
     private var toastTimerTask: Task<Void, Never>?
@@ -403,6 +406,42 @@ public final class HomeStore {
                 guard let self else { break }
                 self.handleProviderEvent(event)
             }
+        }
+        pushPollingContext()
+    }
+
+    // MARK: Polling Rhythm (#26)
+
+    /// The control center panel opened or closed.
+    public func setPanelVisible(_ visible: Bool) {
+        updatePollingContext { $0.panelVisible = visible }
+    }
+
+    /// False while the Mac or display sleeps, the screen is locked, or another user is active.
+    public func setSystemActive(_ active: Bool) {
+        updatePollingContext { $0.systemActive = active }
+    }
+
+    public func setLowPowerMode(_ enabled: Bool) {
+        updatePollingContext { $0.lowPower = enabled }
+    }
+
+    private func updatePollingContext(_ change: (inout PollingContext) -> Void) {
+        var next = pollingContext
+        change(&next)
+        guard next != pollingContext else { return }
+        pollingContext = next
+        pushPollingContext()
+    }
+
+    /// Chained so quick open/close changes reach the provider in order.
+    private func pushPollingContext() {
+        let previous = pollingContextSync
+        let target = provider
+        let context = pollingContext
+        pollingContextSync = Task {
+            await previous?.value
+            await target.setPollingContext(context)
         }
     }
 

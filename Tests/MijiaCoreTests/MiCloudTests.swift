@@ -467,7 +467,10 @@ actor StubMiCloudAPI: MiCloudAPI {
 
     func setValue(_ key: MiotPropKey, _ value: JSONValue) { values[key] = value }
 
+    private(set) var deviceListCalls = 0
+
     func deviceList() async throws -> [MiDeviceRecord] {
+        deviceListCalls += 1
         if let failure { throw failure }
         return devices
     }

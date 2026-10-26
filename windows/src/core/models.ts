@@ -209,6 +209,16 @@ export function partitionDueTimers(
   return { run, missed, remaining };
 }
 
+/** Xiaomi cloud refresh while the panel is open, and while it is hidden in the tray (#26). */
+export const CLOUD_REFRESH_VISIBLE_MS = 12_000;
+export const CLOUD_REFRESH_HIDDEN_MS = 60_000;
+
+/** True when the last cloud refresh is older than the interval for the panel's visibility. */
+export function cloudRefreshDue(nowMs: number, lastRefreshMs: number | null, panelVisible: boolean): boolean {
+  if (lastRefreshMs === null) return true;
+  return nowMs - lastRefreshMs >= (panelVisible ? CLOUD_REFRESH_VISIBLE_MS : CLOUD_REFRESH_HIDDEN_MS);
+}
+
 export function isDeviceActiveOn(device: SmartDevice): boolean {
   switch (device.kind.kind) {
     case "light":

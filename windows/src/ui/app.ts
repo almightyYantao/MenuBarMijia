@@ -38,6 +38,7 @@ import {
   type ScheduledCommand,
   type SmartDevice,
   allOffTargets,
+  cloudRefreshDue,
   deviceStatusSummary,
   isDeviceActiveOn,
   joinsAllOff,
@@ -475,6 +476,8 @@ export class MenuMijiaWindowsApp {
   private pendingSuggestions: AssistantSuggestion[] = [];
   private isResolvingIntent = false;
   private isSyncingCloud = false;
+  /** When the last Xiaomi cloud refresh started; paces background refreshes (#26). */
+  private lastCloudRefreshAt: number | null = null;
   private isListeningVoice = false;
   private scheduledCommands: ScheduledCommand[] = [];
   /** Timers that came due while the PC slept; they only run when the user taps 立即执行 (#22). */
@@ -569,20 +572,24 @@ export class MenuMijiaWindowsApp {
       if (changed) {
         this.render();
       }
-    }, 1000);
 
-    // Background cloud state refresh every 12 seconds when logged into Xiaomi Cloud
-    window.setInterval(() => {
+      // Cloud refresh: every 12 s with the panel open, every 60 s while it sits in the tray (#26).
       if (
         this.settings.connectionMode === "xiaomiCloud" &&
         this.settings.miSession &&
         this.activeSheet === "none" &&
         !this.isSyncingCloud &&
-        !this.isPollingQR
+        !this.isPollingQR &&
+        cloudRefreshDue(now, this.lastCloudRefreshAt, this.isPanelVisible())
       ) {
         void this.refreshXiaomiDevices(true);
       }
-    }, 12000);
+    }, 1000);
+  }
+
+  /** The tray popover hides when it loses focus, so focus means it is on screen. */
+  private isPanelVisible(): boolean {
+    return document.visibilityState !== "hidden" && document.hasFocus();
   }
 
   private get rooms(): string[] {
@@ -635,6 +642,7 @@ export class MenuMijiaWindowsApp {
     if (!this.settings.miSession || this.settings.connectionMode !== "xiaomiCloud" || this.isSyncingCloud) return;
     const session = this.settings.miSession;
     this.isSyncingCloud = true;
+    this.lastCloudRefreshAt = Date.now();
     if (!silent) {
       this.render();
     }

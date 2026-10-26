@@ -11,6 +11,7 @@ struct MenuBarMijiaApp: App {
     init() {
         let sharedStore = HomeStore.shared
         HotkeyAndNotificationManager.shared.start(with: sharedStore)
+        SystemActivityMonitor.shared.start(with: sharedStore)
     }
 
     var body: some Scene {
