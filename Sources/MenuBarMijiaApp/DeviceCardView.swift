@@ -212,6 +212,12 @@ public struct DeviceCardView: View {
                 Label(L10n.tr("卡片大小（本页）", "Card Size (this page)"), systemImage: "square.resize")
             }
 
+            Button {
+                LayoutUIState.shared.renamingDeviceId = device.id
+            } label: {
+                Label(L10n.tr("重命名…", "Rename…"), systemImage: "pencil")
+            }
+
             Menu {
                 let groups = GroupPrefs.groups(groupsRaw)
                 let current = GroupPrefs.map(groupMapRaw)[device.id]

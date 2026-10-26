@@ -25,6 +25,7 @@ public struct ControlCenterPanel: View {
     @AppStorage(GroupPrefs.mapKey) private var groupMapRaw: String = "{}"
     @AppStorage(GroupPrefs.collapsedKey) private var collapsedRaw: String = "[]"
     @State private var liveGroupMap: [String: String]?
+    @AppStorage(GroupPrefs.aliasesKey) private var aliasesRaw: String = "{}"
     @State private var layoutUI = LayoutUIState.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Drives the open animation; reset whenever the menu-bar window closes so every open replays it.
@@ -92,6 +93,7 @@ public struct ControlCenterPanel: View {
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.newGroupForDevice)
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingGroupId)
+        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingDeviceId)
         .frame(width: skin.isClassic ? 356 : 376, height: (PanelHeight(rawValue: panelHeightRaw) ?? .standard).points)
         // Open animation: drop in from the menu bar with a slight scale and fade.
         .scaleEffect(isPresented || reduceMotion ? 1 : 0.94, anchor: .top)
@@ -376,6 +378,24 @@ public struct ControlCenterPanel: View {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layoutUI.newGroupForDevice = nil }
                 }
             }
+        } else if let did = layoutUI.renamingDeviceId, let dev = store.devices.first(where: { $0.id == did }) {
+            promptBackdrop {
+                GroupNamePrompt(
+                    title: L10n.tr("重命名设备", "Rename Device"),
+                    name: GroupPrefs.map(aliasesRaw)[did] ?? dev.name,
+                    placeholder: dev.name
+                ) { name in
+                    var aliases = GroupPrefs.map(aliasesRaw)
+                    // Saving the original Mi Home name clears the alias.
+                    aliases[did] = name == dev.name ? nil : name
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                        aliasesRaw = GroupPrefs.encode(aliases)
+                        layoutUI.renamingDeviceId = nil
+                    }
+                } onCancel: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layoutUI.renamingDeviceId = nil }
+                }
+            }
         } else if let gid = layoutUI.renamingGroupId, let group = groups.first(where: { $0.id == gid }) {
             promptBackdrop {
                 GroupNamePrompt(title: L10n.tr("重命名分组", "Rename Group"), name: group.name) { name in
@@ -400,6 +420,7 @@ public struct ControlCenterPanel: View {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                         layoutUI.newGroupForDevice = nil
                         layoutUI.renamingGroupId = nil
+                        layoutUI.renamingDeviceId = nil
                     }
                 }
                 .transition(.opacity)
@@ -601,7 +622,13 @@ public struct ControlCenterPanel: View {
         showRoomBadge: Bool,
         quickIndexMap: [String: Int]
     ) -> some View {
-        let ordered = DeviceLayoutPrefs.apply(order: currentOrder, to: devices)
+        let aliases = GroupPrefs.map(aliasesRaw)
+        let ordered = DeviceLayoutPrefs.apply(order: currentOrder, to: devices).map { dev -> SmartDevice in
+            guard let alias = aliases[dev.id] else { return dev }
+            var d = dev
+            d.name = alias
+            return d
+        }
         let spanMap = spans(for: ordered)
         let bento = skin == .bento && store.isCompactGridMode
         // Every card is its own child keyed by device id, so a reorder slides cards instead of rebuilding rows.

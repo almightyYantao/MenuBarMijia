@@ -253,6 +253,8 @@ public enum GroupPrefs {
     public static let groupsKey = "device_groups"
     public static let mapKey = "device_group_map"
     public static let collapsedKey = "device_groups_collapsed"
+    /// `[deviceId: display name]`; local to this app, the Mi Home name is untouched.
+    public static let aliasesKey = "device_aliases"
 
     public static func groups(_ raw: String) -> [DeviceGroup] {
         (try? JSONDecoder().decode([DeviceGroup].self, from: Data(raw.utf8))) ?? []
@@ -288,6 +290,8 @@ final class LayoutUIState {
     var newGroupForDevice: String?
     /// Non-nil while renaming that group.
     var renamingGroupId: String?
+    /// Non-nil while renaming that device (local display name only).
+    var renamingDeviceId: String?
 }
 
 /// Inline name prompt shown over the panel for creating or renaming a group.
@@ -295,6 +299,7 @@ struct GroupNamePrompt: View {
     @Environment(\.appSkin) private var skin
     let title: String
     @State var name: String
+    var placeholder: String = L10n.tr("例如：灯光、电器、环境", "e.g. Lights, Appliances")
     let onSave: (String) -> Void
     let onCancel: () -> Void
     @FocusState private var focused: Bool
@@ -303,7 +308,7 @@ struct GroupNamePrompt: View {
         let p = skin.palette
         VStack(alignment: .leading, spacing: 10) {
             Text(title).font(.system(size: 13, weight: .semibold))
-            TextField(L10n.tr("例如：灯光、电器、环境", "e.g. Lights, Appliances"), text: $name)
+            TextField(placeholder, text: $name)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .padding(.horizontal, 10)
