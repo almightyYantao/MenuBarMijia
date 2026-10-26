@@ -936,43 +936,50 @@ public struct ControlCenterPanel: View {
 
     // MARK: - 2. Room Filter Strip & Grid Toggle
 
+    private var roomPillsRow: some View {
+        HStack(spacing: 5) {
+            roomPill(title: L10n.tr("全部", "All"), roomId: nil)
+            ForEach(store.rooms) { room in
+                roomPill(title: L10n.displayRoomName(room.name), roomId: room.id)
+            }
+        }
+    }
+
     private var roomFilterBar: some View {
         HStack(spacing: 6) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                AdaptiveGlassContainer(spacing: 5) {
-                    HStack(spacing: 5) {
-                        roomPill(title: L10n.tr("全部", "All"), roomId: nil)
-
-                        ForEach(store.rooms) { room in
-                            roomPill(title: L10n.displayRoomName(room.name), roomId: room.id)
-                        }
+            if skin.isClassic {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    AdaptiveGlassContainer(spacing: 5) {
+                        roomPillsRow
+                            .padding(.trailing, 10)
+                            .padding(.leading, 6)
+                            .padding(.vertical, 6)
                     }
-                    .padding(skin.isClassic ? 0 : 3)
-                    .background {
-                        if !skin.isClassic {
-                            Capsule(style: .continuous).fill(skin.palette.chip)
-                                .overlay(Capsule(style: .continuous).stroke(skin.palette.line, lineWidth: 0.8))
-                        }
-                    }
-                    .padding(.trailing, 10)
-                    // Room for the selected pill's glow, which the scroll view would otherwise clip.
-                    .padding(.leading, 6)
-                    .padding(.vertical, 6)
                 }
-            }
-            .padding(.leading, -6)
-            .padding(.vertical, -6)
-            .mask(
-                LinearGradient(
-                    stops: [
-                        .init(color: .black, location: 0.0),
-                        .init(color: .black, location: 0.91),
-                        .init(color: .clear, location: 1.0)
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
+                .padding(.leading, -6)
+                .padding(.vertical, -6)
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black, location: 0.0),
+                            .init(color: .black, location: 0.91),
+                            .init(color: .clear, location: 1.0)
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
                 )
-            )
+            } else {
+                // The track sits outside the scroll view and clips it, so the first pill's rounded
+                // edge can never be cut by the scroll view's own bounds or offset.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    roomPillsRow.padding(3)
+                }
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                .clipShape(Capsule(style: .continuous))
+                .background(Capsule(style: .continuous).fill(skin.palette.chip))
+                .overlay(Capsule(style: .continuous).stroke(skin.palette.line, lineWidth: 0.8))
+            }
 
             AdaptiveGlassContainer(spacing: 5) {
                 HStack(spacing: 5) {
@@ -1055,7 +1062,6 @@ public struct ControlCenterPanel: View {
                         if isSelected {
                             Capsule(style: .continuous)
                                 .fill(p.accentGradient)
-                                .shadow(color: p.glow ? p.accent.opacity(0.5) : .clear, radius: 6)
                                 .matchedGeometryEffect(id: "roomPill", in: roomPillNamespace)
                         }
                     }
