@@ -329,4 +329,21 @@ try FileManager.default.copyItem(at: darkICNSURL, to: defaultICNSURL)
 try buildAssetsCar(lightCache: lightCache, darkCache: darkCache, outputCarURL: assetsCarURL)
 try writeWindowsIcons(master: darkMaster, cache: darkCache)
 
-print("Generated AppIcon.icns, AppIcon-Dark.icns, AppIcon-Light.icns, Assets.car, and Windows icons.")
+let docsAssetsDir = rootURL.appendingPathComponent("docs/assets", isDirectory: true)
+let logoDarkURL = docsAssetsDir.appendingPathComponent("logo-dark.svg")
+let logoLightURL = docsAssetsDir.appendingPathComponent("logo-light.svg")
+let logoAdaptiveURL = docsAssetsDir.appendingPathComponent("logo.svg")
+let appIconAdaptiveURL = iconDirURL.appendingPathComponent("AppIcon.svg")
+
+for (src, dst) in [(darkSVGURL, logoDarkURL), (lightSVGURL, logoLightURL), (logoAdaptiveURL, appIconAdaptiveURL)] {
+    if FileManager.default.fileExists(atPath: dst.path) {
+        try FileManager.default.removeItem(at: dst)
+    }
+    try FileManager.default.copyItem(at: src, to: dst)
+}
+
+for svg in [darkSVGURL, lightSVGURL, appIconAdaptiveURL, logoDarkURL, logoLightURL, logoAdaptiveURL] {
+    try run("/usr/bin/xmllint", ["--noout", svg.path])
+}
+
+print("Generated AppIcon.icns, AppIcon-Dark.icns, AppIcon-Light.icns, Assets.car, synced SVG logos, and Windows icons.")

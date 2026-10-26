@@ -86,6 +86,10 @@ elif search_matches 'return \([^)]*await' Sources; then
     exit 1
 fi
 
+if command -v xmllint >/dev/null 2>&1; then
+    xmllint --noout docs/assets/*.svg Resources/AppIcon/*.svg
+fi
+
 if [ "${1:-}" = "--lint-only" ]; then
     echo "✅ 密钥与机械性编码规范检查通过！"
     exit 0
