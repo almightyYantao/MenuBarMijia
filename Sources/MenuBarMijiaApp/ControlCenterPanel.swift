@@ -232,6 +232,13 @@ public struct ControlCenterPanel: View {
         })?.key, target != lastSwapTarget else { return }
         lastSwapTarget = target
         lastSwapAt = Date()
+        // In the "All" view, dropping onto the other section moves the card into it.
+        if store.selectedRoomId == nil,
+           store.favoriteDeviceIds.contains(target) != store.favoriteDeviceIds.contains(dragged) {
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
+                store.toggleFavorite(dragged)
+            }
+        }
         moveDevice(dragged, to: target)
     }
 
