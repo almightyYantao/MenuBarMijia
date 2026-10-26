@@ -26,6 +26,9 @@ public struct ControlCenterPanel: View {
     @AppStorage(GroupPrefs.collapsedKey) private var collapsedRaw: String = "[]"
     @State private var liveGroupMap: [String: String]?
     @State private var layoutUI = LayoutUIState.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Drives the open animation; reset whenever the menu-bar window closes so every open replays it.
+    @State private var isPresented = false
 
     /// Card sizes are remembered per page: a room id, or "all" for the overview.
     private var layoutScope: String { store.selectedRoomId ?? "all" }
@@ -90,6 +93,22 @@ public struct ControlCenterPanel: View {
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.newGroupForDevice)
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingGroupId)
         .frame(width: skin.isClassic ? 356 : 376, height: (PanelHeight(rawValue: panelHeightRaw) ?? .standard).points)
+        // Open animation: drop in from the menu bar with a slight scale and fade.
+        .scaleEffect(isPresented || reduceMotion ? 1 : 0.94, anchor: .top)
+        .offset(y: isPresented || reduceMotion ? 0 : -10)
+        .opacity(isPresented ? 1 : 0)
+        .blur(radius: isPresented || reduceMotion ? 0 : 6)
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            guard (note.object as? NSWindow)?.className.contains("MenuBarExtra") ?? false || !isPresented else { return }
+            isPresented = false
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+            isPresented = false
+        }
+        .onAppear {
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true }
+        }
         .environment(\.isEditingLayout, isEditingLayout)
         .skinRoot(skin)
         .task {
