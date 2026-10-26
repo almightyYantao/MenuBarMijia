@@ -16,6 +16,8 @@ public struct ControlCenterPanel: View {
     @State private var tileFrames: [String: CGRect] = [:]
     @State private var dragLocation: CGPoint?
     @State private var grabOffset: CGSize = .zero
+    @State private var lastSwapTarget: String?
+    @State private var lastSwapAt: Date = .distantPast
     @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
     @Namespace private var roomPillNamespace
     public let store: HomeStore
@@ -125,7 +127,9 @@ public struct ControlCenterPanel: View {
                     }
                 }
                 .coordinateSpace(name: TileSpace.name)
-                .onPreferenceChange(TileFramesKey.self) { tileFrames = $0 }
+                .onPreferenceChange(TileFramesKey.self) { frames in
+                    if frames != tileFrames { tileFrames = frames }
+                }
                 .padding(.horizontal, 13)
                 .padding(.top, 10)
                 .padding(.bottom, store.undoBanner != nil || store.toastNotice != nil ? 48 : 12)
@@ -164,11 +168,10 @@ public struct ControlCenterPanel: View {
             },
             onDragChanged: { id, location in
                 dragLocation = location
-                if let target = tileFrames.first(where: { $0.key != id && $0.value.contains(location) })?.key {
-                    moveDevice(id, to: target)
-                }
+                swapIfNeeded(dragged: id, at: location)
             },
             onDragEnded: {
+                lastSwapTarget = nil
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
                     draggingId = nil
                     dragLocation = nil
@@ -176,6 +179,19 @@ public struct ControlCenterPanel: View {
             },
             onCycleSize: { cycleSize(device) }
         )
+    }
+
+    /// Swaps only when the pointer reaches the middle of another card, never the same card twice in
+    /// a row, and not within 0.25s of the last swap. Frames animate after a swap, so without these
+    /// guards two cards could trade places every frame and lock up the UI.
+    private func swapIfNeeded(dragged: String, at location: CGPoint) {
+        guard Date().timeIntervalSince(lastSwapAt) > 0.25 else { return }
+        guard let target = tileFrames.first(where: { id, frame in
+            id != dragged && frame.insetBy(dx: frame.width * 0.25, dy: frame.height * 0.25).contains(location)
+        })?.key, target != lastSwapTarget else { return }
+        lastSwapTarget = target
+        lastSwapAt = Date()
+        moveDevice(dragged, to: target)
     }
 
     /// Offset that keeps the picked-up card under the pointer even after its slot moves.
