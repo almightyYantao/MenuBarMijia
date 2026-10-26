@@ -11,6 +11,7 @@ public struct DeviceCardView: View {
     public let showRoomBadge: Bool
     public let isCompactTile: Bool
     public let quickIndex: Int?
+    public let isBentoTile: Bool
 
     @State private var isHovered: Bool = false
     @State private var speakerInputText: String = ""
@@ -22,8 +23,10 @@ public struct DeviceCardView: View {
         store: HomeStore,
         showRoomBadge: Bool = false,
         isCompactTile: Bool = false,
-        quickIndex: Int? = nil
+        quickIndex: Int? = nil,
+        isBentoTile: Bool = false
     ) {
+        self.isBentoTile = isBentoTile
         self.device = device
         self.store = store
         self.showRoomBadge = showRoomBadge
@@ -87,7 +90,9 @@ public struct DeviceCardView: View {
 
     private var cardBody: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if isCompactTile {
+            if isBentoTile {
+                bentoBody
+            } else if isCompactTile {
                 compactHeaderRow
             } else {
                 headerRow
@@ -202,6 +207,47 @@ public struct DeviceCardView: View {
             } label: {
                 Label(L10n.tr("隐藏此设备", "Hide Device"), systemImage: "eye.slash")
             }
+    }
+
+    // MARK: - Bento Tile (icon on top, text below; tap toggles, chevron expands)
+
+    private var bentoBody: some View {
+        Button {
+            withAnimation(AppleMotion.snappySpring) { store.togglePrimary(device) }
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .top) {
+                    iconBadge
+                    Spacer(minLength: 0)
+                    if device.hasDetailDrawer {
+                        Button {
+                            withAnimation(AppleMotion.snappySpring) { store.toggleExpanded(device.id) }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(statusColor)
+                                .frame(width: 22, height: 22)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                Spacer(minLength: 6)
+                Text(device.name)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(nameColor)
+                    .lineLimit(1)
+                Text(dragBrightness.map { L10n.tr("亮度 \(Int($0 * 100))%", "Brightness \(Int($0 * 100))%") } ?? device.statusSubtitle)
+                    .font(.system(size: 10.5, weight: device.isActiveOn ? .semibold : .regular))
+                    .monospacedDigit()
+                    .foregroundStyle(statusColor)
+                    .lineLimit(1)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.95))
     }
 
     // MARK: - Compact 2-Column Header (Left Icon Toggles, Right Area Expands)

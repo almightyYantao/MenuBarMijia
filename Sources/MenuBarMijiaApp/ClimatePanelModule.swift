@@ -27,117 +27,106 @@ struct ClimatePanelModule: View {
     private var fg: Color { skin.isClassic ? .primary : (isRunning ? skin.palette.activeText : skin.palette.fg) }
     private var muted: Color { skin.isClassic ? .secondary : skin.palette.muted }
 
+    private var isExpanded: Bool { store.expandedDeviceId == device.id }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
-            temperatureRow
-            if !modes.isEmpty { modeChips }
-            if !spec.availableFanModes.isEmpty {
-                optionRow(icon: "fan.fill", options: spec.availableFanModes, current: spec.fanMode) {
-                    store.setClimateFanMode(device.id, fanMode: $0)
+        VStack(alignment: .leading, spacing: 9) {
+            strip
+            gauge
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !modes.isEmpty { modeChips }
+                    if !spec.availableFanModes.isEmpty {
+                        optionRow(icon: "fan.fill", options: spec.availableFanModes, current: spec.fanMode) {
+                            store.setClimateFanMode(device.id, fanMode: $0)
+                        }
+                    }
+                    if !spec.availableSwingModes.isEmpty {
+                        optionRow(icon: "arrow.up.and.down", options: spec.availableSwingModes, current: spec.swingMode) {
+                            store.setClimateSwingMode(device.id, swingMode: $0)
+                        }
+                    }
                 }
-            }
-            if !spec.availableSwingModes.isEmpty {
-                optionRow(icon: "arrow.up.and.down", options: spec.availableSwingModes, current: spec.swingMode) {
-                    store.setClimateSwingMode(device.id, swingMode: $0)
-                }
+                .transition(AppleMotion.drawerTransition)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 11)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 10)
         .glassTile(isActive: isRunning, accent: accent, cornerRadius: 16)
         .opacity(device.isOnline ? 1 : 0.58)
         .disabled(!device.isOnline)
         .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.8), value: isRunning)
     }
 
-    // MARK: Header
+    // MARK: Strip: power badge · name (tap to expand) · − temp +
 
-    private var header: some View {
-        HStack(spacing: 9) {
-            ZStack {
-                Circle()
-                    .fill(isRunning ? AnyShapeStyle(skin.isClassic ? AnyShapeStyle(modeColor) : AnyShapeStyle(skin.palette.accentGradient)) : AnyShapeStyle(Color.primary.opacity(0.08)))
-                    .frame(width: 30, height: 30)
-                    .shadow(color: isRunning ? accent.opacity(0.35) : .clear, radius: 6)
-                Image(systemName: spec.hvacMode == "heat" ? "flame.fill" : "snowflake")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(isRunning ? (skin.isClassic ? Color.white : skin.palette.onAccent) : muted)
-                    .rotationEffect(.degrees(isRunning && !reduceMotion && spec.hvacMode != "heat" ? 180 : 0))
-                    .animation(.spring(response: 0.8, dampingFraction: 0.6), value: isRunning)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 5) {
-                    Text(device.name)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(fg)
-                        .lineLimit(1)
-                    if showRoomBadge {
-                        Text(L10n.displayRoomName(device.roomName))
-                            .font(.system(size: 9.5, weight: .semibold))
-                            .foregroundStyle(muted)
-                    }
-                }
-                Text(device.statusSubtitle)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(muted)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 4)
-
+    private var strip: some View {
+        HStack(spacing: 8) {
             Button {
                 withAnimation(AppleMotion.snappySpring) { store.togglePrimary(device) }
             } label: {
-                Image(systemName: "power")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(isRunning ? (skin.isClassic ? Color.white : skin.palette.onAccent) : fg)
-                    .frame(width: 30, height: 30)
-                    .background {
-                        if isRunning {
-                            Circle().fill(skin.isClassic ? AnyShapeStyle(modeColor) : AnyShapeStyle(skin.palette.accentGradient))
-                        }
-                    }
-                    .adaptiveGlass(in: Circle(), interactive: true)
+                ZStack {
+                    Circle()
+                        .fill(isRunning ? (skin.isClassic ? AnyShapeStyle(modeColor) : AnyShapeStyle(skin.palette.accentGradient)) : AnyShapeStyle(skin.isClassic ? Color.primary.opacity(0.08) : skin.palette.chip))
+                        .frame(width: 32, height: 32)
+                        .shadow(color: isRunning ? accent.opacity(0.4) : .clear, radius: 6)
+                    Image(systemName: spec.hvacMode == "heat" ? "flame.fill" : "snowflake")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(isRunning ? (skin.isClassic ? Color.white : skin.palette.onAccent) : muted)
+                        .rotationEffect(.degrees(isRunning && !reduceMotion && spec.hvacMode != "heat" ? 180 : 0))
+                        .animation(.spring(response: 0.8, dampingFraction: 0.6), value: isRunning)
+                }
             }
             .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.88))
             .help(isRunning ? L10n.tr("关闭空调", "Turn off") : L10n.tr("打开空调", "Turn on"))
+
+            Button {
+                withAnimation(AppleMotion.snappySpring) { store.toggleExpanded(device.id) }
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(device.name)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(fg)
+                        .lineLimit(1)
+                    HStack(spacing: 3) {
+                        Text(showRoomBadge ? "\(L10n.displayRoomName(device.roomName)) · \(statusLine)" : statusLine)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .bold))
+                            .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                    }
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(muted)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(L10n.tr("展开模式与风速", "Show modes and fan speed"))
+
+            stepButton(symbol: "minus", delta: -spec.step)
+
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text(formatted(spec.targetTemperature))
+                    .font(.system(size: 24, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .contentTransition(.numericText(value: spec.targetTemperature))
+                Text("°")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(muted)
+            }
+            .foregroundStyle(fg)
+            .frame(minWidth: 44)
+
+            stepButton(symbol: "plus", delta: spec.step)
         }
     }
 
-    // MARK: Temperature
-
-    private var temperatureRow: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 10) {
-                stepButton(symbol: "minus", delta: -spec.step)
-
-                Spacer(minLength: 0)
-
-                VStack(spacing: 0) {
-                    HStack(alignment: .firstTextBaseline, spacing: 1) {
-                        Text(formatted(spec.targetTemperature))
-                            .font(.system(size: 30, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
-                            .contentTransition(.numericText(value: spec.targetTemperature))
-                        Text("°C")
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            .foregroundStyle(muted)
-                    }
-                    .foregroundStyle(fg)
-                    Text(spec.currentTemperature.map { String(format: L10n.tr("室温 %.1f°C", "Room %.1f°C"), $0) } ?? L10n.tr("设定温度", "Target"))
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(muted)
-                }
-
-                Spacer(minLength: 0)
-
-                stepButton(symbol: "plus", delta: spec.step)
-            }
-
-            gauge
-        }
+    private var statusLine: String {
+        guard isRunning else { return L10n.tr("已关闭", "Off") }
+        var parts = [SmartDevice.localizeHVACMode(spec.hvacMode)]
+        if let cur = spec.currentTemperature { parts.append(String(format: L10n.tr("室温 %.1f°", "Room %.1f°"), cur)) }
+        return parts.joined(separator: " · ")
     }
 
     private var gauge: some View {
@@ -169,8 +158,8 @@ struct ClimatePanelModule: View {
             Image(systemName: symbol)
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(fg)
-                .frame(width: 34, height: 30)
-                .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
+                .frame(width: 28, height: 28)
+                .adaptiveGlass(in: Circle(), interactive: true)
         }
         .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.86))
     }

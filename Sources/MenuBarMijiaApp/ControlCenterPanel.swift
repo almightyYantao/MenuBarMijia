@@ -9,6 +9,8 @@ public struct ControlCenterPanel: View {
     public let store: HomeStore
 
     private var skin: AppSkin { AppSkin(rawValue: skinRaw) ?? .classic }
+    private var skinAccentFill: AnyShapeStyle { skin.isClassic ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(skin.palette.accentGradient) }
+    private var skinOnAccent: Color { skin.isClassic ? .white : skin.palette.onAccent }
 
     public init(store: HomeStore) {
         self.store = store
@@ -129,16 +131,45 @@ public struct ControlCenterPanel: View {
     private enum DeviceRowItem: Identifiable {
         case single(SmartDevice)
         case pair(SmartDevice, SmartDevice?)
+        /// Bento row: tiles with column spans out of 3.
+        case bento([(SmartDevice, Int)])
 
         var id: String {
             switch self {
             case .single(let d): return "single_\(d.id)"
             case .pair(let a, let b): return "pair_\(a.id)_\(b?.id ?? "none")"
+            case .bento(let items): return "bento_" + items.map(\.0.id).joined(separator: "_")
             }
         }
     }
 
+    /// Alternates a wide+narrow row with a row of three; expanded cards and climate panels take a full row.
+    private func buildBentoRows(from devices: [SmartDevice]) -> [DeviceRowItem] {
+        var rows: [DeviceRowItem] = []
+        var buffer: [SmartDevice] = []
+        var wideRow = true
+        func flush() {
+            guard !buffer.isEmpty else { return }
+            let spans: [Int] = wideRow ? (buffer.count == 1 ? [3] : [2, 1]) : Array(repeating: 1, count: buffer.count)
+            rows.append(.bento(Array(zip(buffer, spans))))
+            buffer = []
+            wideRow.toggle()
+        }
+        for dev in devices {
+            if store.expandedDeviceId == dev.id || usesClimatePanel(dev) {
+                flush()
+                rows.append(.single(dev))
+                continue
+            }
+            buffer.append(dev)
+            if buffer.count == (wideRow ? 2 : 3) { flush() }
+        }
+        flush()
+        return rows
+    }
+
     private func buildRows(from devices: [SmartDevice]) -> [DeviceRowItem] {
+        if skin == .bento && store.isCompactGridMode { return buildBentoRows(from: devices) }
         guard store.isCompactGridMode else {
             return devices.map { .single($0) }
         }
@@ -189,6 +220,24 @@ public struct ControlCenterPanel: View {
                         isCompactTile: false,
                         quickIndex: quickIndexMap[dev.id]
                     )
+                case .bento(let items):
+                    GeometryReader { geo in
+                        let unit = (geo.size.width - 14) / 3
+                        HStack(spacing: 7) {
+                            ForEach(items, id: \.0.id) { dev, span in
+                                DeviceCardView(
+                                    device: dev,
+                                    store: store,
+                                    showRoomBadge: showRoomBadge,
+                                    isCompactTile: true,
+                                    quickIndex: quickIndexMap[dev.id],
+                                    isBentoTile: true
+                                )
+                                .frame(width: unit * CGFloat(span) + 7 * CGFloat(span - 1))
+                            }
+                        }
+                    }
+                    .frame(height: 92)
                 case .pair(let left, let right):
                     HStack(spacing: 7) {
                         DeviceCardView(
@@ -233,7 +282,7 @@ public struct ControlCenterPanel: View {
                             .font(.system(size: 13.5, weight: .semibold))
                             .foregroundStyle(
                                 store.activeDeviceCount > 0
-                                    ? (colorScheme == .dark ? Color.orange : Color(red: 0.86, green: 0.42, blue: 0.04))
+                                    ? (skin.isClassic ? (colorScheme == .dark ? Color.orange : Color(red: 0.86, green: 0.42, blue: 0.04)) : skin.palette.accent)
                                     : Color.secondary
                             )
 
@@ -276,11 +325,11 @@ public struct ControlCenterPanel: View {
                 } label: {
                     Image(systemName: "sparkles")
                         .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(store.isShowingAssistantBar ? Color.white : Color.primary.opacity(0.78))
+                        .foregroundStyle(store.isShowingAssistantBar ? skinOnAccent : Color.primary.opacity(0.78))
                         .frame(width: 26, height: 24)
                         .background {
                             if store.isShowingAssistantBar {
-                                Capsule(style: .continuous).fill(Color.accentColor)
+                                Capsule(style: .continuous).fill(skinAccentFill)
                             }
                         }
                         .adaptiveGlass(
@@ -360,7 +409,7 @@ public struct ControlCenterPanel: View {
         .adaptiveGlass(in: capsule)
         .overlay(
             capsule
-                .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.20 : 0.48), lineWidth: 0.7)
+                .strokeBorder(skin.isClassic ? Color.white.opacity(colorScheme == .dark ? 0.20 : 0.48) : skin.palette.line, lineWidth: 0.7)
         )
     }
 
@@ -394,7 +443,7 @@ public struct ControlCenterPanel: View {
         .adaptiveGlass(in: capsule)
         .overlay(
             capsule
-                .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.20 : 0.48), lineWidth: 0.7)
+                .strokeBorder(skin.isClassic ? Color.white.opacity(colorScheme == .dark ? 0.20 : 0.48) : skin.palette.line, lineWidth: 0.7)
         )
     }
 
@@ -478,6 +527,13 @@ public struct ControlCenterPanel: View {
                             roomPill(title: L10n.displayRoomName(room.name), roomId: room.id)
                         }
                     }
+                    .padding(skin.isClassic ? 0 : 3)
+                    .background {
+                        if !skin.isClassic {
+                            Capsule(style: .continuous).fill(skin.palette.chip)
+                                .overlay(Capsule(style: .continuous).stroke(skin.palette.line, lineWidth: 0.8))
+                        }
+                    }
                     .padding(.trailing, 10)
                     // Room for the selected pill's glow, which the scroll view would otherwise clip.
                     .padding(.leading, 6)
@@ -507,11 +563,11 @@ public struct ControlCenterPanel: View {
                     } label: {
                         Image(systemName: store.isCompactGridMode ? "rectangle.grid.2x2.fill" : "rectangle.grid.1x2.fill")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(store.isCompactGridMode ? Color.white : Color.primary.opacity(0.78))
+                            .foregroundStyle(store.isCompactGridMode ? skinOnAccent : Color.primary.opacity(0.78))
                             .frame(width: 26, height: 24)
                             .background {
                                 if store.isCompactGridMode {
-                                    Capsule(style: .continuous).fill(Color.accentColor)
+                                    Capsule(style: .continuous).fill(skinAccentFill)
                                 }
                             }
                             .adaptiveGlass(
@@ -534,11 +590,11 @@ public struct ControlCenterPanel: View {
                     } label: {
                         Image(systemName: store.hideOfflineDevices ? "wifi" : "wifi.slash")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(store.hideOfflineDevices ? Color.white : Color.primary.opacity(0.78))
+                            .foregroundStyle(store.hideOfflineDevices ? skinOnAccent : Color.primary.opacity(0.78))
                             .frame(width: 26, height: 24)
                             .background {
                                 if store.hideOfflineDevices {
-                                    Capsule(style: .continuous).fill(Color.accentColor)
+                                    Capsule(style: .continuous).fill(skinAccentFill)
                                 }
                             }
                             .adaptiveGlass(

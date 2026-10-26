@@ -126,7 +126,7 @@ public struct SkinPalette: Sendable {
 
     static let capsule = SkinPalette(
         background: [hex(0x1C1C1E)], fg: hex(0xF5F5F7), muted: hex(0x98989F), line: .clear,
-        chip: hex(0x2C2C2E), tile: hex(0x2C2C2E), accent: hex(0x30D158), accentEnd: hex(0x30D158), onAccent: hex(0x06210F),
+        chip: hex(0x3A3A3C), tile: hex(0x2C2C2E), accent: hex(0x30D158), accentEnd: hex(0x30D158), onAccent: hex(0x06210F),
         activeTile: hex(0xF5F5F7), activeLine: .clear, activeText: hex(0x1C1C1E), fill: hex(0xFFD60A, 0.55),
         ok: hex(0x30D158), scheme: .dark, tileRadius: 22, capsuleTiles: true, fontDesign: .rounded
     )
