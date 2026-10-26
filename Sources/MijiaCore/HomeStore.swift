@@ -39,6 +39,9 @@ public final class HomeStore {
 
     public private(set) var connectionStatus: ConnectionStatus = .connecting
     public private(set) var rooms: [RoomArea] = []
+    /// Mi Home 家庭 list from the cloud backend; empty elsewhere.
+    public private(set) var homes: [HomeOption] = []
+    public private(set) var selectedMiHomeId: String? = UserDefaults.standard.string(forKey: MiCloudProvider.selectedHomeKey)
     public internal(set) var devices: [SmartDevice] = []
     public private(set) var environmentReadings: [EnvironmentReading] = []
     public private(set) var scenes: [HomeScene] = []
@@ -401,6 +404,7 @@ public final class HomeStore {
                 nextRooms.append(RoomArea(id: lgDev.roomId, name: lgDev.roomName, sortOrder: 1))
             }
             self.rooms = nextRooms
+            self.homes = snapshot.homes
             self.environmentReadings = snapshot.environmentReadings
             self.scenes = snapshot.scenes
 
@@ -1615,6 +1619,18 @@ public final class HomeStore {
         let hint = (hostHint ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let effectiveHint = hint.isEmpty ? lgConfig.host : hint
         return await LGWebOSClient.discoverOnLAN(hostHint: effectiveHint)
+    }
+
+    /// Switches the visible Mi Home; nil shows every home's devices.
+    public func selectMiHome(_ id: String?) {
+        if let id {
+            UserDefaults.standard.set(id, forKey: MiCloudProvider.selectedHomeKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: MiCloudProvider.selectedHomeKey)
+        }
+        selectedMiHomeId = id
+        selectedRoomId = nil
+        refreshNow()
     }
 
     public func refreshNow() {
