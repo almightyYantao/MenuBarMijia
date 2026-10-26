@@ -1306,6 +1306,7 @@ body {
 .cc-devices-grid.is-flow { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .cc-devices-grid.is-flow .cc-tile.is-expanded { grid-column: span 6 !important; }
 .cc-tile { position: relative; }
+.cc-tile:not(.is-expanded):not(.is-bento-tile):not(.cc-climate):not(.cc-sensor) { display: flex; flex-direction: column; justify-content: center; }
 .cc-tile-fill {
   position: absolute; inset: 0 auto 0 0; z-index: 0; pointer-events: none;
   background: var(--s-fill, rgba(255, 159, 10, 0.18)); transition: width 160ms ease;
@@ -1393,19 +1394,23 @@ body {
 .cc-pill-label { font-size: 10.5px; opacity: 0.6; align-self: center; margin-right: 2px; }
 
 /* Sensor card */
-.cc-sensor { padding: 10px 11px; gap: 6px; }
+.cc-sensor { padding: 10px 11px; gap: 6px; display: flex; flex-direction: column; justify-content: center; }
+.cc-sensor.is-compact { padding: 6.5px 11px; gap: 3px; }
 .cc-sensor-top { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
 .cc-sensor-name { font-size: 11px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cc-sensor-name.is-strong { font-size: 12px; font-weight: 650; color: var(--text-primary); }
 .cc-sensor-room { font-size: 10px; color: var(--text-secondary); }
 .cc-sensor-main { display: flex; align-items: baseline; gap: 6px; }
 .cc-sensor-temp { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.cc-sensor.is-compact .cc-sensor-temp { font-size: 18px; line-height: 1.1; }
 .cc-sensor-temp.is-big { font-size: 32px; line-height: 1.1; }
 .cc-sensor-temp small { font-size: 0.42em; opacity: 0.6; margin-left: 1px; }
 .cc-sensor-hum { font-size: 11px; font-weight: 600; color: #4ea8ff; }
 .cc-hum-bar { height: 4px; border-radius: 999px; background: var(--s-chip, rgba(255, 255, 255, 0.08)); overflow: hidden; }
+.cc-sensor.is-compact .cc-hum-bar { height: 3px; }
 .cc-hum-bar span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #8cc6ff, #4ea8ff); }
 .cc-comfort { font-size: 9.5px; font-weight: 700; padding: 2px 6px; border-radius: 999px; }
+.cc-sensor.is-compact .cc-comfort { font-size: 9px; padding: 1.5px 5.5px; }
 .cc-comfort.is-comfy { color: #34b36a; background: rgba(52, 179, 106, 0.14); }
 .cc-comfort.is-warm { color: #ff8a1f; background: rgba(255, 138, 31, 0.14); }
 .cc-comfort.is-cool { color: #4e8dff; background: rgba(78, 141, 255, 0.14); }
@@ -1491,7 +1496,9 @@ body {
 .cc-popover.is-skinned .cc-sheet { background: var(--s-tile); color: var(--s-fg); border-color: var(--s-line); }
 
 .cc-popover.is-skinned .cc-tile { background: var(--s-tile); border: 1px solid var(--s-line); border-radius: min(var(--s-radius), 26px); box-shadow: none; }
-.cc-popover.skin-capsule .cc-tile:not(.cc-climate):not(.cc-sensor):not(.is-expanded) { border-radius: 999px; }
+.cc-popover.skin-capsule .cc-tile:not(.cc-climate):not(.cc-sensor):not(.is-expanded),
+.cc-popover.skin-capsule .cc-sensor.is-compact { border-radius: 999px; }
+.cc-popover.skin-capsule .cc-sensor.is-compact { padding-inline: 15px; }
 .cc-popover.skin-capsule .cc-tile.is-active.is-expanded .cc-tile-drawer { background: var(--s-tile); color: var(--s-fg); border-radius: 16px; padding: 10px; margin: 4px 6px 6px; border-top: 0; }
 .cc-popover.is-skinned .cc-tile:hover { filter: brightness(1.03); }
 .cc-popover.is-skinned .cc-tile.is-active { background: var(--s-active-tile); border-color: var(--s-active-line); border-width: 1.5px; }
