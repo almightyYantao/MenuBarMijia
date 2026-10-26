@@ -142,7 +142,7 @@ public struct ControlCenterPanel: View {
                             if section.title != nil {
                                 groupHeader(section)
                             }
-                            if !collapsedGroups.contains(section.id) {
+                            if !collapsedGroups.contains(collapseKey(section)) {
                                 deviceCollectionView(
                                     devices: section.devices,
                                     showRoomBadge: store.selectedRoomId == nil,
@@ -205,6 +205,9 @@ public struct ControlCenterPanel: View {
     private var groupMap: [String: String] { liveGroupMap ?? GroupPrefs.map(groupMapRaw) }
     private var collapsedGroups: Set<String> { GroupPrefs.set(collapsedRaw) }
 
+    /// Collapse state is per page: folding "更多设备" in All must not hide "其他" in a room.
+    private func collapseKey(_ section: PageSection) -> String { "\(layoutScope)|\(section.id)" }
+
     /// "All": 常用 first, then each custom group, then the rest. A room: custom groups then 其他;
     /// without any group in the room it is one untitled section, as before.
     private var pageSections: [PageSection] {
@@ -265,12 +268,12 @@ public struct ControlCenterPanel: View {
     @State private var hoveredHeader: String?
 
     private func groupHeader(_ section: PageSection) -> some View {
-        let collapsed = collapsedGroups.contains(section.id)
+        let collapsed = collapsedGroups.contains(collapseKey(section))
         let accent = skin.isClassic ? Color.accentColor : skin.palette.accent
         return Button {
             withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
                 var set = collapsedGroups
-                if collapsed { set.remove(section.id) } else { set.insert(section.id) }
+                if collapsed { set.remove(collapseKey(section)) } else { set.insert(collapseKey(section)) }
                 collapsedRaw = GroupPrefs.encode(set)
             }
         } label: {
