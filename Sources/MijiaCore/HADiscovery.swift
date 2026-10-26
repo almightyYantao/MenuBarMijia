@@ -30,6 +30,25 @@ public enum HAAddressPolicy {
         }
         return candidate.uuid?.caseInsensitiveCompare(remembered) == .orderedSame
     }
+
+    /// Pins the instance id of the Home Assistant the user is already talking to, so a look-alike on
+    /// the network is filtered even when the address was typed by hand and never went through a
+    /// suggestion (#18). Returns the uuid to remember, or nil when the current address does not match
+    /// an identified discovered instance or one is already remembered.
+    public static func uuidToPin(
+        discovered: [HADiscoveredInstance],
+        currentURL: String,
+        rememberedUUID: String?
+    ) -> String? {
+        if let remembered = rememberedUUID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !remembered.isEmpty {
+            return nil
+        }
+        let current = HAWebSocketProvider.normalizeBaseURL(currentURL)
+        return discovered.first {
+            HAWebSocketProvider.normalizeBaseURL($0.baseURL) == current && $0.uuid != nil
+        }?.uuid
+    }
 }
 
 public struct HADiscoveredInstance: Equatable, Sendable, Identifiable {

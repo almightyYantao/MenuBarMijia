@@ -1,5 +1,5 @@
 {
-  "_comment": "AI 服务商识别与 Key 发送规则的双端共享样例（#19）。macOS: AssistantTests.providerGoldenParity；Windows: tests/core.test.ts。识别错了就会把某家的 Key 发给别人，所以反例和正例一样重要。",
+  "_comment": "AI 服务商识别与 Key 发送规则的双端共享样例（#19）。macOS: AssistantEndpointTests.providerGoldenParity；Windows: tests/core.test.ts。识别错了就会把某家的 Key 发给别人，所以反例和正例一样重要。",
   "presets": [
     { "url": "https://openrouter.ai/api/v1", "preset": "openrouter_jev" },
     { "url": "https://OpenRouter.AI/api/v1", "preset": "openrouter_jev" },

@@ -808,14 +808,18 @@ describe("AI guesses below 80% and risky actions wait for a tap (#21)", () => {
     assert.equal(plan.reply, "没把握直接执行，点下面的建议再执行");
   });
 
-  it("never auto-runs answers that carry no probability", async () => {
+  it("never auto-runs answers that carry no probability, but still offers the chip", async () => {
     const plan = await systemOne({
       target: { choice: "d1" },
       op: { choice: "power_on" },
       temp: { choice: "none" },
     }).resolve("开灯", devices, []);
     assert.deepEqual(plan.intents, []);
-    assert.deepEqual(plan.suggestions, []);
+    assert.equal(plan.suggestions.length, 1);
+    assert.equal(plan.suggestions[0]?.confidencePercent, null);
+    assert.deepEqual(plan.suggestions[0]?.intents, [
+      { targetId: "dev_light", operation: { kind: "power", isOn: true } },
+    ]);
   });
 
   it("keeps a confident heater-on as a chip", async () => {
@@ -870,12 +874,12 @@ describe("Timers the PC slept through wait for the user (#22)", () => {
 });
 
 describe("cloud refresh slows down while the panel is hidden (#26)", () => {
-  it("refreshes every 12 s with the panel open and every 60 s in the tray", () => {
+  it("refreshes every 6 s with the panel open (matches macOS) and every 60 s in the tray", () => {
     const last = 1_000_000;
-    assert.equal(CLOUD_REFRESH_VISIBLE_MS, 12_000);
+    assert.equal(CLOUD_REFRESH_VISIBLE_MS, 6_000);
     assert.equal(CLOUD_REFRESH_HIDDEN_MS, 60_000);
-    assert.equal(cloudRefreshDue(last + 11_999, last, true), false);
-    assert.equal(cloudRefreshDue(last + 12_000, last, true), true);
+    assert.equal(cloudRefreshDue(last + 5_999, last, true), false);
+    assert.equal(cloudRefreshDue(last + 6_000, last, true), true);
     assert.equal(cloudRefreshDue(last + 30_000, last, false), false);
     assert.equal(cloudRefreshDue(last + 60_000, last, false), true);
   });

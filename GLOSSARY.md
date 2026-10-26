@@ -53,8 +53,12 @@ _Avoid_: Weather（天气）、Telemetry（遥测）
 _Avoid_: Automation（后台自动化规则）、Macro（宏）
 
 **QuickAction（内置快捷动作）**：
-基于设备类别自动聚合的批量领域指令（如「全屋关灯」「柔和夜灯」「睡眠关温控」），无需在 Home Assistant 预置场景即可一键执行，并支持 5 秒快照撤销。
+基于设备类别自动聚合的批量领域指令（如「全屋关灯」「柔和夜灯」「睡眠关温控」），无需在 Home Assistant 预置场景即可一键执行，并支持 10 秒快照撤销（`undoBannerSeconds`）。
 _Avoid_: Local scene（本地场景）、Custom script（自定义脚本）
+
+**AllOffTarget（全关目标）**：
+「全关」实际会关闭的设备集合（`HomeStore.allOffTargets`）：当前视图内、开启中、且能从面板关闭的设备。默认不参与全关的类别（插座、扫地机，`joinsAllOffByDefault` 返回 false）可由用户按设备覆盖（`setJoinsAllOff`），覆盖结果持久化。
+_Avoid_: All devices（全部设备）
 
 **IntentPlan（意图执行计划）**：
 自然语言指令经本地规则解析（`LocalIntentParser`）或远端大模型回退（`ModelIntentResolver`）后生成的结构化设备操作列表（`[DeviceIntent]`）与简短反馈文案，经能力校验后由 `HomeStore` 并发下发并支持多设备一键撤销。
@@ -65,7 +69,7 @@ _Avoid_: Prompt output（模型输出）、Action script（动作脚本）
 _Avoid_: Background job（后台任务）、Cron（计划任务）
 
 **ActiveDevice（活跃开启设备）**：
-当前在线且处于工作状态的受控设备（开着的灯、正在制冷/制热的空调或电暖器、运行中的风扇、通电开启的插座、清扫中的扫地机、播放中的音箱），计入顶部「全关」统计；常年通电的基础设施设备（如冰箱、待机电视、纯传感器）不计入。
+当前在线且处于工作状态的受控设备（开着的灯、正在制冷/制热的空调或电暖器、运行中的风扇、通电开启的插座、清扫中的扫地机、播放中的音箱）。顶部「全关」只作用于其中参与全关的 AllOffTarget；插座、扫地机等常年通电或会自行归位的基础设施设备默认不计入全关目标（冰箱、待机电视、纯传感器整体不算活跃设备）。
 _Avoid_: Online device（在线设备）
 
 **CompactTile（双列紧凑磁贴）**：

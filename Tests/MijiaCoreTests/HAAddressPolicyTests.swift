@@ -25,6 +25,25 @@ struct HAAddressPolicyTests {
         #expect(!HAAddressPolicy.canOffer(Self.home, currentURL: current, rememberedUUID: nil, dismissedURLs: ["http://192.168.1.20:8123"]))
     }
 
+    @Test("Scanning pins the instance id of the HA the app is already connected to (#18)")
+    func pinsUUIDForCurrentAddress() {
+        // Nothing remembered and the current address matches a discovered instance: pin its uuid.
+        #expect(HAAddressPolicy.uuidToPin(
+            discovered: [Self.home], currentURL: "http://homeassistant.local:8123/", rememberedUUID: nil
+        ) == "abc-123")
+        // Already remembered: never overwrite.
+        #expect(HAAddressPolicy.uuidToPin(
+            discovered: [Self.home], currentURL: "http://192.168.1.20:8123", rememberedUUID: "abc-123"
+        ) == nil)
+        // The current address is not the discovered one: nothing to pin.
+        #expect(HAAddressPolicy.uuidToPin(
+            discovered: [Self.impostor], currentURL: "http://192.168.1.20:8123", rememberedUUID: nil
+        ) == nil)
+        // A discovered instance without an mDNS uuid cannot be pinned.
+        let noId = HADiscoveredInstance(baseURL: "http://192.168.1.20:8123", locationName: "x", source: "mdns")
+        #expect(HAAddressPolicy.uuidToPin(discovered: [noId], currentURL: "http://192.168.1.20:8123", rememberedUUID: nil) == nil)
+    }
+
     @Test("A found address is only a question; a look-alike is ignored; the saved address stays until 切换")
     @MainActor
     func storeAsksFirst() async throws {

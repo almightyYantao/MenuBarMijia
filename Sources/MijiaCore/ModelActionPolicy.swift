@@ -5,7 +5,8 @@ import Foundation
 public enum ModelActionPolicy {
     /// System One answers below this probability only become suggestions.
     public static let autoRunThreshold = 0.8
-    /// Below this a guess is not even offered as a chip.
+    /// Below this a runner-up inferred from a declined device ("none") is not even offered as a chip.
+    /// An answer the model picked explicitly is always offered below the auto-run threshold (#21).
     public static let suggestionFloor = 0.2
 
     /// Probability of the chosen option: `probabilities[choice]`, else `confidence`, else 0 —
@@ -53,14 +54,29 @@ public enum ModelActionPolicy {
         return (run, confirm)
     }
 
-    /// One chip per device for intents that wait for a tap. `probability` nil means the model gave no number.
+    /// Chips for intents that wait for a tap: one per device, or one for the whole group when
+    /// `grouped` is set. `probability` nil (or ≤ 0, i.e. the model gave no number) hides the badge.
     public static func confirmationChips(
         for intents: [DeviceIntent],
         probability: Double?,
         idPrefix: String,
         devices: [SmartDevice],
-        scenes: [HomeScene]
+        scenes: [HomeScene],
+        grouped: Bool = false
     ) -> [AssistantSuggestion] {
+        let percent = probability.flatMap { $0 > 0 ? max(20, min(99, Int(($0 * 100).rounded()))) : nil }
+        func chip(id: String, title: String, group: [DeviceIntent]) -> AssistantSuggestion {
+            AssistantSuggestion(id: id, title: title, confidencePercent: percent, intents: group)
+        }
+        if grouped {
+            guard let first = intents.first,
+                  let title = UserHabitMemory.suggestionTitle(for: first, devices: devices, scenes: scenes) else {
+                return []
+            }
+            let targetCount = Set(intents.map(\.targetId)).count
+            let fullTitle = targetCount > 1 ? title + L10n.tr(" 等 \(targetCount) 台", " +\(targetCount - 1)") : title
+            return [chip(id: idPrefix, title: fullTitle, group: intents)]
+        }
         var order: [String] = []
         var byTarget: [String: [DeviceIntent]] = [:]
         for intent in intents {
@@ -73,8 +89,7 @@ public enum ModelActionPolicy {
                   let title = UserHabitMemory.suggestionTitle(for: first, devices: devices, scenes: scenes) else {
                 return nil
             }
-            let pct = probability.map { max(20, min(99, Int(($0 * 100).rounded()))) }
-            return AssistantSuggestion(id: "\(idPrefix):\(targetId)", title: title, confidencePercent: pct, intents: group)
+            return chip(id: "\(idPrefix):\(targetId)", title: title, group: group)
         }
     }
 

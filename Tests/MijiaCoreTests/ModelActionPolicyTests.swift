@@ -77,7 +77,7 @@ struct ModelActionPolicyTests {
         #expect(plan.reply == "没把握直接执行，点下面的建议再执行")
     }
 
-    @Test("Answers without any probability never run by themselves")
+    @Test("Answers without any probability never run by themselves, but become a chip (#21)")
     func missingNumbersDoNotRun() async throws {
         let resolver = try Self.systemOneResolver([
             "target": ["choice": "d1"],
@@ -87,6 +87,36 @@ struct ModelActionPolicyTests {
         ])
         let plan = try await resolver.resolve("开灯", devices: Self.devices, scenes: Self.scenes)
         #expect(plan.intents.isEmpty)
+        #expect(plan.suggestions.map(\.id) == ["jev:primary:d1:power_on"])
+        #expect(plan.suggestions.first?.confidencePercent == nil)
+        #expect(plan.reply == "没把握直接执行，点下面的建议再执行")
+    }
+
+    @Test("An explicit device answer without probabilities waits as a chip without a fake percent")
+    func explicitChoiceWithoutProbabilityIsChip() async throws {
+        let resolver = try Self.systemOneResolver([
+            "target": ["choice": "none"],
+            "op": ["choice": "none"],
+            "temp": ["choice": "none"],
+            "dev_d4": ["choice": "power_on"]
+        ])
+        let plan = try await resolver.resolve("开台灯", devices: Self.devices, scenes: Self.scenes)
+        #expect(plan.intents.isEmpty)
+        #expect(plan.suggestions.map(\.id) == ["jev:dev_bedside_lamp:power_on"])
+        #expect(plan.suggestions.first?.confidencePercent == nil)
+    }
+
+    @Test("A runner-up the model declined below 20% is not offered")
+    func declinedRunnerUpBelowFloorIsDropped() async throws {
+        let resolver = try Self.systemOneResolver([
+            "target": ["choice": "none"],
+            "op": ["choice": "none"],
+            "temp": ["choice": "none"],
+            "dev_d2": ["choice": "none", "probabilities": ["none": 0.9, "power_on": 0.1]]
+        ])
+        let plan = try await resolver.resolve("随便看看", devices: Self.devices, scenes: Self.scenes)
+        #expect(plan.intents.isEmpty)
+        #expect(plan.suggestions.isEmpty)
     }
 
     @Test("A primary answer below 80% waits as one chip for the whole room")

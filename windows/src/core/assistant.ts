@@ -1001,7 +1001,7 @@ export const ModelActionPolicy = {
     grouped = false
   ): AssistantSuggestion[] {
     if (intents.length === 0) return [];
-    const percent = probability === null ? null : Math.max(20, Math.min(99, Math.round(probability * 100)));
+    const percent = probability !== null && probability > 0 ? Math.max(20, Math.min(99, Math.round(probability * 100))) : null;
     const title = (group: readonly DeviceIntent[]) => IntentReply.describe(group, devices, scenes).replace(/^已/, "");
     if (grouped) {
       return [{ id: idPrefix, title: title(intents), confidencePercent: percent, intents: [...intents] }];
@@ -1511,9 +1511,9 @@ export class ModelIntentResolver {
     const split = ModelActionPolicy.partition(sanitized, devices);
     const intents = confident ? split.run : [];
     const waiting = confident ? split.confirm : sanitized;
-    const suggestions = confidence >= ModelActionPolicy.SUGGESTION_FLOOR
-      ? ModelActionPolicy.chips(waiting, confidence, `jev:primary:${targetChoice}:${opChoice}`, devices, scenes, true)
-      : [];
+    // Below the auto-run threshold everything waits for a tap, including answers with no
+    // probability at all (#21: 低于门槛的一律进候选胶囊, never silently dropped).
+    const suggestions = ModelActionPolicy.chips(waiting, confidence, `jev:primary:${targetChoice}:${opChoice}`, devices, scenes, true);
     const described = IntentReply.describe(intents, devices, scenes);
     return {
       intents,

@@ -647,8 +647,17 @@ public struct ModelIntentResolver: Sendable {
             if confidence >= ModelActionPolicy.autoRunThreshold {
                 raw.append(contentsOf: split.run)
             }
-            if confidence >= ModelActionPolicy.suggestionFloor, !waiting.isEmpty {
-                let chips = Self.groupChip(for: waiting, probability: confidence, id: "jev:primary:\(targetChoice):\(opChoice)", devices: devices, scenes: scenes)
+            // Below the auto-run threshold everything waits for a tap — including answers with no
+            // probability at all (#21: 低于门槛的一律进候选胶囊, never silently dropped).
+            if !waiting.isEmpty {
+                let chips = ModelActionPolicy.confirmationChips(
+                    for: waiting,
+                    probability: confidence,
+                    idPrefix: "jev:primary:\(targetChoice):\(opChoice)",
+                    devices: devices,
+                    scenes: scenes,
+                    grouped: true
+                )
                 candidateSuggestions.append(contentsOf: chips.map { (confidence, $0) })
             }
         }
@@ -680,11 +689,14 @@ public struct ModelIntentResolver: Sendable {
             } else {
                 let candidate: (String, Double)?
                 if choice != "none" {
+                    // The model picked this device explicitly: below threshold it waits for a tap (#21),
+                    // it is never dropped just because the answer came without a usable probability.
                     candidate = (choice, choiceProb)
                 } else {
-                    candidate = bestNonNoneProbability(in: probs)
+                    // The model declined the device; only a scored runner-up is worth offering.
+                    candidate = bestNonNoneProbability(in: probs).filter { $0.1 >= ModelActionPolicy.suggestionFloor }
                 }
-                if let (runnerUpChoice, runnerUpProb) = candidate, runnerUpProb >= ModelActionPolicy.suggestionFloor {
+                if let (runnerUpChoice, runnerUpProb) = candidate {
                     let ops = IntentValidator.sanitize(
                         systemOneDeviceOperations(for: runnerUpChoice).map { DeviceIntent(targetId: device.id, operation: $0) },
                         devices: devices,
@@ -692,7 +704,7 @@ public struct ModelIntentResolver: Sendable {
                     )
                     if let first = ops.first,
                        let title = UserHabitMemory.suggestionTitle(for: first, devices: devices, scenes: scenes) {
-                        let pct = max(20, min(99, Int((runnerUpProb * 100).rounded())))
+                        let pct: Int? = runnerUpProb > 0 ? max(20, min(99, Int((runnerUpProb * 100).rounded()))) : nil
                         candidateSuggestions.append((
                             runnerUpProb,
                             AssistantSuggestion(
@@ -727,24 +739,6 @@ public struct ModelIntentResolver: Sendable {
             source: .model,
             suggestions: Array(filteredSuggestions)
         )
-    }
-
-    /// One chip covering several intents (a room's lights), titled after the first device.
-    private static func groupChip(
-        for intents: [DeviceIntent],
-        probability: Double,
-        id: String,
-        devices: [SmartDevice],
-        scenes: [HomeScene]
-    ) -> [AssistantSuggestion] {
-        guard let first = intents.first,
-              let title = UserHabitMemory.suggestionTitle(for: first, devices: devices, scenes: scenes) else {
-            return []
-        }
-        let targetCount = Set(intents.map(\.targetId)).count
-        let fullTitle = targetCount > 1 ? title + L10n.tr(" 等 \(targetCount) 台", " +\(targetCount - 1)") : title
-        let pct = max(20, min(99, Int((probability * 100).rounded())))
-        return [AssistantSuggestion(id: id, title: fullTitle, confidencePercent: pct, intents: intents)]
     }
 
     static func proactiveSuggestionsFromSystemOne(

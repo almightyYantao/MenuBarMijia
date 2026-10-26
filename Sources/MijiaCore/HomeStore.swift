@@ -1753,6 +1753,16 @@ public final class HomeStore {
         defer { isDiscoveringHA = false }
         let found = await HADiscovery.discoverOnLAN(currentURLHint: serverURLString)
         self.discoveredHAInstances = found
+        // A user who typed the address by hand never went through a suggestion; the moment LAN
+        // discovery identifies the instance the app is connected to, pin its id so look-alikes
+        // elsewhere are filtered later (#18).
+        if let uuid = HAAddressPolicy.uuidToPin(
+            discovered: found,
+            currentURL: serverURLString,
+            rememberedUUID: userDefaults.string(forKey: HAAddressPolicy.rememberedUUIDKey)
+        ) {
+            userDefaults.set(uuid, forKey: HAAddressPolicy.rememberedUUIDKey)
+        }
         // Only pre-fills the address during first setup. With a token already saved, the user picks the
         // address, because connecting sends the token to it (#18).
         if autoApplyIfDefault, let first = found.first {
