@@ -39,6 +39,7 @@ import {
   type SmartDevice,
   deviceStatusSummary,
   isDeviceActiveOn,
+  partitionDueTimers,
 } from "../core/models.js";
 import {
   type AppSkin,
@@ -464,6 +465,8 @@ export class MenuMijiaWindowsApp {
   private isSyncingCloud = false;
   private isListeningVoice = false;
   private scheduledCommands: ScheduledCommand[] = [];
+  /** Timers that came due while the PC slept; they only run when the user taps 立即执行 (#22). */
+  private missedScheduledCommands: ScheduledCommand[] = [];
   private lastUndoAction: UndoAction | null = null;
   private qrTicket: QRLoginTicket | null = null;
   private qrStatusText = "点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。";
@@ -538,20 +541,13 @@ export class MenuMijiaWindowsApp {
         changed = true;
       }
 
-      const due: ScheduledCommand[] = [];
-      const remaining: ScheduledCommand[] = [];
-      for (const item of this.scheduledCommands) {
-        if (item.fireTimestampMs <= now) {
-          due.push(item);
-        } else {
-          remaining.push(item);
-        }
-      }
-
-      if (due.length > 0) {
+      // After sleep the interval resumes late; a timer more than a minute overdue is not run silently (#22).
+      const { run, missed, remaining } = partitionDueTimers(this.scheduledCommands, now);
+      if (run.length > 0 || missed.length > 0) {
         this.scheduledCommands = remaining;
+        this.missedScheduledCommands.push(...missed);
         changed = true;
-        for (const item of due) {
+        for (const item of run) {
           void this.handleNaturalCommand(item.command, true);
         }
       } else if (this.scheduledCommands.length > 0) {
@@ -756,8 +752,9 @@ export class MenuMijiaWindowsApp {
     }
 
     if (DelayPhrase.isCancel(trimmed)) {
-      const count = this.scheduledCommands.length;
+      const count = this.scheduledCommands.length + this.missedScheduledCommands.length;
       this.scheduledCommands = [];
+      this.missedScheduledCommands = [];
       this.replyBanner = {
         text: count > 0 ? `已取消 ${count} 项定时指令` : "当前没有待执行的定时指令",
         source: "0ms 本地直达",
@@ -1488,7 +1485,11 @@ export class MenuMijiaWindowsApp {
             </div>
 
             ${
-              this.replyBanner || this.scheduledCommands.length > 0 || activeUndo || this.pendingSuggestions.length > 0
+              this.replyBanner ||
+              this.scheduledCommands.length > 0 ||
+              this.missedScheduledCommands.length > 0 ||
+              activeUndo ||
+              this.pendingSuggestions.length > 0
                 ? `
               <div class="cc-feedback-card ${this.replyBanner?.isError ? "is-error" : ""}">
                 ${
@@ -1521,6 +1522,25 @@ export class MenuMijiaWindowsApp {
                         (item) => `<button class="cc-inline-pill" data-suggestion-id="${this.escapeHtml(item.id)}">${this.escapeHtml(item.title)}${
                           item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""
                         }</button>`,
+                      )
+                      .join("")}
+                  </div>
+                `
+                    : ""
+                }
+                ${
+                  this.missedScheduledCommands.length > 0
+                    ? `
+                  <div class="cc-timers-stack">
+                    ${this.missedScheduledCommands
+                      .map(
+                        (item) => `
+                      <div class="cc-timer-row">
+                        <span>已错过定时：${this.escapeHtml(item.command)}（电脑睡眠时到点，没有自动执行）</span>
+                        <button class="cc-inline-pill" data-run-missed="${item.id}">立即执行</button>
+                        <button class="cc-inline-pill" data-dismiss-missed="${item.id}">忽略</button>
+                      </div>
+                    `,
                       )
                       .join("")}
                   </div>
@@ -2577,6 +2597,22 @@ export class MenuMijiaWindowsApp {
         const aliasedDevices = withAliases(this.layout, this.devices);
         const intents = IntentValidator.sanitize(suggestion.intents, aliasedDevices, this.scenes);
         void this.executeIntents(intents, IntentReply.describe(intents, aliasedDevices, this.scenes), "已确认");
+      });
+    });
+
+    this.root.querySelectorAll<HTMLElement>("[data-run-missed]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const item = this.missedScheduledCommands.find((c) => c.id === btn.dataset.runMissed);
+        if (!item) return;
+        this.missedScheduledCommands = this.missedScheduledCommands.filter((c) => c.id !== item.id);
+        void this.handleNaturalCommand(item.command, true);
+      });
+    });
+
+    this.root.querySelectorAll<HTMLElement>("[data-dismiss-missed]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this.missedScheduledCommands = this.missedScheduledCommands.filter((c) => c.id !== btn.dataset.dismissMissed);
+        this.render();
       });
     });
 

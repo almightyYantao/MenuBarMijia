@@ -25,7 +25,7 @@ import {
   type MiotDeviceSpec,
 } from "../src/core/miCloudClient.js";
 import { MiCloudCrypto, RC4 } from "../src/core/miCloudCrypto.js";
-import type { SmartDevice } from "../src/core/models.js";
+import { partitionDueTimers, type ScheduledCommand, type SmartDevice } from "../src/core/models.js";
 
 const Vectors = {
   ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
@@ -836,5 +836,26 @@ describe("AI guesses below 80% and risky actions wait for a tap (#21)", () => {
     assert.equal(plan.suggestions[0]?.id, "confirm:dev_heater");
     assert.equal(plan.suggestions[0]?.confidencePercent, null);
     assert.equal(plan.reply, "已打开书房台灯；下面的建议要点一下才执行");
+  });
+});
+
+describe("Timers the PC slept through wait for the user (#22)", () => {
+  const timer = (id: string, fireTimestampMs: number): ScheduledCommand => ({
+    id,
+    command: "关闭书房灯",
+    delaySeconds: 600,
+    fireTimestampMs,
+    reply: "10 分钟后：关闭书房灯",
+  });
+
+  it("runs on-time timers, holds ones more than a minute late, keeps future ones", () => {
+    const now = 10_000_000;
+    const result = partitionDueTimers(
+      [timer("on-time", now - 1_000), timer("slept", now - 3 * 3600 * 1000), timer("future", now + 5_000)],
+      now
+    );
+    assert.deepEqual(result.run.map((t) => t.id), ["on-time"]);
+    assert.deepEqual(result.missed.map((t) => t.id), ["slept"]);
+    assert.deepEqual(result.remaining.map((t) => t.id), ["future"]);
   });
 });

@@ -1804,7 +1804,7 @@ public final class HomeStore {
     var assistantTransportOverride: ModelIntentResolver.Transport?
     /// Commands waiting on a spoken delay ("10 分钟后关灯"), soonest first. Persisted across launches.
     public internal(set) var scheduledCommands: [ScheduledCommand] = []
-    /// Persisted commands whose fireDate passed while the app was closed. Never auto-executed without user confirmation.
+    /// Timers that came due while the app was closed or the Mac slept. Never auto-executed without user confirmation.
     public internal(set) var missedScheduledCommands: [ScheduledCommand] = []
     public var onMissedScheduledCommand: ((ScheduledCommand) -> Void)?
     var notifiedMissedTimerIds: Set<UUID> = []
@@ -1815,4 +1815,8 @@ public final class HomeStore {
     static let voiceUndoWindow: TimeInterval = 10 * 60
     /// Test seam for the delay before a scheduled command fires.
     var assistantSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    /// Test seam for "now" when a timer wakes up, so a Mac that slept through it can be simulated.
+    var assistantNow: @Sendable () -> Date = { Date() }
+    /// A timer that wakes up later than this (the Mac slept, the app was frozen) waits for the user (#22).
+    static let lateTimerGrace: TimeInterval = 60
 }

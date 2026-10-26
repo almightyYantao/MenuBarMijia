@@ -327,6 +327,12 @@ extension HomeStore {
         scheduledTasks[entry.id] = Task { [weak self] in
             do { try await sleep(.seconds(waitSeconds)) } catch { return }
             guard let self, !Task.isCancelled else { return }
+            // Task.sleep keeps counting while the Mac sleeps, so after a closed lid it returns the moment
+            // the Mac wakes. A timer that is more than a minute late is not run silently (#22).
+            if self.assistantNow().timeIntervalSince(entry.fireDate) > Self.lateTimerGrace {
+                self.moveToMissed(entry)
+                return
+            }
             await self.waitForInitialSnapshotIfNeeded()
             guard !Task.isCancelled else { return }
             _ = await self.executeIntentPlan(entry.plan, recordedUtterance: nil)
@@ -334,6 +340,17 @@ extension HomeStore {
             self.scheduledTasks[entry.id] = nil
             self.persistAllScheduledCommands()
         }
+    }
+
+    private func moveToMissed(_ entry: ScheduledCommand) {
+        scheduledTasks[entry.id] = nil
+        scheduledCommands.removeAll { $0.id == entry.id }
+        if !missedScheduledCommands.contains(where: { $0.id == entry.id }) {
+            missedScheduledCommands.append(entry)
+        }
+        isShowingAssistantBar = true
+        notifyMissedScheduledCommandsIfNeeded()
+        persistAllScheduledCommands()
     }
 
     private func waitForInitialSnapshotIfNeeded() async {
@@ -344,6 +361,7 @@ extension HomeStore {
 
     /// Restores persisted timers on launch. Future timers resume their countdown; expired timers move to
     /// `missedScheduledCommands` so an overdue heater or light timer never fires silently hours later.
+    /// Timers the Mac sleeps through take the same path when they wake up late (see `startScheduledTask`).
     public func restoreScheduledCommands(now: Date = Date()) {
         for task in scheduledTasks.values {
             task.cancel()

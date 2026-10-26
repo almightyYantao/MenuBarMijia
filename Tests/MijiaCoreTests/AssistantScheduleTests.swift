@@ -159,6 +159,45 @@ struct AssistantScheduleTests {
         #expect(ScheduledCommand.load(from: defaults).isEmpty)
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
     }
+
+    @Test("A timer the Mac slept through waits for confirmation instead of firing on wake (#22)")
+    @MainActor
+    func timerLateAfterSleepWaits() async throws {
+        let (store, mock) = try await makeStore()
+        var notified: [ScheduledCommand] = []
+        store.onMissedScheduledCommand = { notified.append($0) }
+        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        let entry = try #require(store.scheduledCommands.first)
+        // The lid was closed for 3 hours: the task wakes long after its fire date.
+        store.assistantNow = { Date().addingTimeInterval(3 * 3600) }
+        store.isShowingAssistantBar = false
+
+        for _ in 0..<50 where !store.scheduledCommands.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.missedScheduledCommands.map(\.id) == [entry.id])
+        #expect(notified.map(\.id) == [entry.id])
+        #expect(store.isShowingAssistantBar)
+        #expect(ScheduledCommand.load(from: store.userDefaults).map(\.id) == [entry.id])
+        #expect(await mock.executedCommands.isEmpty)
+
+        _ = await store.runMissedScheduledCommand(id: entry.id)
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
+    }
+
+    @Test("A timer that wakes up only a few seconds late still runs")
+    @MainActor
+    func timerSlightlyLateRuns() async throws {
+        let (store, mock) = try await makeStore()
+        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        store.assistantNow = { Date().addingTimeInterval(10 * 60 + 20) }
+        for _ in 0..<50 where !store.scheduledCommands.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
+    }
 }
 
 /// 方案 v1 第 2 步：语音撤销（"撤销"、"刚才那个撤销"）。

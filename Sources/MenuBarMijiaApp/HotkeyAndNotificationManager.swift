@@ -660,8 +660,8 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         let content = UNMutableNotificationContent()
         content.title = L10n.tr("已错过定时任务", "Missed Scheduled Command")
         content.body = L10n.tr(
-            "应用关闭期间已过期的定时：「\(entry.reply)」。可点击通知按钮立即补执行。",
-            "Expired while the app was closed: \"\(entry.reply)\". Click Run Now to execute it."
+            "应用关闭或电脑睡眠时错过的定时：「\(entry.reply)」。没有自动执行，可点通知按钮立即补执行。",
+            "Missed while the app was closed or the Mac was asleep: \"\(entry.reply)\". It did not run. Click Run Now to run it."
         )
         content.sound = .default
         content.categoryIdentifier = Self.missedTimerCategoryId

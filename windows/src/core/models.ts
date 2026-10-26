@@ -172,6 +172,26 @@ export interface ScheduledCommand {
   readonly reply: string;
 }
 
+/** A timer that comes due more than this late (the PC slept, the app was frozen) waits for the user (#22). */
+export const LATE_TIMER_GRACE_MS = 60_000;
+
+/** Splits timers into ones to run now, ones that were missed, and ones still counting down. */
+export function partitionDueTimers(
+  items: readonly ScheduledCommand[],
+  nowMs: number,
+  graceMs = LATE_TIMER_GRACE_MS
+): { run: ScheduledCommand[]; missed: ScheduledCommand[]; remaining: ScheduledCommand[] } {
+  const run: ScheduledCommand[] = [];
+  const missed: ScheduledCommand[] = [];
+  const remaining: ScheduledCommand[] = [];
+  for (const item of items) {
+    if (item.fireTimestampMs > nowMs) remaining.push(item);
+    else if (nowMs - item.fireTimestampMs > graceMs) missed.push(item);
+    else run.push(item);
+  }
+  return { run, missed, remaining };
+}
+
 export function isDeviceActiveOn(device: SmartDevice): boolean {
   switch (device.kind.kind) {
     case "light":

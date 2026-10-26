@@ -308,3 +308,25 @@ describe("AI suggestions wait for a tap (#21)", () => {
     assert.match(tile("light.study_desk"), /已关闭/);
   });
 });
+
+describe("Timers the PC slept through (#22)", () => {
+  it("holds an overdue timer until 立即执行 is tapped", async () => {
+    startDemo();
+    const before = tile("light.study_desk");
+    await command("10分钟后关闭书房台灯");
+    assert.match(document.body.textContent ?? "", /已设定 10 分钟后执行「关闭书房台灯」/);
+    const realNow = Date.now;
+    Date.now = () => realNow() + 3 * 3600 * 1000;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      assert.match(document.body.textContent ?? "", /已错过定时：关闭书房台灯/);
+      assert.equal(tile("light.study_desk"), before);
+      await click("[data-run-missed]");
+      await setImmediate();
+      assert.match(tile("light.study_desk"), /已关闭/);
+      assert.equal(document.querySelector("[data-run-missed]"), null);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+});
