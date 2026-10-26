@@ -906,7 +906,8 @@ public struct ControlCenterPanel: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 0) {
                             Color.clear.frame(width: 0, height: 1).id("roomsStart")
-                            roomPillsRow.padding(3)
+                            // Extra side inset keeps the end pills clear of the track's curved ends.
+                            roomPillsRow.padding(.vertical, 3).padding(.horizontal, 6)
                         }
                     }
                     .defaultScrollAnchor(.leading)
