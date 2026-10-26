@@ -222,15 +222,37 @@ public struct ControlCenterPanel: View {
         withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) { draggingId = id }
     }
 
-    /// Swaps only when the pointer reaches the middle of another card, never the same card twice in
-    /// a row, and not within 0.25s of the last swap. Frames animate after a swap, so without these
-    /// guards two cards could trade places every frame and lock up the UI.
+    /// Decides where the dragged card should go: before or after the card under the pointer (top
+    /// half / left half means before), or first when the pointer is above every card. The same
+    /// slot never fires twice in a row and swaps are at least 0.25s apart, since frames animate
+    /// after each move and could otherwise ping-pong.
     private func swapIfNeeded(dragged: String, at location: CGPoint) {
         guard Date().timeIntervalSince(lastSwapAt) > 0.25 else { return }
-        guard let target = tileFrames.first(where: { id, frame in
-            id != dragged && frame.insetBy(dx: frame.width * 0.25, dy: frame.height * 0.25).contains(location)
-        })?.key, target != lastSwapTarget else { return }
-        lastSwapTarget = target
+        let others = tileFrames.filter { $0.key != dragged }
+        guard !others.isEmpty else { return }
+
+        let target: String
+        let after: Bool
+        if let top = others.min(by: { $0.value.minY < $1.value.minY }), location.y < top.value.minY {
+            target = top.key
+            after = false
+        } else if let hit = others.first(where: { $0.value.contains(location) }) {
+            let f = hit.value
+            target = hit.key
+            if location.y < f.minY + f.height * 0.3 {
+                after = false
+            } else if location.y > f.maxY - f.height * 0.3 {
+                after = true
+            } else {
+                after = location.x > f.midX
+            }
+        } else {
+            return
+        }
+
+        let slot = "\(target)|\(after)"
+        guard slot != lastSwapTarget else { return }
+        lastSwapTarget = slot
         lastSwapAt = Date()
         // In the "All" view, dropping onto the other section moves the card into it.
         if store.selectedRoomId == nil,
@@ -239,7 +261,7 @@ public struct ControlCenterPanel: View {
                 store.toggleFavorite(dragged)
             }
         }
-        moveDevice(dragged, to: target)
+        moveDevice(dragged, relativeTo: target, after: after)
     }
 
     /// Offset that keeps the picked-up card under the pointer even after its slot moves.
@@ -251,12 +273,14 @@ public struct ControlCenterPanel: View {
     /// Moves `dragged` to `target`'s slot in the saved order (seeded from the full device list).
     private var currentOrder: [String] { liveOrder ?? DeviceLayoutPrefs.decodeOrder(orderRaw) }
 
-    private func moveDevice(_ dragged: String, to target: String) {
+    private func moveDevice(_ dragged: String, relativeTo target: String, after: Bool) {
         var order = currentOrder
         for id in store.devices.map(\.id) where !order.contains(id) { order.append(id) }
-        guard let from = order.firstIndex(of: dragged), let to = order.firstIndex(of: target) else { return }
-        order.remove(at: from)
-        order.insert(dragged, at: to)
+        guard order.contains(dragged), order.contains(target) else { return }
+        order.removeAll { $0 == dragged }
+        guard let t = order.firstIndex(of: target) else { return }
+        order.insert(dragged, at: after ? t + 1 : t)
+        guard order != currentOrder else { return }
         withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { liveOrder = order }
         orderRaw = DeviceLayoutPrefs.encodeOrder(order)
     }
