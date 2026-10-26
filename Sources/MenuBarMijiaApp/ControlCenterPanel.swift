@@ -5,6 +5,7 @@ public struct ControlCenterPanel: View {
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(AppSkin.storageKey) private var skinRaw: String = AppSkin.classic.rawValue
     @AppStorage(AppSkin.climatePanelKey) private var climatePanelModule: Bool = true
+    @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
     @Namespace private var roomPillNamespace
     public let store: HomeStore
 
@@ -35,7 +36,7 @@ public struct ControlCenterPanel: View {
 
             overlayNotifications
         }
-        .frame(width: skin.isClassic ? 356 : 376, height: skin.isClassic ? 460 : 500)
+        .frame(width: skin.isClassic ? 356 : 376, height: (PanelHeight(rawValue: panelHeightRaw) ?? .standard).points)
         .skinRoot(skin)
         .task {
             await store.checkForUpdatesIfNeeded()

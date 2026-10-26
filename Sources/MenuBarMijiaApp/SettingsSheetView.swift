@@ -11,6 +11,7 @@ public struct SettingsSheetView: View {
     @State private var launchAtLogin: Bool = (SMAppService.mainApp.status == .enabled)
     @AppStorage(AppSkin.storageKey) private var skinRaw: String = AppSkin.classic.rawValue
     @AppStorage(AppSkin.climatePanelKey) private var climatePanelModule: Bool = true
+    @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
 
     public init(store: HomeStore) {
         self.store = store
@@ -85,6 +86,21 @@ public struct SettingsSheetView: View {
                         .fixedSize(horizontal: false, vertical: true)
 
                         Divider().overlay(Color.primary.opacity(0.06))
+
+                        HStack {
+                            Text(L10n.tr("面板高度", "Panel Height"))
+                                .font(.system(size: 12))
+                            Spacer()
+                            Picker("", selection: $panelHeightRaw) {
+                                ForEach(PanelHeight.allCases) { h in
+                                    Text(h.title).tag(h.rawValue)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(width: 196)
+                            .controlSize(.small)
+                        }
 
                         settingsToggleRow(
                             title: L10n.tr("空调使用整行面板模块", "Full-Width Climate Panel"),
