@@ -304,7 +304,7 @@ public struct DeviceCardView: View {
                 iconBadge
             }
             .buttonStyle(PressableCardButtonStyle())
-            .help(L10n.tr("点击直接切换开关", "Click to toggle power"))
+            .skinHelp(L10n.tr("点击直接切换开关", "Click to toggle power"))
 
             Button {
                 withAnimation(AppleMotion.snappySpring) {
@@ -343,7 +343,7 @@ public struct DeviceCardView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(device.hasDetailDrawer ? L10n.tr("点击展开详细控制", "Click to expand controls") : device.name)
+            .skinHelp(device.hasDetailDrawer ? L10n.tr("点击展开详细控制", "Click to expand controls") : device.name)
         }
         .padding(.horizontal, skin.isClassic ? 9 : 11)
         .padding(.vertical, skin.isClassic ? 8.5 : 12)
@@ -417,7 +417,7 @@ public struct DeviceCardView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help(isFavorite ? L10n.tr("从常用中移除", "Remove from Favorites") : L10n.tr("加入常用", "Add to Favorites"))
+                    .skinHelp(isFavorite ? L10n.tr("从常用中移除", "Remove from Favorites") : L10n.tr("加入常用", "Add to Favorites"))
                 }
 
                 if device.hasDetailDrawer {
@@ -441,7 +441,7 @@ public struct DeviceCardView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help(isExpanded ? L10n.tr("收起控制面板", "Collapse controls") : L10n.tr("展开详细控制", "Expand controls"))
+                    .skinHelp(isExpanded ? L10n.tr("收起控制面板", "Collapse controls") : L10n.tr("展开详细控制", "Expand controls"))
                 }
             }
         }
@@ -924,7 +924,7 @@ public struct DeviceCardView: View {
                         .adaptiveGlass(in: Circle(), interactive: true)
                 }
                 .buttonStyle(.plain)
-                .help(L10n.tr("切换麦克风/扬声器静音", "Toggle speaker mute"))
+                .skinHelp(L10n.tr("切换麦克风/扬声器静音", "Toggle speaker mute"))
 
                 LiquidGlassSlider(
                     value: Binding(
@@ -1034,7 +1034,7 @@ public struct DeviceCardView: View {
                         .font(.system(size: 11, weight: .semibold))
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: spec.isMuted, tintColor: accent))
-                .help(spec.isMuted ? L10n.tr("取消静音", "Unmute") : L10n.tr("静音", "Mute"))
+                .skinHelp(spec.isMuted ? L10n.tr("取消静音", "Unmute") : L10n.tr("静音", "Mute"))
 
                 LiquidGlassSlider(
                     value: Binding(

@@ -473,7 +473,7 @@ struct HoldToConfirmButton: View {
         } onPressingChanged: { pressing in
             withAnimation(pressing ? .linear(duration: 0.6) : .easeOut(duration: 0.2)) { holding = pressing }
         }
-        .help(L10n.tr("按住 0.6 秒全部关闭", "Hold 0.6s to turn everything off"))
+        .skinHelp(L10n.tr("按住 0.6 秒全部关闭", "Hold 0.6s to turn everything off"))
     }
 }
 
@@ -536,4 +536,21 @@ private struct SkinSwatch: View {
         }
         .contentShape(Rectangle())
     }
+}
+
+// MARK: - Tooltips
+
+/// System tooltips are grey AppKit bubbles that ignore the skin; only the classic look keeps them.
+struct SkinHelp: ViewModifier {
+    @Environment(\.appSkin) private var skin
+    let text: String
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if skin.isClassic { content.help(text) } else { content }
+    }
+}
+
+extension View {
+    func skinHelp(_ text: String) -> some View { modifier(SkinHelp(text: text)) }
 }

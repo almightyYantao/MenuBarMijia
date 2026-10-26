@@ -135,7 +135,7 @@ struct LayoutEditable: ViewModifier {
                             .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
                     }
                     .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.85))
-                    .help(L10n.tr("切换卡片大小：\(size.title)", "Card size: \(size.title)"))
+                    .skinHelp(L10n.tr("切换卡片大小：\(size.title)", "Card size: \(size.title)"))
                     .offset(x: 5, y: -5)
                     .transition(.scale.combined(with: .opacity))
                 }

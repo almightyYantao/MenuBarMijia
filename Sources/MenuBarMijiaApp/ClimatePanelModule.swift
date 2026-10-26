@@ -79,7 +79,7 @@ struct ClimatePanelModule: View {
                 }
             }
             .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.88))
-            .help(isRunning ? L10n.tr("关闭空调", "Turn off") : L10n.tr("打开空调", "Turn on"))
+            .skinHelp(isRunning ? L10n.tr("关闭空调", "Turn off") : L10n.tr("打开空调", "Turn on"))
 
             Button {
                 withAnimation(AppleMotion.snappySpring) { store.toggleExpanded(device.id) }
@@ -103,7 +103,7 @@ struct ClimatePanelModule: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(L10n.tr("展开模式与风速", "Show modes and fan speed"))
+            .skinHelp(L10n.tr("展开模式与风速", "Show modes and fan speed"))
 
             stepButton(symbol: "minus", delta: -spec.step)
 

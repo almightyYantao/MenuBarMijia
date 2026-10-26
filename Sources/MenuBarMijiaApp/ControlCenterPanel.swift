@@ -406,7 +406,7 @@ public struct ControlCenterPanel: View {
                         .listeningPulse(SpeechInputController.shared.isListening, color: skin.isClassic ? .accentColor : skin.palette.accent)
                 }
                 .buttonStyle(.plain)
-                .help(L10n.tr("语音指令：点击直接说话控制设备（快捷键 V）", "Voice command: click to speak (shortcut V)"))
+                .skinHelp(L10n.tr("语音指令：点击直接说话控制设备（快捷键 V）", "Voice command: click to speak (shortcut V)"))
 
                 Button {
                     withAnimation(AppleMotion.snappySpring) {
@@ -433,7 +433,7 @@ public struct ControlCenterPanel: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .help(L10n.tr("AI 指令：用一句话控制设备（快捷键 /）", "AI command: control devices with natural language (shortcut /)"))
+                .skinHelp(L10n.tr("AI 指令：用一句话控制设备（快捷键 /）", "AI command: control devices with natural language (shortcut /)"))
 
                 if isEditingLayout {
                     doneEditingButton
@@ -677,7 +677,7 @@ public struct ControlCenterPanel: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .help(
+                    .skinHelp(
                         store.isCompactGridMode
                             ? L10n.tr("当前：双列紧凑磁贴（点击切换单列）", "2-column compact tiles (click for single column)")
                             : L10n.tr("点击切换双列紧凑磁贴视图", "Switch to 2-column compact tiles")
@@ -704,7 +704,7 @@ public struct ControlCenterPanel: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .help(
+                    .skinHelp(
                         store.hideOfflineDevices
                             ? L10n.tr("当前只显示在线设备（点击显示全部）", "Showing online devices only (click to show all)")
                             : L10n.tr("点击隐藏未通电/离线设备", "Hide offline/unplugged devices")
@@ -927,7 +927,7 @@ public struct ControlCenterPanel: View {
                         tintColor: store.updateState.isReadyToRelaunch ? .green : .accentColor
                     )
                 )
-                .help(
+                .skinHelp(
                     store.updateState.isReadyToRelaunch
                         ? L10n.tr("点击立即重启并完成 v\(release.version) 更新", "Click to relaunch and finish updating to v\(release.version)")
                         : L10n.tr("发现新版本 v\(release.version)，点击前往更新", "New version v\(release.version) available")
@@ -944,7 +944,7 @@ public struct ControlCenterPanel: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(L10n.tr("立即同步最新状态", "Refresh device states now"))
+            .skinHelp(L10n.tr("立即同步最新状态", "Refresh device states now"))
 
             Button {
                 withAnimation(AppleMotion.snappySpring) {
@@ -958,7 +958,7 @@ public struct ControlCenterPanel: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(L10n.tr("偏好设置与连接配置", "Preferences & connection settings"))
+            .skinHelp(L10n.tr("偏好设置与连接配置", "Preferences & connection settings"))
         }
     }
 
