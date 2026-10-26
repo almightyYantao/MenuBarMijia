@@ -73,7 +73,6 @@ public struct PillActionButtonStyle: ButtonStyle {
             .background {
                 if isSelected {
                     capsule.fill(fill)
-                        .shadow(color: p.glow ? p.accent.opacity(0.5) : .clear, radius: 6)
                 }
             }
             .adaptiveGlass(in: capsule)
@@ -359,7 +358,75 @@ public struct LiquidGlassSlider: View {
         return CGFloat((clamped - range.lowerBound) / span)
     }
 
+    @Environment(\.appSkin) private var skin
+
+    @ViewBuilder
     public var body: some View {
+        if skin.isClassic {
+            classicBody
+        } else {
+            skinnedBody
+        }
+    }
+
+    /// Flat track with an accent fill and a small round knob that grows while dragging.
+    private var skinnedBody: some View {
+        let p = skin.palette
+        return HStack(spacing: 10) {
+            Image(systemName: iconName)
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(p.muted)
+                .frame(width: 16)
+
+            GeometryReader { geo in
+                let width = max(geo.size.width, 1)
+                let knob: CGFloat = isDragging ? 18 : 14
+                let x = knob / 2 + normalizedProgress * (width - knob)
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(isSpectrumTrack ? AnyShapeStyle(trackFill) : AnyShapeStyle(p.chip))
+                        .opacity(isSpectrumTrack ? 0.75 : 1)
+                        .frame(height: 6)
+                        .overlay(Capsule(style: .continuous).stroke(p.line, lineWidth: 0.6))
+                    if !isSpectrumTrack {
+                        Capsule(style: .continuous)
+                            .fill(p.accentGradient)
+                            .frame(width: max(x, 6), height: 6)
+                            .shadow(color: p.glow ? p.accent.opacity(0.6) : .clear, radius: 4)
+                    }
+                    Circle()
+                        .fill(p.fg)
+                        .frame(width: knob, height: knob)
+                        .overlay(Circle().stroke(isSpectrumTrack ? p.line : p.accent, lineWidth: 2))
+                        .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                        .position(x: x, y: geo.size.height / 2)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { drag in
+                            guard isEnabled else { return }
+                            if !isDragging { withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { isDragging = true } }
+                            updateValue(at: drag.location.x, in: width, thumbWidth: knob)
+                        }
+                        .onEnded { _ in
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { isDragging = false }
+                        }
+                )
+            }
+            .frame(height: 22)
+
+            Text(formattedValue)
+                .font(.system(size: 11, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(p.fg.opacity(0.85))
+                .frame(width: 44, alignment: .trailing)
+        }
+        .opacity(isEnabled ? 1.0 : 0.5)
+    }
+
+    private var classicBody: some View {
         HStack(spacing: 8) {
             Image(systemName: iconName)
                 .font(.system(size: 11.5, weight: .semibold))

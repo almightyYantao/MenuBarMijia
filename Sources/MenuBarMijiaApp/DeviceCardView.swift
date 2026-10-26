@@ -107,8 +107,9 @@ public struct DeviceCardView: View {
             }
 
             if isExpanded && device.hasDetailDrawer {
-                Divider()
-                    .overlay(Color.primary.opacity(0.08))
+                Rectangle()
+                    .fill(skin.isClassic ? Color.primary.opacity(0.08) : skin.palette.line)
+                    .frame(height: 1)
                     .padding(.horizontal, 12)
 
                 detailDrawer
