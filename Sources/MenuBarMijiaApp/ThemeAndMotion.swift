@@ -295,6 +295,7 @@ extension View {
 }
 
 public struct AdaptiveGlassContainer<Content: View>: View {
+    @Environment(\.appSkin) private var skin
     public var spacing: CGFloat
     @ViewBuilder public var content: () -> Content
 
@@ -304,12 +305,18 @@ public struct AdaptiveGlassContainer<Content: View>: View {
     }
 
     public var body: some View {
-        if #available(macOS 26.0, *) {
+        if skin.isClassic, #available(macOS 26.0, *) {
             GlassEffectContainer(spacing: spacing) {
                 content()
             }
-        } else {
+        } else if skin.isClassic {
             content()
+        } else {
+            // Skins draw opaque chips; skipping the glass container also stops it clipping the
+            // first chip inside horizontal scroll views. The inset keeps chip edges off the clip.
+            content()
+                .padding(.horizontal, 2)
+                .padding(.vertical, 1)
         }
     }
 }
