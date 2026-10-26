@@ -160,11 +160,26 @@ public enum JSONValue: Codable, Equatable, Sendable {
 
 // MARK: - Synthesized Home Snapshot
 
+/// A Mi Home "家庭" the account can switch between.
+public struct HomeOption: Equatable, Sendable, Identifiable {
+    public var id: String
+    public var name: String
+    public var deviceCount: Int
+
+    public init(id: String, name: String, deviceCount: Int) {
+        self.id = id
+        self.name = name
+        self.deviceCount = deviceCount
+    }
+}
+
 public struct SynthesizedHome: Equatable, Sendable {
     public var rooms: [RoomArea]
     public var devices: [SmartDevice]
     public var environmentReadings: [EnvironmentReading]
     public var scenes: [HomeScene]
+    /// Homes on the account (empty for backends without the concept).
+    public var homes: [HomeOption] = []
 
     public init(
         rooms: [RoomArea] = [],

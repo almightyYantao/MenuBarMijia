@@ -223,9 +223,7 @@ public struct ControlCenterPanel: View {
                                     : Color.secondary
                             )
 
-                        Text(store.homeName)
-                            .font(.system(size: 15, weight: .bold))
-                            .tracking(-0.2)
+                        homeTitle
                     }
 
                     Text(statusSummaryText)
@@ -315,6 +313,56 @@ public struct ControlCenterPanel: View {
                 }
             }
         }
+    }
+
+    /// Dashboard title; with several Mi Homes it becomes a menu that switches between them.
+    @ViewBuilder
+    private var homeTitle: some View {
+        if store.homes.count > 1 {
+            Menu {
+                Button {
+                    store.selectMiHome(nil)
+                } label: {
+                    Label(L10n.tr("全部家庭", "All Homes"), systemImage: store.selectedMiHomeId == nil ? "checkmark" : "")
+                }
+                Divider()
+                ForEach(store.homes) { home in
+                    Button {
+                        store.selectMiHome(home.id)
+                    } label: {
+                        Label(
+                            "\(home.name)  ·  \(home.deviceCount)",
+                            systemImage: store.selectedMiHomeId == home.id ? "checkmark" : ""
+                        )
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(selectedHomeTitle)
+                        .font(.system(size: 15, weight: .bold))
+                        .tracking(-0.2)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help(L10n.tr("切换家庭", "Switch home"))
+        } else {
+            Text(store.homeName)
+                .font(.system(size: 15, weight: .bold))
+                .tracking(-0.2)
+        }
+    }
+
+    private var selectedHomeTitle: String {
+        if let id = store.selectedMiHomeId, let home = store.homes.first(where: { $0.id == id }) {
+            return home.name
+        }
+        return store.homeName
     }
 
     private func powerChip(watts: Double) -> some View {

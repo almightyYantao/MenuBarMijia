@@ -22,6 +22,8 @@ public actor MiCloudProvider: HomeProvider {
     private var rooms: [MiRoom] = []
     private var specsByModel: [String: MiotDeviceSpec] = [:]
     private var values: [MiotPropKey: JSONValue] = [:]
+    /// Lights whose `mode` write the cloud rejected as unsupported; their scene chips are hidden.
+    private var effectsUnsupported: Set<String> = []
 
     public init(
         sessionLoader: @escaping @Sendable () -> MiSession? = { MiSessionStore.load() },
@@ -207,9 +209,48 @@ public actor MiCloudProvider: HomeProvider {
         emitSnapshot()
     }
 
+    /// UserDefaults key for the selected Mi Home id; absent or unknown means every home.
+    public static let selectedHomeKey = "mi_selected_home_id"
+    /// MIoT per-item code for "property not supported by this device".
+    static let propertyUnsupportedCode = -704002000
+
     private func emitSnapshot() {
-        let home = MiotSynthesizer.synthesize(devices: devices, rooms: rooms, specs: specsByModel, values: values)
+        let homes = Self.homeOptions(from: rooms)
+        let selected = UserDefaults.standard.string(forKey: Self.selectedHomeKey)
+        var visibleDevices = devices
+        var visibleRooms = rooms
+        if let selected, homes.contains(where: { $0.id == selected }) {
+            visibleRooms = rooms.filter { $0.homeId == selected }
+            let dids = Set(visibleRooms.flatMap(\.dids))
+            visibleDevices = devices.filter { dids.contains($0.did) }
+            // Keep parents of included split keys so their spec and values stay available.
+            let parents = Set(dids.compactMap { did -> String? in
+                guard let r = did.range(of: ".s", options: .backwards), Int(did[r.upperBound...]) != nil else { return nil }
+                return String(did[..<r.lowerBound])
+            })
+            visibleDevices += devices.filter { parents.contains($0.did) && !dids.contains($0.did) }
+        }
+        var home = MiotSynthesizer.synthesize(devices: visibleDevices, rooms: visibleRooms, specs: specsByModel, values: values)
+        home.homes = homes
+        // Light groups advertise `mode` but their members reject it; hide scenes there too.
+        for i in home.devices.indices {
+            guard case .light(var spec) = home.devices[i].kind,
+                  home.devices[i].id.hasPrefix("group.") || effectsUnsupported.contains(home.devices[i].id) else { continue }
+            spec.availableEffects = []
+            home.devices[i].kind = .light(spec)
+        }
         continuation?.yield(.snapshotUpdated(home))
+    }
+
+    static func homeOptions(from rooms: [MiRoom]) -> [HomeOption] {
+        var order: [String] = []
+        var names: [String: String] = [:]
+        var counts: [String: Int] = [:]
+        for room in rooms where !room.homeId.isEmpty {
+            if names[room.homeId] == nil { order.append(room.homeId); names[room.homeId] = room.homeName }
+            counts[room.homeId, default: 0] += room.dids.count
+        }
+        return order.map { HomeOption(id: $0, name: names[$0] ?? "", deviceCount: counts[$0] ?? 0) }
     }
 
     // MARK: Commands
@@ -230,6 +271,12 @@ public actor MiCloudProvider: HomeProvider {
         } catch MiCloudError.sessionExpired {
             report(MiCloudError.sessionExpired)
             throw MiCloudError.sessionExpired
+        } catch MiCloudError.api(let code, let message) {
+            if case .setLightEffect = command, code == Self.propertyUnsupportedCode {
+                effectsUnsupported.insert(record.did)
+                emitSnapshot()
+            }
+            throw MiCloudError.api(code: code, message: message)
         }
 
         let delay = followUpDelay

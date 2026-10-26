@@ -33,11 +33,15 @@ public struct MiRoom: Equatable, Sendable {
     public var id: String
     public var name: String
     public var dids: [String]
+    public var homeId: String
+    public var homeName: String
 
-    public init(id: String, name: String, dids: [String]) {
+    public init(id: String, name: String, dids: [String], homeId: String = "", homeName: String = "") {
         self.id = id
         self.name = name
         self.dids = dids
+        self.homeId = homeId
+        self.homeName = homeName
     }
 }
 
@@ -283,13 +287,22 @@ public actor MiCloudClient: MiCloudAPI {
     static func parseRooms(_ result: JSONValue) -> [MiRoom] {
         var rooms: [MiRoom] = []
         for home in result["homelist"]?.arrayValue ?? [] {
+            let homeId = home["id"]?.idString ?? ""
+            let homeName = home["name"]?.stringValue ?? ""
             for room in home["roomlist"]?.arrayValue ?? [] {
                 guard let id = room["id"]?.idString else { continue }
                 rooms.append(MiRoom(
                     id: id,
                     name: room["name"]?.stringValue ?? "",
-                    dids: (room["dids"]?.arrayValue ?? []).compactMap(\.idString)
+                    dids: (room["dids"]?.arrayValue ?? []).compactMap(\.idString),
+                    homeId: homeId,
+                    homeName: homeName
                 ))
+            }
+            // Devices assigned to the home but no room; the empty name lands them in 全屋.
+            let homeDids = (home["dids"]?.arrayValue ?? []).compactMap(\.idString)
+            if !homeDids.isEmpty {
+                rooms.append(MiRoom(id: "home_\(homeId)", name: "", dids: homeDids, homeId: homeId, homeName: homeName))
             }
         }
         return rooms
