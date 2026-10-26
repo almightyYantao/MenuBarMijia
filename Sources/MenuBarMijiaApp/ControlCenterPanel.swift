@@ -13,6 +13,9 @@ public struct ControlCenterPanel: View {
     // current animation transaction, so moves made through it alone snap instead of sliding.
     @State private var liveOrder: [String]?
     @State private var liveSizes: [String: TileSize]?
+    @State private var tileFrames: [String: CGRect] = [:]
+    @State private var dragLocation: CGPoint?
+    @State private var grabOffset: CGSize = .zero
     @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
     @Namespace private var roomPillNamespace
     public let store: HomeStore
@@ -121,6 +124,8 @@ public struct ControlCenterPanel: View {
                         )
                     }
                 }
+                .coordinateSpace(name: TileSpace.name)
+                .onPreferenceChange(TileFramesKey.self) { tileFrames = $0 }
                 .padding(.horizontal, 13)
                 .padding(.top, 10)
                 .padding(.bottom, store.undoBanner != nil || store.toastNotice != nil ? 48 : 12)
@@ -143,16 +148,40 @@ public struct ControlCenterPanel: View {
         LayoutEditable(
             deviceId: device.id,
             size: tileSize(device),
-            draggingId: $draggingId,
+            isDragging: draggingId == device.id,
+            dragOffset: dragOffset(for: device.id),
             onEnterEditing: {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                     store.expandedDeviceId = nil
                     isEditingLayout = true
                 }
             },
-            onMove: moveDevice,
+            onDragBegan: { id, start in
+                let origin = tileFrames[id]?.origin ?? start
+                grabOffset = CGSize(width: start.x - origin.x, height: start.y - origin.y)
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) { draggingId = id }
+                dragLocation = start
+            },
+            onDragChanged: { id, location in
+                dragLocation = location
+                if let target = tileFrames.first(where: { $0.key != id && $0.value.contains(location) })?.key {
+                    moveDevice(id, to: target)
+                }
+            },
+            onDragEnded: {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                    draggingId = nil
+                    dragLocation = nil
+                }
+            },
             onCycleSize: { cycleSize(device) }
         )
+    }
+
+    /// Offset that keeps the picked-up card under the pointer even after its slot moves.
+    private func dragOffset(for id: String) -> CGSize {
+        guard draggingId == id, let loc = dragLocation, let frame = tileFrames[id] else { return .zero }
+        return CGSize(width: loc.x - grabOffset.width - frame.minX, height: loc.y - grabOffset.height - frame.minY)
     }
 
     /// Moves `dragged` to `target`'s slot in the saved order (seeded from the full device list).
@@ -256,6 +285,11 @@ public struct ControlCenterPanel: View {
                 )
                 .frame(height: bento && span < 6 ? 92 : nil)
                 .frame(maxHeight: .infinity, alignment: .top)
+                .background {
+                    GeometryReader { geo in
+                        Color.clear.preference(key: TileFramesKey.self, value: [dev.id: geo.frame(in: .named(TileSpace.name))])
+                    }
+                }
                 .modifier(editable(dev))
                 .staggerIn(index)
                 .layoutValue(key: TileSpanKey.self, value: span)

@@ -101,8 +101,9 @@ extension EnvironmentValues {
     }
 }
 
-/// Wraps one device card: long-press enters edit mode; while editing the card jiggles, can be
-/// dragged onto another card to reorder, and shows a size badge that cycles half → full → panel.
+/// Wraps one device card. Long-press then keep dragging picks the card up straight away (no
+/// second click); while editing a plain drag moves any card. The card follows the pointer via
+/// `dragOffset`, jiggles, and shows a size badge that cycles half → full → panel.
 struct LayoutEditable: ViewModifier {
     @Environment(\.isEditingLayout) private var editing
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -110,30 +111,30 @@ struct LayoutEditable: ViewModifier {
 
     let deviceId: String
     let size: TileSize
-    @Binding var draggingId: String?
+    let isDragging: Bool
+    let dragOffset: CGSize
     let onEnterEditing: () -> Void
-    let onMove: (_ dragged: String, _ target: String) -> Void
+    let onDragBegan: (_ id: String, _ start: CGPoint) -> Void
+    let onDragChanged: (_ id: String, _ location: CGPoint) -> Void
+    let onDragEnded: () -> Void
     let onCycleSize: () -> Void
+
+    @State private var dragActive = false
 
     // Per-card phase so neighbouring cards do not swing in sync.
     private var phase: Double { Double(abs(deviceId.hashValue % 97)) / 97 * .pi * 2 }
 
     func body(content: Content) -> some View {
         jiggling(content.allowsHitTesting(!editing))
-            .scaleEffect(draggingId == deviceId ? 1.04 : 1)
-            .opacity(draggingId == deviceId ? 0.55 : 1)
             .overlay {
-                if editing {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onDrag {
-                            draggingId = deviceId
-                            return NSItemProvider(object: deviceId as NSString)
-                        }
-                }
+                if editing { Color.clear.contentShape(Rectangle()) }
             }
+            .scaleEffect(isDragging ? 1.05 : 1)
+            .shadowIf(isDragging, color: .black.opacity(0.3), radius: 12, y: 6)
+            .offset(dragOffset)
+            .zIndex(isDragging ? 10 : 0)
             .overlay(alignment: .topTrailing) {
-                if editing {
+                if editing && !isDragging {
                     Button(action: onCycleSize) {
                         Image(systemName: size.symbol)
                             .font(.system(size: 9, weight: .bold))
@@ -148,21 +149,47 @@ struct LayoutEditable: ViewModifier {
                     .transition(.scale.combined(with: .opacity))
                 }
             }
-            .onDrop(of: [.text], delegate: ReorderDropDelegate(targetId: deviceId, draggingId: $draggingId, onMove: onMove))
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.45).onEnded { _ in
-                    guard !editing else { return }
-                    NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
-                    onEnterEditing()
-                }
-            )
+            .simultaneousGesture(editing ? AnyGesture(editDrag.map { _ in () }) : AnyGesture(pressThenDrag.map { _ in () }))
     }
 
-    /// Angle is computed from the clock each frame, so a card rebuilt mid-edit (e.g. after a
-    /// size change) keeps jiggling instead of freezing at the last animated angle.
+    /// While editing: any drag moves the card.
+    private var editDrag: some Gesture {
+        DragGesture(minimumDistance: 3, coordinateSpace: .named(TileSpace.name))
+            .onChanged { d in
+                if !dragActive { dragActive = true; onDragBegan(deviceId, d.startLocation) }
+                onDragChanged(deviceId, d.location)
+            }
+            .onEnded { _ in finish() }
+    }
+
+    /// Not editing: hold 0.45s to enter edit mode with this card picked up, then drag without releasing.
+    private var pressThenDrag: some Gesture {
+        LongPressGesture(minimumDuration: 0.45)
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named(TileSpace.name)))
+            .onChanged { value in
+                guard case .second(true, let drag) = value else { return }
+                if !dragActive {
+                    dragActive = true
+                    NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+                    onEnterEditing()
+                    if let drag { onDragBegan(deviceId, drag.startLocation) }
+                }
+                if let drag { onDragChanged(deviceId, drag.location) }
+            }
+            .onEnded { _ in finish() }
+    }
+
+    private func finish() {
+        guard dragActive else { return }
+        dragActive = false
+        onDragEnded()
+    }
+
+    /// Angle is computed from the clock each frame, so a card rebuilt mid-edit keeps jiggling
+    /// instead of freezing at the last animated angle.
     @ViewBuilder
     private func jiggling<V: View>(_ view: V) -> some View {
-        if editing && !reduceMotion && draggingId != deviceId {
+        if editing && !reduceMotion && !isDragging {
             TimelineView(.animation) { context in
                 let t = context.date.timeIntervalSinceReferenceDate
                 view.rotationEffect(.degrees(sin(t * 2 * .pi * 3.6 + phase) * 1.1))
@@ -173,39 +200,15 @@ struct LayoutEditable: ViewModifier {
     }
 }
 
-struct ReorderDropDelegate: DropDelegate {
-    let targetId: String
-    @Binding var draggingId: String?
-    let onMove: (String, String) -> Void
-
-    func dropEntered(info: DropInfo) {
-        guard let dragged = draggingId, dragged != targetId else { return }
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-            onMove(dragged, targetId)
-        }
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
-
-    func performDrop(info: DropInfo) -> Bool {
-        draggingId = nil
-        return true
-    }
+enum TileSpace {
+    static let name = "device_tiles"
 }
 
-extension View {
-    func layoutEditable(
-        deviceId: String,
-        size: TileSize,
-        draggingId: Binding<String?>,
-        onEnterEditing: @escaping () -> Void,
-        onMove: @escaping (String, String) -> Void,
-        onCycleSize: @escaping () -> Void
-    ) -> some View {
-        modifier(LayoutEditable(
-            deviceId: deviceId, size: size, draggingId: draggingId,
-            onEnterEditing: onEnterEditing, onMove: onMove, onCycleSize: onCycleSize
-        ))
+/// Card frames in the tile coordinate space, used to find which card the pointer is over.
+struct TileFramesKey: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }
 
