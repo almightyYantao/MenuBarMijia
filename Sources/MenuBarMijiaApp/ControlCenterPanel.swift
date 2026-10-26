@@ -870,6 +870,7 @@ public struct ControlCenterPanel: View {
             roomPill(title: L10n.tr("全部", "All"), roomId: nil)
             ForEach(store.rooms) { room in
                 roomPill(title: L10n.displayRoomName(room.name), roomId: room.id)
+                    .id(room.id)
             }
         }
     }
@@ -901,10 +902,23 @@ public struct ControlCenterPanel: View {
             } else {
                 // The track sits outside the scroll view and clips it, so the first pill's rounded
                 // edge can never be cut by the scroll view's own bounds or offset.
-                ScrollView(.horizontal, showsIndicators: false) {
-                    roomPillsRow.padding(3)
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 0) {
+                            Color.clear.frame(width: 0, height: 1).id("roomsStart")
+                            roomPillsRow.padding(3)
+                        }
+                    }
+                    .defaultScrollAnchor(.leading)
+                    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                    // The menu-bar window restores a stale horizontal offset on reopen; snap back to
+                    // the start (or the selected room) so the first pill is not half scrolled out.
+                    .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+                        var t = Transaction(); t.disablesAnimations = true
+                        withTransaction(t) { proxy.scrollTo(store.selectedRoomId ?? "roomsStart", anchor: .leading) }
+                    }
+                    .onAppear { proxy.scrollTo("roomsStart", anchor: .leading) }
                 }
-                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
                 .clipShape(Capsule(style: .continuous))
                 .background(Capsule(style: .continuous).fill(skin.palette.chip))
                 .overlay(Capsule(style: .continuous).stroke(skin.palette.line, lineWidth: 0.8))
