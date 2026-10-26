@@ -208,3 +208,66 @@ extension View {
         ))
     }
 }
+
+// MARK: - Flow Layout
+
+struct TileSpanKey: LayoutValueKey {
+    static let defaultValue = 6
+}
+
+/// Packs children left to right into rows of 6 columns using each child's `TileSpanKey`.
+/// Cards in a row share the tallest card's height.
+struct TileFlowLayout: Layout {
+    var spacing: CGFloat = 7
+
+    private struct Row {
+        var indices: [Int] = []
+        var height: CGFloat = 0
+    }
+
+    private func width(for span: Int, total: CGFloat) -> CGFloat {
+        let unit = (total - spacing * 5) / 6
+        return unit * CGFloat(span) + spacing * CGFloat(span - 1)
+    }
+
+    private func rows(_ subviews: Subviews, total: CGFloat) -> [Row] {
+        var rows: [Row] = []
+        var current = Row()
+        var used = 0
+        for (i, sub) in subviews.enumerated() {
+            let span = min(max(sub[TileSpanKey.self], 1), 6)
+            if used + span > 6, !current.indices.isEmpty {
+                rows.append(current)
+                current = Row()
+                used = 0
+            }
+            let h = sub.sizeThatFits(ProposedViewSize(width: width(for: span, total: total), height: nil)).height
+            current.indices.append(i)
+            current.height = max(current.height, h)
+            used += span
+        }
+        if !current.indices.isEmpty { rows.append(current) }
+        return rows
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let total = proposal.width ?? 330
+        let rs = rows(subviews, total: total)
+        let height = rs.reduce(0) { $0 + $1.height } + spacing * CGFloat(max(rs.count - 1, 0))
+        return CGSize(width: total, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in rows(subviews, total: bounds.width) {
+            var x = bounds.minX
+            for i in row.indices {
+                let span = min(max(subviews[i][TileSpanKey.self], 1), 6)
+                let w = width(for: span, total: bounds.width)
+                subviews[i].place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: ProposedViewSize(width: w, height: row.height))
+                x += w + spacing
+            }
+            y += row.height + spacing
+        }
+    }
+}

@@ -133,73 +133,6 @@ public struct ControlCenterPanel: View {
         .animation(AppleMotion.snappySpring, value: store.isShowingAssistantBar)
     }
 
-    // MARK: - Adaptive Single-Column / 2-Column CompactTile Collection
-
-    private enum DeviceRowItem: Identifiable {
-        case single(SmartDevice)
-        case pair(SmartDevice, SmartDevice?)
-        /// Bento row: tiles with column spans out of 3.
-        case bento([(SmartDevice, Int)])
-
-        var id: String {
-            switch self {
-            case .single(let d): return "single_\(d.id)"
-            case .pair(let a, let b): return "pair_\(a.id)_\(b?.id ?? "none")"
-            case .bento(let items): return "bento_" + items.map(\.0.id).joined(separator: "_")
-            }
-        }
-    }
-
-    /// Alternates a wide+narrow row with a row of three; expanded cards and climate panels take a full row.
-    private func buildBentoRows(from devices: [SmartDevice]) -> [DeviceRowItem] {
-        var rows: [DeviceRowItem] = []
-        var buffer: [SmartDevice] = []
-        var wideRow = true
-        func flush() {
-            guard !buffer.isEmpty else { return }
-            let spans: [Int] = wideRow ? (buffer.count == 1 ? [3] : [2, 1]) : Array(repeating: 1, count: buffer.count)
-            rows.append(.bento(Array(zip(buffer, spans))))
-            buffer = []
-            wideRow.toggle()
-        }
-        for dev in devices {
-            if store.expandedDeviceId == dev.id || usesClimatePanel(dev) {
-                flush()
-                rows.append(.single(dev))
-                continue
-            }
-            buffer.append(dev)
-            if buffer.count == (wideRow ? 2 : 3) { flush() }
-        }
-        flush()
-        return rows
-    }
-
-    private func buildRows(from devices: [SmartDevice]) -> [DeviceRowItem] {
-        if skin == .bento && store.isCompactGridMode { return buildBentoRows(from: devices) }
-        var rows: [DeviceRowItem] = []
-        var buffer: SmartDevice?
-
-        for dev in devices {
-            if store.expandedDeviceId == dev.id || usesClimatePanel(dev) {
-                if let pending = buffer {
-                    rows.append(.pair(pending, nil))
-                    buffer = nil
-                }
-                rows.append(.single(dev))
-            } else if let pending = buffer {
-                rows.append(.pair(pending, dev))
-                buffer = nil
-            } else {
-                buffer = dev
-            }
-        }
-        if let pending = buffer {
-            rows.append(.pair(pending, nil))
-        }
-        return rows
-    }
-
     // MARK: - Layout Editing
 
     private func editable(_ device: SmartDevice) -> LayoutEditable {
@@ -269,75 +202,57 @@ public struct ControlCenterPanel: View {
         )
     }
 
+    // MARK: - Device Collection (flow layout with per-card spans)
+
+    /// Column span out of 6 for each device: half = 3, full/panel = 6; Bento alternates 4+2 and 2+2+2.
+    private func spans(for devices: [SmartDevice]) -> [String: Int] {
+        var result: [String: Int] = [:]
+        if skin == .bento && store.isCompactGridMode {
+            var pattern: [Int] = []
+            for dev in devices {
+                if store.expandedDeviceId == dev.id || usesClimatePanel(dev) {
+                    result[dev.id] = 6
+                    pattern = []
+                    continue
+                }
+                if pattern.isEmpty { pattern = result.count % 2 == 0 ? [4, 2] : [2, 2, 2] }
+                result[dev.id] = pattern.removeFirst()
+            }
+            return result
+        }
+        for dev in devices {
+            let size = tileSize(dev)
+            result[dev.id] = (size == .half && store.expandedDeviceId != dev.id) ? 3 : 6
+        }
+        return result
+    }
+
     @ViewBuilder
     private func deviceCollectionView(
         devices: [SmartDevice],
         showRoomBadge: Bool,
         quickIndexMap: [String: Int]
     ) -> some View {
-        let rows = buildRows(from: DeviceLayoutPrefs.apply(order: DeviceLayoutPrefs.decodeOrder(orderRaw), to: devices))
-        VStack(spacing: 7) {
-            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                Group {
-                switch row {
-                case .single(let dev):
-                    DeviceCardView(
-                        device: dev,
-                        store: store,
-                        showRoomBadge: showRoomBadge,
-                        isCompactTile: false,
-                        quickIndex: quickIndexMap[dev.id]
-                    )
-                    .modifier(editable(dev))
-                case .bento(let items):
-                    GeometryReader { geo in
-                        let unit = (geo.size.width - 14) / 3
-                        HStack(spacing: 7) {
-                            ForEach(items, id: \.0.id) { dev, span in
-                                DeviceCardView(
-                                    device: dev,
-                                    store: store,
-                                    showRoomBadge: showRoomBadge,
-                                    isCompactTile: true,
-                                    quickIndex: quickIndexMap[dev.id],
-                                    isBentoTile: true
-                                )
-                                .modifier(editable(dev))
-                                .frame(width: unit * CGFloat(span) + 7 * CGFloat(span - 1))
-                            }
-                        }
-                    }
-                    .frame(height: 92)
-                case .pair(let left, let right):
-                    HStack(spacing: 7) {
-                        DeviceCardView(
-                            device: left,
-                            store: store,
-                            showRoomBadge: showRoomBadge,
-                            isCompactTile: true,
-                            quickIndex: quickIndexMap[left.id]
-                        )
-                        .modifier(editable(left))
-                        .frame(maxWidth: .infinity)
-
-                        if let right {
-                            DeviceCardView(
-                                device: right,
-                                store: store,
-                                showRoomBadge: showRoomBadge,
-                                isCompactTile: true,
-                                quickIndex: quickIndexMap[right.id]
-                            )
-                            .modifier(editable(right))
-                            .frame(maxWidth: .infinity)
-                        } else {
-                            Color.clear
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
-                }
-                }
+        let ordered = DeviceLayoutPrefs.apply(order: DeviceLayoutPrefs.decodeOrder(orderRaw), to: devices)
+        let spanMap = spans(for: ordered)
+        let bento = skin == .bento && store.isCompactGridMode
+        // Every card is its own child keyed by device id, so a reorder slides cards instead of rebuilding rows.
+        TileFlowLayout(spacing: 7) {
+            ForEach(Array(ordered.enumerated()), id: \.element.id) { index, dev in
+                let span = spanMap[dev.id] ?? 6
+                DeviceCardView(
+                    device: dev,
+                    store: store,
+                    showRoomBadge: showRoomBadge,
+                    isCompactTile: span < 6,
+                    quickIndex: quickIndexMap[dev.id],
+                    isBentoTile: bento && span < 6
+                )
+                .frame(height: bento && span < 6 ? 92 : nil)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .modifier(editable(dev))
                 .staggerIn(index)
+                .layoutValue(key: TileSpanKey.self, value: span)
             }
         }
         .id(skin.isClassic ? "rows" : "rows_\(store.selectedRoomId ?? "all")")
