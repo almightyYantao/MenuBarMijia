@@ -6,6 +6,9 @@ public struct ControlCenterPanel: View {
     @AppStorage(AppSkin.storageKey) private var skinRaw: String = AppSkin.classic.rawValue
     @AppStorage(AppSkin.climatePanelKey) private var climatePanelModule: Bool = true
     @AppStorage(DeviceLayoutPrefs.storageKey) private var tileSizesRaw: String = "{}"
+    @AppStorage(DeviceLayoutPrefs.orderKey) private var orderRaw: String = "[]"
+    @State private var isEditingLayout = false
+    @State private var draggingId: String?
     @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
     @Namespace private var roomPillNamespace
     public let store: HomeStore
@@ -38,6 +41,7 @@ public struct ControlCenterPanel: View {
             overlayNotifications
         }
         .frame(width: skin.isClassic ? 356 : 376, height: (PanelHeight(rawValue: panelHeightRaw) ?? .standard).points)
+        .environment(\.isEditingLayout, isEditingLayout)
         .skinRoot(skin)
         .task {
             await store.checkForUpdatesIfNeeded()
@@ -196,6 +200,61 @@ public struct ControlCenterPanel: View {
         return rows
     }
 
+    // MARK: - Layout Editing
+
+    private func editable(_ device: SmartDevice) -> LayoutEditable {
+        LayoutEditable(
+            deviceId: device.id,
+            size: tileSize(device),
+            draggingId: $draggingId,
+            onEnterEditing: {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                    store.expandedDeviceId = nil
+                    isEditingLayout = true
+                }
+            },
+            onMove: moveDevice,
+            onCycleSize: { cycleSize(device) }
+        )
+    }
+
+    /// Moves `dragged` to `target`'s slot in the saved order (seeded from the full device list).
+    private func moveDevice(_ dragged: String, to target: String) {
+        var order = DeviceLayoutPrefs.decodeOrder(orderRaw)
+        for id in store.devices.map(\.id) where !order.contains(id) { order.append(id) }
+        guard let from = order.firstIndex(of: dragged), let to = order.firstIndex(of: target) else { return }
+        order.remove(at: from)
+        order.insert(dragged, at: to)
+        orderRaw = DeviceLayoutPrefs.encodeOrder(order)
+    }
+
+    private func cycleSize(_ device: SmartDevice) {
+        let next: TileSize
+        switch tileSize(device) {
+        case .half: next = .full
+        case .full: next = .panel
+        case .panel, .auto: next = .half
+        }
+        var sizes = DeviceLayoutPrefs.decode(tileSizesRaw)
+        sizes[device.id] = next
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            tileSizesRaw = DeviceLayoutPrefs.encode(sizes)
+        }
+    }
+
+    private var doneEditingButton: some View {
+        Button {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                isEditingLayout = false
+                draggingId = nil
+            }
+        } label: {
+            Text(L10n.tr("完成", "Done")).font(.system(size: 12, weight: .semibold))
+        }
+        .buttonStyle(PillActionButtonStyle(isSelected: true))
+        .keyboardShortcut(.defaultAction)
+    }
+
     private func usesClimatePanel(_ device: SmartDevice) -> Bool {
         tileSize(device) != .half
     }
@@ -216,7 +275,7 @@ public struct ControlCenterPanel: View {
         showRoomBadge: Bool,
         quickIndexMap: [String: Int]
     ) -> some View {
-        let rows = buildRows(from: devices)
+        let rows = buildRows(from: DeviceLayoutPrefs.apply(order: DeviceLayoutPrefs.decodeOrder(orderRaw), to: devices))
         VStack(spacing: 7) {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                 Group {
@@ -229,6 +288,7 @@ public struct ControlCenterPanel: View {
                         isCompactTile: false,
                         quickIndex: quickIndexMap[dev.id]
                     )
+                    .modifier(editable(dev))
                 case .bento(let items):
                     GeometryReader { geo in
                         let unit = (geo.size.width - 14) / 3
@@ -242,6 +302,7 @@ public struct ControlCenterPanel: View {
                                     quickIndex: quickIndexMap[dev.id],
                                     isBentoTile: true
                                 )
+                                .modifier(editable(dev))
                                 .frame(width: unit * CGFloat(span) + 7 * CGFloat(span - 1))
                             }
                         }
@@ -256,6 +317,7 @@ public struct ControlCenterPanel: View {
                             isCompactTile: true,
                             quickIndex: quickIndexMap[left.id]
                         )
+                        .modifier(editable(left))
                         .frame(maxWidth: .infinity)
 
                         if let right {
@@ -266,6 +328,7 @@ public struct ControlCenterPanel: View {
                                 isCompactTile: true,
                                 quickIndex: quickIndexMap[right.id]
                             )
+                            .modifier(editable(right))
                             .frame(maxWidth: .infinity)
                         } else {
                             Color.clear
@@ -353,7 +416,10 @@ public struct ControlCenterPanel: View {
                 .buttonStyle(.plain)
                 .help(L10n.tr("AI 指令：用一句话控制设备（快捷键 /）", "AI command: control devices with natural language (shortcut /)"))
 
-                if store.activeDeviceCount > 0 && !skin.isClassic {
+                if isEditingLayout {
+                    doneEditingButton
+                        .transition(.scale(scale: 0.8).combined(with: .opacity))
+                } else if store.activeDeviceCount > 0 && !skin.isClassic {
                     HoldToConfirmButton(
                         title: L10n.tr("全关", "All Off"),
                         count: store.activeDeviceCount,
@@ -460,6 +526,9 @@ public struct ControlCenterPanel: View {
     }
 
     private var statusSummaryText: String {
+        if isEditingLayout {
+            return L10n.tr("拖动卡片排序 · 点角标改大小", "Drag to reorder · tap badge to resize")
+        }
         if store.activeDeviceCount > 0 {
             return L10n.tr(
                 "\(store.activeDeviceCount) 台设备开启中 · 共 \(store.onlineDeviceCount) 台在线",

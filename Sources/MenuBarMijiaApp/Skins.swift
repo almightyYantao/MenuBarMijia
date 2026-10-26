@@ -325,12 +325,13 @@ struct SkinTileSurface: ViewModifier {
 /// Fades and lifts a tile in with a per-index delay; re-runs whenever `trigger` changes identity upstream.
 struct StaggerIn: ViewModifier {
     @Environment(\.appSkin) private var skin
+    @Environment(\.isEditingLayout) private var editing
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let index: Int
     @State private var shown = false
 
     func body(content: Content) -> some View {
-        if skin.isClassic || reduceMotion {
+        if skin.isClassic || reduceMotion || editing {
             content
         } else {
             content

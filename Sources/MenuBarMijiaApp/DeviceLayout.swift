@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import MijiaCore
 
 /// Per-device card size picked from the card's context menu.
@@ -47,5 +48,156 @@ public enum DeviceLayoutPrefs {
         guard size == .auto else { return size }
         if case .climate = device.kind, climatePanel { return .full }
         return compactGrid ? .half : .full
+    }
+}
+
+// MARK: - Custom Order
+
+extension DeviceLayoutPrefs {
+    public static let orderKey = "device_custom_order"
+
+    public static func decodeOrder(_ raw: String) -> [String] {
+        guard let data = raw.data(using: .utf8),
+              let ids = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return ids
+    }
+
+    public static func encodeOrder(_ ids: [String]) -> String {
+        guard let data = try? JSONEncoder().encode(ids) else { return "[]" }
+        return String(data: data, encoding: .utf8) ?? "[]"
+    }
+
+    /// Sorts by the saved order; devices not in it keep their incoming order after the known ones.
+    public static func apply(order: [String], to devices: [SmartDevice]) -> [SmartDevice] {
+        guard !order.isEmpty else { return devices }
+        let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        return devices.enumerated().sorted { a, b in
+            let ra = rank[a.element.id] ?? (order.count + a.offset)
+            let rb = rank[b.element.id] ?? (order.count + b.offset)
+            return ra < rb
+        }.map(\.element)
+    }
+}
+
+// MARK: - Edit Mode (long-press → jiggle, drag to reorder, tap badge to resize)
+
+private struct LayoutEditingKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    public var isEditingLayout: Bool {
+        get { self[LayoutEditingKey.self] }
+        set { self[LayoutEditingKey.self] = newValue }
+    }
+}
+
+/// Wraps one device card: long-press enters edit mode; while editing the card jiggles, can be
+/// dragged onto another card to reorder, and shows a size badge that cycles half → full → panel.
+struct LayoutEditable: ViewModifier {
+    @Environment(\.isEditingLayout) private var editing
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.appSkin) private var skin
+
+    let deviceId: String
+    let size: TileSize
+    @Binding var draggingId: String?
+    let onEnterEditing: () -> Void
+    let onMove: (_ dragged: String, _ target: String) -> Void
+    let onCycleSize: () -> Void
+
+    @State private var wiggle = false
+    // Alternating phase so neighbouring cards do not swing in sync.
+    private var phase: Double { Double(abs(deviceId.hashValue % 7)) * 0.03 }
+
+    func body(content: Content) -> some View {
+        content
+            .allowsHitTesting(!editing)
+            .rotationEffect(.degrees(editing && !reduceMotion ? (wiggle ? 1.1 : -1.1) : 0))
+            .scaleEffect(draggingId == deviceId ? 1.04 : 1)
+            .opacity(draggingId == deviceId ? 0.55 : 1)
+            .overlay {
+                if editing {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onDrag {
+                            draggingId = deviceId
+                            return NSItemProvider(object: deviceId as NSString)
+                        }
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if editing {
+                    Button(action: onCycleSize) {
+                        Image(systemName: size.symbol)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(skin.isClassic ? Color.white : skin.palette.onAccent)
+                            .frame(width: 20, height: 20)
+                            .background(Circle().fill(skin.isClassic ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(skin.palette.accentGradient)))
+                            .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                    }
+                    .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.85))
+                    .help(L10n.tr("切换卡片大小：\(size.title)", "Card size: \(size.title)"))
+                    .offset(x: 5, y: -5)
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .onDrop(of: [.text], delegate: ReorderDropDelegate(targetId: deviceId, draggingId: $draggingId, onMove: onMove))
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                    guard !editing else { return }
+                    NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+                    onEnterEditing()
+                }
+            )
+            .onChange(of: editing) { _, on in startWiggle(on) }
+            .onAppear { startWiggle(editing) }
+    }
+
+    private func startWiggle(_ on: Bool) {
+        guard on, !reduceMotion else {
+            withAnimation(.easeOut(duration: 0.15)) { wiggle = false }
+            return
+        }
+        wiggle = false
+        withAnimation(.easeInOut(duration: 0.13).repeatForever(autoreverses: true).delay(phase)) {
+            wiggle = true
+        }
+    }
+}
+
+struct ReorderDropDelegate: DropDelegate {
+    let targetId: String
+    @Binding var draggingId: String?
+    let onMove: (String, String) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let dragged = draggingId, dragged != targetId else { return }
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+            onMove(dragged, targetId)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggingId = nil
+        return true
+    }
+}
+
+extension View {
+    func layoutEditable(
+        deviceId: String,
+        size: TileSize,
+        draggingId: Binding<String?>,
+        onEnterEditing: @escaping () -> Void,
+        onMove: @escaping (String, String) -> Void,
+        onCycleSize: @escaping () -> Void
+    ) -> some View {
+        modifier(LayoutEditable(
+            deviceId: deviceId, size: size, draggingId: draggingId,
+            onEnterEditing: onEnterEditing, onMove: onMove, onCycleSize: onCycleSize
+        ))
     }
 }
