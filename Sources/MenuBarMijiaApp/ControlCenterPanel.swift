@@ -301,12 +301,18 @@ public struct ControlCenterPanel: View {
                 )
                 .frame(height: bento && span < 6 ? 92 : nil)
                 .frame(maxHeight: .infinity, alignment: .top)
+                .modifier(editable(dev))
+                // Measured outside the jiggle/drag effects: those transforms would otherwise change the
+                // reported frame every animation frame and re-layout the whole panel continuously.
                 .background {
                     GeometryReader { geo in
-                        Color.clear.preference(key: TileFramesKey.self, value: [dev.id: geo.frame(in: .named(TileSpace.name))])
+                        let f = geo.frame(in: .named(TileSpace.name))
+                        Color.clear.preference(
+                            key: TileFramesKey.self,
+                            value: [dev.id: CGRect(x: f.minX.rounded(), y: f.minY.rounded(), width: f.width.rounded(), height: f.height.rounded())]
+                        )
                     }
                 }
-                .modifier(editable(dev))
                 .staggerIn(index)
                 .layoutValue(key: TileSpanKey.self, value: span)
             }
