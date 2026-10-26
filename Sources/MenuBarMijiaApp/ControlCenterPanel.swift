@@ -21,6 +21,14 @@ public struct ControlCenterPanel: View {
     @State private var lastSwapAt: Date = .distantPast
     @State private var pressTask: Task<Void, Never>?
     @State private var pressCancelled = false
+    @AppStorage(GroupPrefs.groupsKey) private var groupsRaw: String = "[]"
+    @AppStorage(GroupPrefs.mapKey) private var groupMapRaw: String = "{}"
+    @AppStorage(GroupPrefs.collapsedKey) private var collapsedRaw: String = "[]"
+    @State private var liveGroupMap: [String: String]?
+    @State private var layoutUI = LayoutUIState.shared
+
+    /// Card sizes are remembered per page: a room id, or "all" for the overview.
+    private var layoutScope: String { store.selectedRoomId ?? "all" }
     @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
     @Namespace private var roomPillNamespace
     public let store: HomeStore
@@ -51,7 +59,19 @@ public struct ControlCenterPanel: View {
             }
 
             overlayNotifications
+
+            groupPromptOverlay
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        // Keep the in-memory mirrors in step with edits made elsewhere (card context menus).
+        .onChange(of: groupMapRaw) { _, raw in
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { liveGroupMap = GroupPrefs.map(raw) }
+        }
+        .onChange(of: tileSizesRaw) { _, raw in
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { liveSizes = DeviceLayoutPrefs.decode(raw) }
+        }
+        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.newGroupForDevice)
+        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingGroupId)
         .frame(width: skin.isClassic ? 356 : 376, height: (PanelHeight(rawValue: panelHeightRaw) ?? .standard).points)
         .environment(\.isEditingLayout, isEditingLayout)
         .skinRoot(skin)
@@ -98,35 +118,23 @@ public struct ControlCenterPanel: View {
                 VStack(alignment: .leading, spacing: 11) {
                     if store.filteredDevices.isEmpty {
                         emptyStateView
-                    } else if store.selectedRoomId == nil {
-                        if !store.favoriteDevices.isEmpty {
-                            sectionHeader(L10n.tr("常用控制", "Favorites"), count: store.favoriteDevices.count)
-                            deviceCollectionView(
-                                devices: store.favoriteDevices,
-                                showRoomBadge: true,
-                                quickIndexMap: quickIndexMap
-                            )
-                        }
-
-                        if !store.nonFavoriteDevices.isEmpty {
-                            sectionHeader(
-                                store.favoriteDevices.isEmpty
-                                    ? L10n.tr("全屋设备", "All Devices")
-                                    : L10n.tr("更多设备", "More Devices"),
-                                count: store.nonFavoriteDevices.count
-                            )
-                            deviceCollectionView(
-                                devices: store.nonFavoriteDevices,
-                                showRoomBadge: true,
-                                quickIndexMap: quickIndexMap
-                            )
-                        }
                     } else {
-                        deviceCollectionView(
-                            devices: store.filteredDevices,
-                            showRoomBadge: false,
-                            quickIndexMap: quickIndexMap
-                        )
+                        ForEach(pageSections) { section in
+                            if section.title != nil {
+                                groupHeader(section)
+                            }
+                            if !collapsedGroups.contains(section.id) {
+                                deviceCollectionView(
+                                    devices: section.devices,
+                                    showRoomBadge: store.selectedRoomId == nil,
+                                    quickIndexMap: quickIndexMap
+                                )
+                                .transition(.asymmetric(
+                                    insertion: .opacity.combined(with: .offset(y: -8)),
+                                    removal: .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
+                                ))
+                            }
+                        }
                     }
                 }
                 .coordinateSpace(name: TileSpace.name)
@@ -162,6 +170,198 @@ public struct ControlCenterPanel: View {
             dragOffset: dragOffset(for: device.id),
             onCycleSize: { cycleSize(device) }
         )
+    }
+
+    // MARK: - Page Sections (favorites, custom groups, ungrouped)
+
+    private struct PageSection: Identifiable {
+        let id: String
+        let title: String?
+        let devices: [SmartDevice]
+        /// Custom group id when the section is a user group (enables rename / reorder / delete).
+        let groupId: String?
+    }
+
+    private var groups: [DeviceGroup] { GroupPrefs.groups(groupsRaw) }
+    private var groupMap: [String: String] { liveGroupMap ?? GroupPrefs.map(groupMapRaw) }
+    private var collapsedGroups: Set<String> { GroupPrefs.set(collapsedRaw) }
+
+    /// "All": 常用 first, then each custom group, then the rest. A room: custom groups then 其他;
+    /// without any group in the room it is one untitled section, as before.
+    private var pageSections: [PageSection] {
+        let known = Set(groups.map(\.id))
+        let map = groupMap.filter { known.contains($0.value) }
+        var sections: [PageSection] = []
+        let pool: [SmartDevice]
+        if store.selectedRoomId == nil {
+            if !store.favoriteDevices.isEmpty {
+                sections.append(PageSection(id: "fav", title: L10n.tr("常用控制", "Favorites"), devices: store.favoriteDevices, groupId: nil))
+            }
+            pool = store.nonFavoriteDevices
+        } else {
+            pool = store.filteredDevices
+        }
+        for group in groups {
+            let members = pool.filter { map[$0.id] == group.id }
+            if !members.isEmpty {
+                sections.append(PageSection(id: group.id, title: group.name, devices: members, groupId: group.id))
+            }
+        }
+        let rest = pool.filter { map[$0.id] == nil }
+        if !rest.isEmpty {
+            let titled = !sections.isEmpty
+            let title: String? = store.selectedRoomId == nil
+                ? (sections.isEmpty ? L10n.tr("全屋设备", "All Devices") : L10n.tr("更多设备", "More Devices"))
+                : (titled ? L10n.tr("其他", "Other") : nil)
+            sections.append(PageSection(id: "rest", title: title, devices: rest, groupId: nil))
+        }
+        return sections
+    }
+
+    /// Section key used to detect a drag into a different section.
+    private func sectionKey(of id: String) -> String {
+        if store.selectedRoomId == nil, store.favoriteDeviceIds.contains(id) { return "fav" }
+        let known = Set(groups.map(\.id))
+        if let g = groupMap[id], known.contains(g) { return g }
+        return "rest"
+    }
+
+    /// Files `dragged` into `target`'s section (favorites and/or custom group).
+    private func adoptSection(of target: String, for dragged: String) {
+        let from = sectionKey(of: dragged), to = sectionKey(of: target)
+        guard from != to else { return }
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+            if store.selectedRoomId == nil, (from == "fav") != (to == "fav") {
+                store.toggleFavorite(dragged)
+            }
+            if to != "fav" {
+                var map = groupMap
+                map[dragged] = to == "rest" ? nil : to
+                liveGroupMap = map
+                groupMapRaw = GroupPrefs.encode(map)
+            }
+        }
+    }
+
+    @State private var hoveredHeader: String?
+
+    private func groupHeader(_ section: PageSection) -> some View {
+        let collapsed = collapsedGroups.contains(section.id)
+        let accent = skin.isClassic ? Color.accentColor : skin.palette.accent
+        return Button {
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                var set = collapsedGroups
+                if collapsed { set.remove(section.id) } else { set.insert(section.id) }
+                collapsedRaw = GroupPrefs.encode(set)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .rotationEffect(.degrees(collapsed ? -90 : 0))
+                    .foregroundStyle(hoveredHeader == section.id ? accent : Color.secondary)
+                Text(section.title ?? "")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(hoveredHeader == section.id ? accent : Color.secondary)
+                Text("\(section.devices.count)")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .contentTransition(.numericText(value: Double(section.devices.count)))
+                    .foregroundStyle(.secondary.opacity(0.8))
+                if section.groupId != nil {
+                    Capsule(style: .continuous)
+                        .fill(accent.opacity(hoveredHeader == section.id ? 0.35 : 0.18))
+                        .frame(height: 1)
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 3)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hoveredHeader = $0 ? section.id : (hoveredHeader == section.id ? nil : hoveredHeader) }
+        .animation(.easeOut(duration: 0.15), value: hoveredHeader)
+        .contextMenu {
+            if let gid = section.groupId {
+                Button { layoutUI.renamingGroupId = gid } label: { Label(L10n.tr("重命名", "Rename"), systemImage: "pencil") }
+                Button { moveGroup(gid, by: -1) } label: { Label(L10n.tr("上移分组", "Move Up"), systemImage: "arrow.up") }
+                Button { moveGroup(gid, by: 1) } label: { Label(L10n.tr("下移分组", "Move Down"), systemImage: "arrow.down") }
+                Divider()
+                Button(role: .destructive) { deleteGroup(gid) } label: { Label(L10n.tr("删除分组", "Delete Group"), systemImage: "trash") }
+            }
+        }
+        .padding(.bottom, -3)
+    }
+
+    private func moveGroup(_ id: String, by delta: Int) {
+        var list = groups
+        guard let i = list.firstIndex(where: { $0.id == id }) else { return }
+        let j = i + delta
+        guard list.indices.contains(j) else { return }
+        list.swapAt(i, j)
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { groupsRaw = GroupPrefs.encode(list) }
+    }
+
+    private func deleteGroup(_ id: String) {
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            groupsRaw = GroupPrefs.encode(groups.filter { $0.id != id })
+            let map = groupMap.filter { $0.value != id }
+            liveGroupMap = map
+            groupMapRaw = GroupPrefs.encode(map)
+        }
+    }
+
+    /// Name prompt overlay for creating (and filing a device into) or renaming a group.
+    @ViewBuilder
+    private var groupPromptOverlay: some View {
+        if let deviceId = layoutUI.newGroupForDevice {
+            promptBackdrop {
+                GroupNamePrompt(title: L10n.tr("新建分组", "New Group"), name: "") { name in
+                    let group = DeviceGroup(id: UUID().uuidString, name: name)
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                        groupsRaw = GroupPrefs.encode(groups + [group])
+                        var map = groupMap
+                        map[deviceId] = group.id
+                        liveGroupMap = map
+                        groupMapRaw = GroupPrefs.encode(map)
+                        layoutUI.newGroupForDevice = nil
+                    }
+                } onCancel: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layoutUI.newGroupForDevice = nil }
+                }
+            }
+        } else if let gid = layoutUI.renamingGroupId, let group = groups.first(where: { $0.id == gid }) {
+            promptBackdrop {
+                GroupNamePrompt(title: L10n.tr("重命名分组", "Rename Group"), name: group.name) { name in
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                        groupsRaw = GroupPrefs.encode(groups.map { $0.id == gid ? DeviceGroup(id: gid, name: name) : $0 })
+                        layoutUI.renamingGroupId = nil
+                    }
+                } onCancel: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layoutUI.renamingGroupId = nil }
+                }
+            }
+        }
+    }
+
+    private func promptBackdrop<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .overlay(Color.black.opacity(0.18))
+                .ignoresSafeArea()
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        layoutUI.newGroupForDevice = nil
+                        layoutUI.renamingGroupId = nil
+                    }
+                }
+                .transition(.opacity)
+            content()
+                .transition(.scale(scale: 0.88).combined(with: .opacity))
+        }
     }
 
     // MARK: - Container Drag (survives card reordering)
@@ -254,13 +454,8 @@ public struct ControlCenterPanel: View {
         guard slot != lastSwapTarget else { return }
         lastSwapTarget = slot
         lastSwapAt = Date()
-        // In the "All" view, dropping onto the other section moves the card into it.
-        if store.selectedRoomId == nil,
-           store.favoriteDeviceIds.contains(target) != store.favoriteDeviceIds.contains(dragged) {
-            withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
-                store.toggleFavorite(dragged)
-            }
-        }
+        // Dropping onto a card in another section (常用 / a group / ungrouped) moves the card into it.
+        adoptSection(of: target, for: dragged)
         moveDevice(dragged, relativeTo: target, after: after)
     }
 
@@ -293,7 +488,7 @@ public struct ControlCenterPanel: View {
         case .panel, .auto: next = .half
         }
         var sizes = liveSizes ?? DeviceLayoutPrefs.decode(tileSizesRaw)
-        sizes[device.id] = next
+        sizes[DeviceLayoutPrefs.scopedKey(id: device.id, scope: layoutScope)] = next
         withAnimation(.spring(response: 0.38, dampingFraction: 0.8)) { liveSizes = sizes }
         tileSizesRaw = DeviceLayoutPrefs.encode(sizes)
     }
@@ -318,7 +513,8 @@ public struct ControlCenterPanel: View {
     /// The device's card size with `.auto` resolved; full and panel sizes take a whole row.
     private func tileSize(_ device: SmartDevice) -> TileSize {
         DeviceLayoutPrefs.resolved(
-            liveSizes?[device.id] ?? DeviceLayoutPrefs.cachedSize(raw: tileSizesRaw, id: device.id),
+            liveSizes.map { DeviceLayoutPrefs.lookup($0, id: device.id, scope: layoutScope) }
+                ?? DeviceLayoutPrefs.cachedSize(raw: tileSizesRaw, id: device.id, scope: layoutScope),
             device: device,
             compactGrid: store.isCompactGridMode,
             climatePanel: climatePanelModule

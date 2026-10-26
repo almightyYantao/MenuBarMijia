@@ -7,6 +7,8 @@ public struct DeviceCardView: View {
     @Environment(\.isEditingLayout) private var isEditingLayout
     @AppStorage(AppSkin.climatePanelKey) private var climatePanelModule: Bool = true
     @AppStorage(DeviceLayoutPrefs.storageKey) private var tileSizesRaw: String = "{}"
+    @AppStorage(GroupPrefs.groupsKey) private var groupsRaw: String = "[]"
+    @AppStorage(GroupPrefs.mapKey) private var groupMapRaw: String = "{}"
 
     public let device: SmartDevice
     public let store: HomeStore
@@ -36,7 +38,9 @@ public struct DeviceCardView: View {
         self.quickIndex = quickIndex
     }
 
-    private var chosenSize: TileSize { DeviceLayoutPrefs.cachedSize(raw: tileSizesRaw, id: device.id) }
+    private var layoutScope: String { store.selectedRoomId ?? "all" }
+
+    private var chosenSize: TileSize { DeviceLayoutPrefs.cachedSize(raw: tileSizesRaw, id: device.id, scope: layoutScope) }
 
     private var resolvedSize: TileSize {
         DeviceLayoutPrefs.resolved(chosenSize, device: device, compactGrid: store.isCompactGridMode, climatePanel: climatePanelModule)
@@ -44,8 +48,14 @@ public struct DeviceCardView: View {
 
     private func setSize(_ size: TileSize) {
         var sizes = DeviceLayoutPrefs.decode(tileSizesRaw)
-        sizes[device.id] = size
+        sizes[DeviceLayoutPrefs.scopedKey(id: device.id, scope: layoutScope)] = size
         withAnimation(AppleMotion.snappySpring) { tileSizesRaw = DeviceLayoutPrefs.encode(sizes) }
+    }
+
+    private func assignGroup(_ groupId: String?) {
+        var map = GroupPrefs.map(groupMapRaw)
+        map[device.id] = groupId
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { groupMapRaw = GroupPrefs.encode(map) }
     }
 
     private var isExpanded: Bool {
@@ -199,7 +209,34 @@ public struct DeviceCardView: View {
                     }
                 }
             } label: {
-                Label(L10n.tr("卡片大小", "Card Size"), systemImage: "square.resize")
+                Label(L10n.tr("卡片大小（本页）", "Card Size (this page)"), systemImage: "square.resize")
+            }
+
+            Menu {
+                let groups = GroupPrefs.groups(groupsRaw)
+                let current = GroupPrefs.map(groupMapRaw)[device.id]
+                ForEach(groups) { group in
+                    Button {
+                        assignGroup(group.id)
+                    } label: {
+                        Label(group.name, systemImage: current == group.id ? "checkmark" : "folder")
+                    }
+                }
+                if current != nil {
+                    Button {
+                        assignGroup(nil)
+                    } label: {
+                        Label(L10n.tr("不分组", "No Group"), systemImage: "tray")
+                    }
+                }
+                if !groups.isEmpty { Divider() }
+                Button {
+                    LayoutUIState.shared.newGroupForDevice = device.id
+                } label: {
+                    Label(L10n.tr("新建分组…", "New Group…"), systemImage: "folder.badge.plus")
+                }
+            } label: {
+                Label(L10n.tr("移到分组", "Move to Group"), systemImage: "folder")
             }
 
             Divider()

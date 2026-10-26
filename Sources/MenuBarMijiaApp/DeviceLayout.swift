@@ -38,7 +38,8 @@ public enum DeviceLayoutPrefs {
     }
 
     public static func encode(_ sizes: [String: TileSize]) -> String {
-        let dict = sizes.filter { $0.value != .auto }.mapValues(\.rawValue)
+        // A page-scoped "auto" is kept: it overrides a non-auto default set for every page.
+        let dict = sizes.filter { $0.value != .auto || $0.key.contains("|") }.mapValues(\.rawValue)
         guard let data = try? JSONEncoder().encode(dict) else { return "{}" }
         return String(data: data, encoding: .utf8) ?? "{}"
     }
@@ -46,11 +47,18 @@ public enum DeviceLayoutPrefs {
     /// Memoised decode: cards read their size on every render, the JSON only changes on edits.
     @MainActor private static var cache: (raw: String, sizes: [String: TileSize]) = ("", [:])
 
+    /// Size for a device on one page (`scope` = room id or "all"); falls back to the all-pages default.
     @MainActor
-    public static func cachedSize(raw: String, id: String) -> TileSize {
+    public static func cachedSize(raw: String, id: String, scope: String) -> TileSize {
         if cache.raw != raw { cache = (raw, decode(raw)) }
-        return cache.sizes[id] ?? .auto
+        return lookup(cache.sizes, id: id, scope: scope)
     }
+
+    public static func lookup(_ sizes: [String: TileSize], id: String, scope: String) -> TileSize {
+        sizes[scopedKey(id: id, scope: scope)] ?? sizes[id] ?? .auto
+    }
+
+    public static func scopedKey(id: String, scope: String) -> String { "\(scope)|\(id)" }
 
     /// Resolves `.auto` into a concrete size for the current grid mode and climate setting.
     public static func resolved(_ size: TileSize, device: SmartDevice, compactGrid: Bool, climatePanel: Bool) -> TileSize {
@@ -229,5 +237,107 @@ struct TileFlowLayout: Layout {
             }
             y += row.height + spacing
         }
+    }
+}
+
+
+// MARK: - Custom Groups
+
+/// A user-named section ("灯光", "电器") that cards can be filed under on every page.
+public struct DeviceGroup: Codable, Identifiable, Equatable, Sendable {
+    public var id: String
+    public var name: String
+}
+
+public enum GroupPrefs {
+    public static let groupsKey = "device_groups"
+    public static let mapKey = "device_group_map"
+    public static let collapsedKey = "device_groups_collapsed"
+
+    public static func groups(_ raw: String) -> [DeviceGroup] {
+        (try? JSONDecoder().decode([DeviceGroup].self, from: Data(raw.utf8))) ?? []
+    }
+
+    public static func encode(_ groups: [DeviceGroup]) -> String {
+        (try? String(data: JSONEncoder().encode(groups), encoding: .utf8)) ?? "[]"
+    }
+
+    public static func map(_ raw: String) -> [String: String] {
+        (try? JSONDecoder().decode([String: String].self, from: Data(raw.utf8))) ?? [:]
+    }
+
+    public static func encode(_ map: [String: String]) -> String {
+        (try? String(data: JSONEncoder().encode(map), encoding: .utf8)) ?? "{}"
+    }
+
+    public static func set(_ raw: String) -> Set<String> {
+        Set((try? JSONDecoder().decode([String].self, from: Data(raw.utf8))) ?? [])
+    }
+
+    public static func encode(_ set: Set<String>) -> String {
+        (try? String(data: JSONEncoder().encode(set.sorted()), encoding: .utf8)) ?? "[]"
+    }
+}
+
+/// Panel-wide UI requests raised from deep inside cards (context menus cannot host text input).
+@MainActor
+@Observable
+final class LayoutUIState {
+    static let shared = LayoutUIState()
+    /// Non-nil while the "new group" name prompt is open; holds the device to file into it.
+    var newGroupForDevice: String?
+    /// Non-nil while renaming that group.
+    var renamingGroupId: String?
+}
+
+/// Inline name prompt shown over the panel for creating or renaming a group.
+struct GroupNamePrompt: View {
+    @Environment(\.appSkin) private var skin
+    let title: String
+    @State var name: String
+    let onSave: (String) -> Void
+    let onCancel: () -> Void
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        let p = skin.palette
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.system(size: 13, weight: .semibold))
+            TextField(L10n.tr("例如：灯光、电器、环境", "e.g. Lights, Appliances"), text: $name)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .adaptiveGlass(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .focused($focused)
+                .onSubmit(save)
+            HStack {
+                Spacer()
+                Button(L10n.tr("取消", "Cancel"), action: onCancel)
+                    .buttonStyle(PillActionButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+                Button(L10n.tr("保存", "Save"), action: save)
+                    .buttonStyle(PillActionButtonStyle(isSelected: true))
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(14)
+        .frame(width: 280)
+        .background {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(skin.isClassic ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(p.background.first ?? .white))
+                .shadow(color: .black.opacity(0.3), radius: 20, y: 8)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(skin.isClassic ? Color.primary.opacity(0.1) : p.line, lineWidth: 1)
+        }
+        .onAppear { focused = true }
+    }
+
+    private func save() {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        onSave(trimmed)
     }
 }
