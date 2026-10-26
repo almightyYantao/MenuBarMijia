@@ -227,7 +227,9 @@ struct ClimatePanelModule: View {
                         .buttonStyle(PillActionButtonStyle(isSelected: option == current, tintColor: skin.isClassic ? modeColor : .accentColor))
                     }
                 }
+                .padding(6)
             }
+            .padding(-6)
         }
     }
 

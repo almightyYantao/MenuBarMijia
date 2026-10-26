@@ -479,8 +479,13 @@ public struct ControlCenterPanel: View {
                         }
                     }
                     .padding(.trailing, 10)
+                    // Room for the selected pill's glow, which the scroll view would otherwise clip.
+                    .padding(.leading, 6)
+                    .padding(.vertical, 6)
                 }
             }
+            .padding(.leading, -6)
+            .padding(.vertical, -6)
             .mask(
                 LinearGradient(
                     stops: [
