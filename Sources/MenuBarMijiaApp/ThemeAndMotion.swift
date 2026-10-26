@@ -103,8 +103,8 @@ public struct PillActionButtonStyle: ButtonStyle {
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    tintColor.opacity(0.92),
-                                    tintColor.opacity(0.78)
+                                    tintColor.opacity(0.95),
+                                    tintColor.opacity(0.82)
                                 ],
                                 startPoint: .top,
                                 endPoint: .bottom
@@ -112,10 +112,14 @@ public struct PillActionButtonStyle: ButtonStyle {
                         )
                 }
             }
-            .adaptiveGlass(
-                in: capsule,
-                tint: isSelected ? tintColor.opacity(0.50) : nil,
-                interactive: true
+            .modifier(
+                SkinChipSurface(
+                    shape: capsule,
+                    tint: nil,
+                    interactive: true,
+                    clear: false,
+                    isHidden: isSelected
+                )
             )
             .overlay {
                 capsule
@@ -240,24 +244,28 @@ public struct GlassTileBackground: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
             .background {
-                if isActive {
-                    shape
-                        .fill(
+                ZStack {
+                    shape.fill(.ultraThinMaterial)
+                    if isActive {
+                        shape.fill(
                             LinearGradient(
                                 colors: [
-                                    accent.opacity(colorScheme == .dark ? 0.22 : 0.15),
-                                    accent.opacity(colorScheme == .dark ? 0.10 : 0.06)
+                                    accent.opacity(colorScheme == .dark ? 0.26 : 0.20),
+                                    accent.opacity(colorScheme == .dark ? 0.14 : 0.10)
                                 ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             )
                         )
+                    } else {
+                        shape.fill(
+                            colorScheme == .dark
+                                ? Color.white.opacity(0.06)
+                                : Color.white.opacity(0.48)
+                        )
+                    }
                 }
             }
-            .adaptiveGlass(
-                in: shape,
-                tint: isActive ? accent.opacity(colorScheme == .dark ? 0.24 : 0.14) : nil
-            )
             .overlay {
                 shape
                     .strokeBorder(
@@ -265,10 +273,10 @@ public struct GlassTileBackground: ViewModifier {
                             colors: [
                                 isActive
                                     ? accent.opacity(colorScheme == .dark ? 0.52 : 0.42)
-                                    : Color.white.opacity(colorScheme == .dark ? 0.22 : 0.55),
+                                    : Color.white.opacity(colorScheme == .dark ? 0.22 : 0.65),
                                 isActive
-                                    ? accent.opacity(0.14)
-                                    : Color.primary.opacity(0.06)
+                                    ? accent.opacity(0.16)
+                                    : Color.primary.opacity(0.08)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
@@ -289,6 +297,7 @@ public struct GlassTileBackground: ViewModifier {
 
 /// The original adaptive glass behaviour, kept verbatim for the classic skin.
 struct ClassicGlass<S: Shape>: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
     let shape: S
     let tint: Color?
     let interactive: Bool
@@ -300,24 +309,31 @@ struct ClassicGlass<S: Shape>: ViewModifier {
             content
                 .background { shape.fill(.white.opacity(0.14)); if let tint { shape.fill(tint) } }
                 .overlay { shape.stroke(.white.opacity(0.28), lineWidth: 0.8) }
-        } else if #available(macOS 26.0, *) {
-            if clear {
-                content.glassEffect(interactive ? .clear.interactive() : .clear, in: shape)
-            } else if let tint {
-                content.glassEffect(interactive ? .regular.tint(tint).interactive() : .regular.tint(tint), in: shape)
-            } else {
-                content.glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
-            }
         } else {
-            content.background {
-                if clear {
-                    shape.fill(.thinMaterial)
-                } else if let tint {
-                    shape.fill(.ultraThinMaterial).overlay(shape.fill(tint))
-                } else {
-                    shape.fill(.ultraThinMaterial)
+            content
+                .background {
+                    if clear {
+                        shape.fill(.thinMaterial)
+                    } else {
+                        ZStack {
+                            shape.fill(.ultraThinMaterial)
+                            shape.fill(
+                                colorScheme == .dark
+                                    ? Color.white.opacity(0.06)
+                                    : Color.white.opacity(0.45)
+                            )
+                            if let tint {
+                                shape.fill(tint)
+                            }
+                        }
+                    }
                 }
-            }
+                .overlay {
+                    shape.stroke(
+                        Color.white.opacity(colorScheme == .dark ? 0.18 : 0.50),
+                        lineWidth: 0.7
+                    )
+                }
         }
     }
 }
@@ -339,7 +355,6 @@ extension View {
 }
 
 public struct AdaptiveGlassContainer<Content: View>: View {
-    @Environment(\.appSkin) private var skin
     public var spacing: CGFloat
     @ViewBuilder public var content: () -> Content
 
@@ -349,13 +364,7 @@ public struct AdaptiveGlassContainer<Content: View>: View {
     }
 
     public var body: some View {
-        if skin.isClassic, #available(macOS 26.0, *) {
-            GlassEffectContainer(spacing: spacing) {
-                content()
-            }
-        } else {
-            content()
-        }
+        content()
     }
 }
 
