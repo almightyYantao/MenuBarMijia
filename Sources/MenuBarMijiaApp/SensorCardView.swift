@@ -20,6 +20,7 @@ struct SensorCardView: View {
         Group {
             if isCompact { compact } else { wide }
         }
+        .frame(minHeight: isCompact ? (skin.isClassic ? 50 : 60) : nil, maxHeight: .infinity)
         .glassTile(isActive: false, accent: .teal, cornerRadius: 14)
         .opacity(device.isOnline ? 1 : 0.58)
     }
@@ -27,10 +28,10 @@ struct SensorCardView: View {
     // MARK: Layouts
 
     private var compact: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 5) {
+        VStack(alignment: .leading, spacing: skin.isClassic ? 2.5 : 3.5) {
+            HStack(spacing: 4) {
                 Image(systemName: "thermometer.medium")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 9.5, weight: .semibold))
                     .foregroundStyle(tempColor)
                 Text(displayName)
                     .font(.system(size: 11, weight: .medium))
@@ -39,20 +40,23 @@ struct SensorCardView: View {
                 Spacer(minLength: 2)
                 comfortChip
             }
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                temperatureText(size: 24)
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                temperatureText(size: skin.isClassic ? 16.5 : 19)
                 if let h = spec.humidity {
-                    Label(String(format: "%.0f%%", h), systemImage: "drop.fill")
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(humidityColor)
-                        .labelStyle(.titleAndIcon)
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        Image(systemName: "drop.fill")
+                            .font(.system(size: 8.5, weight: .semibold))
+                        Text(String(format: "%.0f%%", h))
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                    }
+                    .foregroundStyle(humidityColor)
                 }
             }
             humidityBar
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 10)
+        .padding(.horizontal, !skin.isClassic && skin.palette.capsuleTiles ? 15 : (skin.isClassic ? 9 : 11))
+        .padding(.vertical, skin.isClassic ? 6 : 7.5)
     }
 
     private var wide: some View {
@@ -111,7 +115,7 @@ struct SensorCardView: View {
                     .frame(width: geo.size.width * CGFloat(min(max((spec.humidity ?? 0) / 100, 0), 1)))
             }
         }
-        .frame(height: 4)
+        .frame(height: isCompact ? 3 : 4)
         .animation(.spring(response: 0.5, dampingFraction: 0.8), value: spec.humidity)
     }
 
@@ -147,10 +151,10 @@ struct SensorCardView: View {
     private var comfortChip: some View {
         let c = comfort
         return Text(c.label)
-            .font(.system(size: 9.5, weight: .semibold))
+            .font(.system(size: isCompact ? 9 : 9.5, weight: .semibold))
             .foregroundStyle(c.color)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
+            .padding(.horizontal, isCompact ? 5.5 : 6)
+            .padding(.vertical, isCompact ? 1.5 : 2)
             .background(Capsule(style: .continuous).fill(c.color.opacity(0.14)))
     }
 

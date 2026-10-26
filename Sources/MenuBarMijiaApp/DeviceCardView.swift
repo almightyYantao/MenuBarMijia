@@ -131,8 +131,10 @@ public struct DeviceCardView: View {
                 bentoBody
             } else if isCompactTile {
                 compactHeaderRow
+                    .frame(minHeight: skin.isClassic ? 50 : 60, maxHeight: isExpanded ? nil : .infinity)
             } else {
                 headerRow
+                    .frame(maxHeight: isExpanded ? nil : .infinity)
             }
 
             if isExpanded && device.hasDetailDrawer {
