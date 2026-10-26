@@ -29,7 +29,7 @@ struct HAAddressPolicyTests {
     func pinsUUIDForCurrentAddress() {
         // Nothing remembered and the current address matches a discovered instance: pin its uuid.
         #expect(HAAddressPolicy.uuidToPin(
-            discovered: [Self.home], currentURL: "http://homeassistant.local:8123/", rememberedUUID: nil
+            discovered: [Self.home], currentURL: "http://192.168.1.20:8123/", rememberedUUID: nil
         ) == "abc-123")
         // Already remembered: never overwrite.
         #expect(HAAddressPolicy.uuidToPin(

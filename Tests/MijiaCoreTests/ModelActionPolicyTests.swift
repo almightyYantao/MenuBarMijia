@@ -82,8 +82,7 @@ struct ModelActionPolicyTests {
         let resolver = try Self.systemOneResolver([
             "target": ["choice": "d1"],
             "op": ["choice": "power_on"],
-            "temp": ["choice": "none"],
-            "dev_d4": ["choice": "power_off"]
+            "temp": ["choice": "none"]
         ])
         let plan = try await resolver.resolve("开灯", devices: Self.devices, scenes: Self.scenes)
         #expect(plan.intents.isEmpty)
@@ -102,7 +101,7 @@ struct ModelActionPolicyTests {
         ])
         let plan = try await resolver.resolve("开台灯", devices: Self.devices, scenes: Self.scenes)
         #expect(plan.intents.isEmpty)
-        #expect(plan.suggestions.map(\.id) == ["jev:dev_bedside_lamp:power_on"])
+        #expect(plan.suggestions.map(\.id) == ["jev:dev_bedside:power_on"])
         #expect(plan.suggestions.first?.confidencePercent == nil)
     }
 
