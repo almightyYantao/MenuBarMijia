@@ -113,23 +113,13 @@ struct LayoutEditable: ViewModifier {
     let size: TileSize
     let isDragging: Bool
     let dragOffset: CGSize
-    let onEnterEditing: () -> Void
-    let onDragBegan: (_ id: String, _ start: CGPoint) -> Void
-    let onDragChanged: (_ id: String, _ location: CGPoint) -> Void
-    let onDragEnded: () -> Void
     let onCycleSize: () -> Void
-
-    @State private var dragActive = false
-    @State private var pressTask: Task<Void, Never>?
 
     // Per-card phase so neighbouring cards do not swing in sync.
     private var phase: Double { Double(abs(deviceId.hashValue % 97)) / 97 * .pi * 2 }
 
     func body(content: Content) -> some View {
         jiggling(content.allowsHitTesting(!editing))
-            .overlay {
-                if editing { Color.clear.contentShape(Rectangle()) }
-            }
             .scaleEffect(isDragging ? 1.05 : 1)
             .shadowIf(isDragging, color: .black.opacity(0.3), radius: 12, y: 6)
             .offset(dragOffset)
@@ -150,50 +140,6 @@ struct LayoutEditable: ViewModifier {
                     .transition(.scale.combined(with: .opacity))
                 }
             }
-            .simultaneousGesture(pressAndDrag)
-            .onChange(of: editing) { _, on in
-                if !on { reset() }
-            }
-    }
-
-    /// One gesture for the whole interaction. Swapping gestures when edit mode turned on cancelled
-    /// the in-flight press without an end event, leaving the card stuck "picked up". Holding still
-    /// for 0.45s enters edit mode and picks the card up; the same press then keeps dragging. In edit
-    /// mode a plain drag (> 3pt) picks a card up straight away.
-    private var pressAndDrag: some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .named(TileSpace.name))
-            .onChanged { d in
-                let moved = hypot(d.translation.width, d.translation.height)
-                if editing {
-                    if !dragActive && moved > 3 {
-                        dragActive = true
-                        onDragBegan(deviceId, d.startLocation)
-                    }
-                } else if pressTask == nil && !dragActive {
-                    let start = d.startLocation
-                    pressTask = Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(450))
-                        guard !Task.isCancelled else { return }
-                        NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
-                        onEnterEditing()
-                        dragActive = true
-                        onDragBegan(deviceId, start)
-                    }
-                } else if moved > 8 && !dragActive {
-                    // Moving before the hold completes is an ordinary drag (e.g. dimming), not a pick-up.
-                    pressTask?.cancel()
-                }
-                if dragActive { onDragChanged(deviceId, d.location) }
-            }
-            .onEnded { _ in reset() }
-    }
-
-    private func reset() {
-        pressTask?.cancel()
-        pressTask = nil
-        guard dragActive else { return }
-        dragActive = false
-        onDragEnded()
     }
 
     /// Angle is computed from the clock each frame, so a card rebuilt mid-edit keeps jiggling

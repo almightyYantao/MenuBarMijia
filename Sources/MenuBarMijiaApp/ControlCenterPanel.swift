@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import MijiaCore
 
 public struct ControlCenterPanel: View {
@@ -18,6 +19,8 @@ public struct ControlCenterPanel: View {
     @State private var grabOffset: CGSize = .zero
     @State private var lastSwapTarget: String?
     @State private var lastSwapAt: Date = .distantPast
+    @State private var pressTask: Task<Void, Never>?
+    @State private var pressCancelled = false
     @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
     @Namespace private var roomPillNamespace
     public let store: HomeStore
@@ -127,6 +130,9 @@ public struct ControlCenterPanel: View {
                     }
                 }
                 .coordinateSpace(name: TileSpace.name)
+                // Cards stop hit-testing in edit mode; the container must still catch the press.
+                .contentShape(Rectangle())
+                .simultaneousGesture(tileDragGesture)
                 .onPreferenceChange(TileFramesKey.self) { frames in
                     if frames != tileFrames { tileFrames = frames }
                 }
@@ -154,31 +160,66 @@ public struct ControlCenterPanel: View {
             size: tileSize(device),
             isDragging: draggingId == device.id,
             dragOffset: dragOffset(for: device.id),
-            onEnterEditing: {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                    store.expandedDeviceId = nil
-                    isEditingLayout = true
+            onCycleSize: { cycleSize(device) }
+        )
+    }
+
+    // MARK: - Container Drag (survives card reordering)
+
+    /// Lives on the tile container, not on a card: a card's own gesture is cancelled the moment the
+    /// card moves to a new slot, which froze the drag right after each swap.
+    private var tileDragGesture: some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(TileSpace.name))
+            .onChanged { d in
+                let moved = hypot(d.translation.width, d.translation.height)
+                if draggingId == nil {
+                    if isEditingLayout {
+                        if moved > 3, let id = cardId(at: d.startLocation) { beginDrag(id, at: d.startLocation) }
+                    } else if pressTask == nil, !pressCancelled, let id = cardId(at: d.startLocation) {
+                        let start = d.startLocation
+                        pressTask = Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(450))
+                            guard !Task.isCancelled else { return }
+                            NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                store.expandedDeviceId = nil
+                                isEditingLayout = true
+                            }
+                            beginDrag(id, at: start)
+                        }
+                    } else if moved > 8 {
+                        // Moving before the hold completes is an ordinary drag (e.g. dimming).
+                        pressTask?.cancel()
+                        pressCancelled = true
+                    }
                 }
-            },
-            onDragBegan: { id, start in
-                let origin = tileFrames[id]?.origin ?? start
-                grabOffset = CGSize(width: start.x - origin.x, height: start.y - origin.y)
-                withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) { draggingId = id }
-                dragLocation = start
-            },
-            onDragChanged: { id, location in
-                dragLocation = location
-                swapIfNeeded(dragged: id, at: location)
-            },
-            onDragEnded: {
+                if let id = draggingId {
+                    dragLocation = d.location
+                    swapIfNeeded(dragged: id, at: d.location)
+                }
+            }
+            .onEnded { _ in
+                pressTask?.cancel()
+                pressTask = nil
+                pressCancelled = false
                 lastSwapTarget = nil
+                guard draggingId != nil else { return }
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
                     draggingId = nil
                     dragLocation = nil
                 }
-            },
-            onCycleSize: { cycleSize(device) }
-        )
+            }
+    }
+
+    private func cardId(at point: CGPoint) -> String? {
+        tileFrames.first { $0.value.contains(point) }?.key
+    }
+
+    private func beginDrag(_ id: String, at start: CGPoint) {
+        let origin = tileFrames[id]?.origin ?? start
+        grabOffset = CGSize(width: start.x - origin.x, height: start.y - origin.y)
+        dragLocation = start
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) { draggingId = id }
     }
 
     /// Swaps only when the pointer reaches the middle of another card, never the same card twice in
