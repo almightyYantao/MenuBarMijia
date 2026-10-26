@@ -694,9 +694,10 @@ public struct ModelIntentResolver: Sendable {
                     candidate = (choice, choiceProb)
                 } else {
                     // The model declined the device; only a scored runner-up is worth offering.
-                    candidate = bestNonNoneProbability(in: probs).filter { $0.1 >= ModelActionPolicy.suggestionFloor }
+                    candidate = bestNonNoneProbability(in: probs)
                 }
-                if let (runnerUpChoice, runnerUpProb) = candidate {
+                if let (runnerUpChoice, runnerUpProb) = candidate,
+                   choice != "none" || runnerUpProb >= ModelActionPolicy.suggestionFloor {
                     let ops = IntentValidator.sanitize(
                         systemOneDeviceOperations(for: runnerUpChoice).map { DeviceIntent(targetId: device.id, operation: $0) },
                         devices: devices,
