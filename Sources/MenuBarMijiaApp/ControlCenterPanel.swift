@@ -735,13 +735,19 @@ public struct ControlCenterPanel: View {
                         .frame(width: 26, height: 24)
                         .background {
                             if store.isShowingAssistantBar {
-                                Capsule(style: .continuous).fill(skinAccentFill)
+                                Capsule(style: .continuous)
+                                    .fill(skinAccentFill)
+                                    .shadowIf(!skin.isClassic && (skin.palette.neumorphic || skin.palette.glow), color: skin.palette.accent.opacity(0.32), radius: 4, y: 1.5)
                             }
                         }
-                        .adaptiveGlass(
-                            in: Capsule(style: .continuous),
-                            tint: store.isShowingAssistantBar ? .accentColor.opacity(0.45) : nil,
-                            interactive: true
+                        .modifier(
+                            SkinChipSurface(
+                                shape: Capsule(style: .continuous),
+                                tint: store.isShowingAssistantBar ? .accentColor.opacity(0.45) : nil,
+                                interactive: true,
+                                clear: false,
+                                isHidden: !skin.isClassic && store.isShowingAssistantBar
+                            )
                         )
                 }
                 .buttonStyle(.plain)
@@ -797,7 +803,9 @@ public struct ControlCenterPanel: View {
                             }
                         }
                     }
+                    .padding(6)
                 }
+                .padding(-6)
             }
         }
     }
@@ -866,10 +874,12 @@ public struct ControlCenterPanel: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 4.5)
         .adaptiveGlass(in: capsule)
-        .overlay(
-            capsule
-                .strokeBorder(skin.isClassic ? Color.white.opacity(colorScheme == .dark ? 0.20 : 0.48) : skin.palette.line, lineWidth: 0.7)
-        )
+        .overlay {
+            if skin.isClassic {
+                capsule
+                    .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.20 : 0.48), lineWidth: 0.7)
+            }
+        }
     }
 
     private func environmentChip(_ env: EnvironmentReading) -> some View {
@@ -900,10 +910,12 @@ public struct ControlCenterPanel: View {
         .padding(.horizontal, 9.5)
         .padding(.vertical, 4.5)
         .adaptiveGlass(in: capsule)
-        .overlay(
-            capsule
-                .strokeBorder(skin.isClassic ? Color.white.opacity(colorScheme == .dark ? 0.20 : 0.48) : skin.palette.line, lineWidth: 0.7)
-        )
+        .overlay {
+            if skin.isClassic {
+                capsule
+                    .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.20 : 0.48), lineWidth: 0.7)
+            }
+        }
     }
 
     private var statusSummaryText: String {
@@ -973,7 +985,9 @@ public struct ControlCenterPanel: View {
                     }
                 }
             }
+            .padding(6)
         }
+        .padding(-6)
     }
 
     // MARK: - 2. Room Filter Strip & Grid Toggle
@@ -1075,13 +1089,19 @@ public struct ControlCenterPanel: View {
                             .frame(width: 26, height: 24)
                             .background {
                                 if store.isCompactGridMode {
-                                    Capsule(style: .continuous).fill(skinAccentFill)
+                                    Capsule(style: .continuous)
+                                        .fill(skinAccentFill)
+                                        .shadowIf(!skin.isClassic && (skin.palette.neumorphic || skin.palette.glow), color: skin.palette.accent.opacity(0.32), radius: 4, y: 1.5)
                                 }
                             }
-                            .adaptiveGlass(
-                                in: Capsule(style: .continuous),
-                                tint: store.isCompactGridMode ? .accentColor.opacity(0.45) : nil,
-                                interactive: true
+                            .modifier(
+                                SkinChipSurface(
+                                    shape: Capsule(style: .continuous),
+                                    tint: store.isCompactGridMode ? .accentColor.opacity(0.45) : nil,
+                                    interactive: true,
+                                    clear: false,
+                                    isHidden: !skin.isClassic && store.isCompactGridMode
+                                )
                             )
                     }
                     .buttonStyle(.plain)
@@ -1102,13 +1122,19 @@ public struct ControlCenterPanel: View {
                             .frame(width: 26, height: 24)
                             .background {
                                 if store.hideOfflineDevices {
-                                    Capsule(style: .continuous).fill(skinAccentFill)
+                                    Capsule(style: .continuous)
+                                        .fill(skinAccentFill)
+                                        .shadowIf(!skin.isClassic && (skin.palette.neumorphic || skin.palette.glow), color: skin.palette.accent.opacity(0.32), radius: 4, y: 1.5)
                                 }
                             }
-                            .adaptiveGlass(
-                                in: Capsule(style: .continuous),
-                                tint: store.hideOfflineDevices ? .accentColor.opacity(0.45) : nil,
-                                interactive: true
+                            .modifier(
+                                SkinChipSurface(
+                                    shape: Capsule(style: .continuous),
+                                    tint: store.hideOfflineDevices ? .accentColor.opacity(0.45) : nil,
+                                    interactive: true,
+                                    clear: false,
+                                    isHidden: !skin.isClassic && store.hideOfflineDevices
+                                )
                             )
                     }
                     .buttonStyle(.plain)

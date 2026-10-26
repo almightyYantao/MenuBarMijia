@@ -115,7 +115,7 @@ public struct SkinPalette: Sendable {
 
     static let frost = SkinPalette(
         background: [hex(0xF7F8FA)], fg: hex(0x1C1F24), muted: hex(0x7A818C), line: hex(0xE4E7EC),
-        chip: .white, tile: .white, accent: hex(0xEF7D32), accentEnd: hex(0xEF7D32), onAccent: .white,
+        chip: hex(0xEEF0F4), tile: .white, accent: hex(0xEF7D32), accentEnd: hex(0xEF7D32), onAccent: .white,
         activeTile: hex(0xFFF6EF), activeLine: hex(0xF6C9A6), activeText: hex(0xB4561A), fill: hex(0xFFE7D4),
         ok: hex(0x33B36B), scheme: .light
     )
@@ -128,23 +128,23 @@ public struct SkinPalette: Sendable {
     )
 
     static let glass = SkinPalette(
-        background: [hex(0xF6A96B), hex(0x6C6F9A), hex(0x2B3A52)], fg: .white, muted: .white.opacity(0.72),
+        background: [hex(0xF6A96B), hex(0x6C6F9A), hex(0x2B3A52)], fg: .white, muted: .white.opacity(0.74),
         line: .white.opacity(0.38), chip: .white.opacity(0.18), tile: .white.opacity(0.14),
         accent: .white, accentEnd: .white, onAccent: hex(0xE4762E),
-        activeTile: .white.opacity(0.85), activeLine: .white.opacity(0.9), activeText: hex(0x24324A), fill: .white.opacity(0.45),
+        activeTile: .white.opacity(0.26), activeLine: .white.opacity(0.72), activeText: .white, fill: .white.opacity(0.22),
         ok: hex(0x7CF0A6), scheme: .dark, tileRadius: 18, translucent: true
     )
 
     static let soft = SkinPalette(
-        background: [hex(0xE7EAF0)], fg: hex(0x3A4252), muted: hex(0x8890A0), line: .clear,
-        chip: hex(0xE7EAF0), tile: hex(0xE7EAF0), accent: hex(0x5B7CFA), accentEnd: hex(0x5B7CFA), onAccent: .white,
-        activeTile: hex(0xE7EAF0), activeLine: .clear, activeText: hex(0x4563D8), fill: hex(0x5B7CFA, 0.12),
+        background: [hex(0xE7EAF0)], fg: hex(0x303746), muted: hex(0x7C8596), line: hex(0xD4D9E4, 0.75),
+        chip: hex(0xDFE3EC), tile: hex(0xE9ECF2), accent: hex(0x5B7CFA), accentEnd: hex(0x5B7CFA), onAccent: .white,
+        activeTile: hex(0xF1F4FA), activeLine: hex(0x5B7CFA, 0.32), activeText: hex(0x4563D8), fill: hex(0x5B7CFA, 0.13),
         ok: hex(0x4CC38A), scheme: .light, tileRadius: 20, neumorphic: true
     )
 
     static let bento = SkinPalette(
         background: [hex(0xFBFAF8)], fg: hex(0x17181B), muted: hex(0x8B8D93), line: hex(0xECEBE7),
-        chip: hex(0xF1F0EC), tile: hex(0xF1F0EC), accent: hex(0xFFB020), accentEnd: hex(0xFFB020), onAccent: hex(0x1B1404),
+        chip: hex(0xE5E3DC), tile: hex(0xF1F0EC), accent: hex(0xFFB020), accentEnd: hex(0xFFB020), onAccent: hex(0x1B1404),
         activeTile: hex(0xFFF3D6), activeLine: hex(0xFFD98A), activeText: hex(0x8A5A00), fill: hex(0xFFE39E),
         ok: hex(0x22A861), scheme: .light, tileRadius: 18, fontDesign: .rounded
     )
@@ -165,7 +165,7 @@ public struct SkinPalette: Sendable {
 
     static let dawn = SkinPalette(
         background: [hex(0xFFF8F1)], fg: hex(0x3B2A22), muted: hex(0x9B8579), line: hex(0xF1DFD1),
-        chip: .white, tile: .white, accent: hex(0xE85D3F), accentEnd: hex(0xE85D3F), onAccent: .white,
+        chip: hex(0xF6EDE3), tile: .white, accent: hex(0xE85D3F), accentEnd: hex(0xE85D3F), onAccent: .white,
         activeTile: hex(0xFFE9DC), activeLine: hex(0xF5B49E), activeText: hex(0xB5432A), fill: hex(0xFFD9C6),
         ok: hex(0x6AA84F), scheme: .light, tileRadius: 16, dashedIdle: true, fontDesign: .rounded
     )
@@ -234,20 +234,39 @@ struct SkinChipSurface<S: Shape>: ViewModifier {
     let tint: Color?
     let interactive: Bool
     let clear: Bool
+    var isHidden = false
 
+    @ViewBuilder
     func body(content: Content) -> some View {
-        if skin.isClassic || skin == .glass {
+        if isHidden {
+            content
+        } else if skin.isClassic || skin == .glass {
             content.modifier(ClassicGlass(shape: shape, tint: tint, interactive: interactive, clear: clear, translucentOnly: skin == .glass))
         } else {
             let p = skin.palette
             content
                 .background {
-                    shape.fill(p.chip)
-                    if let tint { shape.fill(tint) }
+                    if p.neumorphic {
+                        ZStack {
+                            shape.fill(p.tile)
+                                .shadow(color: .white.opacity(0.92), radius: 3, x: -2, y: -2)
+                            shape.fill(p.tile)
+                                .shadow(color: Color(red: 0.74, green: 0.77, blue: 0.84).opacity(0.75), radius: 3.5, x: 2.5, y: 2.5)
+                            if let tint { shape.fill(tint) }
+                        }
+                    } else {
+                        ZStack {
+                            shape.fill(p.chip)
+                            if let tint { shape.fill(tint) }
+                        }
+                    }
                 }
-                .overlay { shape.stroke(p.line, lineWidth: 0.8) }
-                .shadowIf(p.neumorphic, color: Color(red: 0.78, green: 0.80, blue: 0.85), radius: 4, x: 3, y: 3)
-                .shadowIf(p.neumorphic, color: .white, radius: 4, x: -3, y: -3)
+                .overlay {
+                    shape.stroke(
+                        p.neumorphic ? Color.white.opacity(0.68) : p.line,
+                        lineWidth: 0.8
+                    )
+                }
         }
     }
 }
@@ -260,27 +279,43 @@ struct SkinTileSurface: ViewModifier {
 
     func body(content: Content) -> some View {
         let p = skin.palette
-        let radius = p.capsuleTiles ? 999 : p.tileRadius
-        let shape = RoundedRectangle(cornerRadius: min(radius, 40), style: .continuous)
+        let radius = p.capsuleTiles ? 26 : p.tileRadius
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        let fill = isActive ? p.activeTile : p.tile
         content
+            .clipShape(shape)
             .background {
-                shape.fill(isActive ? p.activeTile : p.tile)
-                    .shadowIf(p.neumorphic && !isActive, color: Color(red: 0.78, green: 0.80, blue: 0.85), radius: 6, x: 5, y: 5)
-                    .shadowIf(p.neumorphic && !isActive, color: .white, radius: 6, x: -5, y: -5)
-                if p.neumorphic && isActive {
-                    shape.stroke(Color(red: 0.78, green: 0.80, blue: 0.85), lineWidth: 4).blur(radius: 4).offset(x: 2, y: 2).mask(shape)
-                    shape.stroke(.white, lineWidth: 4).blur(radius: 4).offset(x: -2, y: -2).mask(shape)
+                if p.neumorphic {
+                    ZStack {
+                        shape.fill(fill)
+                            .shadow(color: .white.opacity(0.92), radius: 4, x: -3, y: -3)
+                        shape.fill(fill)
+                            .shadow(
+                                color: isActive
+                                    ? p.accent.opacity(0.18)
+                                    : Color(red: 0.74, green: 0.77, blue: 0.84).opacity(0.78),
+                                radius: isActive ? 5 : 4.5,
+                                x: 3,
+                                y: 3
+                            )
+                    }
+                } else {
+                    shape.fill(fill)
                 }
             }
             .overlay {
                 if p.dashedIdle && !isActive {
-                    shape.stroke(p.line, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                    shape.strokeBorder(p.line, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                } else if p.neumorphic {
+                    shape.strokeBorder(
+                        isActive ? p.activeLine : Color.white.opacity(0.72),
+                        lineWidth: isActive ? 1.2 : 0.85
+                    )
                 } else {
-                    shape.strokeBorder(isActive ? p.activeLine : p.line, lineWidth: isActive && p.glow ? 2 : 1)
+                    shape.strokeBorder(isActive ? p.activeLine : p.line, lineWidth: isActive && p.glow ? 1.6 : 1)
                 }
             }
-            .clipShape(shape)
-            .shadowIf(isActive && p.glow, color: p.accent.opacity(0.5), radius: 9)
+            .shadowIf(isActive && p.glow, color: p.accent.opacity(0.38), radius: 6, y: 1)
             .animation(.easeOut(duration: 0.25), value: isActive)
     }
 }
@@ -428,7 +463,7 @@ struct HoldToConfirmButton: View {
                 .clipShape(Capsule(style: .continuous))
             }
         }
-        .shadow(color: p.glow ? p.accent.opacity(0.6) : .clear, radius: 8)
+        .shadowIf(p.glow, color: p.accent.opacity(0.5), radius: 6)
         .scaleEffect(holding ? 0.95 : 1)
         .contentShape(Capsule(style: .continuous))
         .onTapGesture(perform: onTap)

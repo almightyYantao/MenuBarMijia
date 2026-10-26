@@ -70,7 +70,7 @@ struct ClimatePanelModule: View {
                     Circle()
                         .fill(isRunning ? (skin.isClassic ? AnyShapeStyle(modeColor) : AnyShapeStyle(skin.palette.accentGradient)) : AnyShapeStyle(skin.isClassic ? Color.primary.opacity(0.08) : skin.palette.chip))
                         .frame(width: 32, height: 32)
-                        .shadow(color: isRunning ? accent.opacity(0.4) : .clear, radius: 6)
+                        .shadowIf(isRunning, color: accent.opacity(0.4), radius: 6)
                     Image(systemName: spec.hvacMode == "heat" ? "flame.fill" : "snowflake")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(isRunning ? (skin.isClassic ? Color.white : skin.palette.onAccent) : muted)

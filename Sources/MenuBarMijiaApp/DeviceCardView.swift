@@ -136,15 +136,28 @@ public struct DeviceCardView: View {
             }
 
             if isExpanded && device.hasDetailDrawer {
-                Rectangle()
-                    .fill(skin.isClassic ? Color.primary.opacity(0.08) : skin.palette.line)
-                    .frame(height: 1)
-                    .padding(.horizontal, 12)
+                if skin == .capsule && device.isActiveOn && device.isOnline {
+                    detailDrawer
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(skin.palette.tile)
+                        )
+                        .padding(.horizontal, 6)
+                        .padding(.bottom, 6)
+                        .transition(AppleMotion.drawerTransition)
+                } else {
+                    Rectangle()
+                        .fill(skin.isClassic ? Color.primary.opacity(0.08) : skin.palette.line)
+                        .frame(height: 1)
+                        .padding(.horizontal, 12)
 
-                detailDrawer
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .transition(AppleMotion.drawerTransition)
+                    detailDrawer
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .transition(AppleMotion.drawerTransition)
+                }
             }
         }
         .background(alignment: .leading) { brightnessFill }
@@ -158,7 +171,7 @@ public struct DeviceCardView: View {
         }
         .simultaneousGesture(dimGesture)
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: skin.isClassic ? 14 : (skin.palette.capsuleTiles ? 26 : skin.palette.tileRadius), style: .continuous)
                 .strokeBorder(isKeyboardFocused ? accent.opacity(0.85) : Color.clear, lineWidth: 1.6)
         )
         .opacity(device.isOnline ? 1.0 : 0.58)
@@ -174,7 +187,7 @@ public struct DeviceCardView: View {
     private var dimGesture: some Gesture {
         DragGesture(minimumDistance: 12)
             .onChanged { drag in
-                guard !skin.isClassic, !isEditingLayout, device.isOnline, lightLevel != nil,
+                guard !skin.isClassic, !isEditingLayout, !isExpanded, device.isOnline, lightLevel != nil,
                       abs(drag.translation.width) > abs(drag.translation.height) else { return }
                 dragBrightness = min(max(drag.location.x / max(cardWidth, 1), 0.01), 1)
             }
@@ -187,7 +200,7 @@ public struct DeviceCardView: View {
 
     @ViewBuilder
     private var brightnessFill: some View {
-        if !skin.isClassic, let level = lightLevel, level > 0 {
+        if !skin.isClassic, !isExpanded, let level = lightLevel, level > 0 {
             GeometryReader { geo in
                 Rectangle()
                     .fill(skin.palette.fill)
@@ -414,12 +427,12 @@ public struct DeviceCardView: View {
                             if showRoomBadge {
                                 Text(L10n.displayRoomName(device.roomName))
                                     .font(.system(size: 9.5, weight: .semibold))
-                                    .foregroundStyle(.primary.opacity(0.68))
+                                    .foregroundStyle(nameColor.opacity(0.68))
                                     .padding(.horizontal, 5.5)
                                     .padding(.vertical, 1.5)
                                     .background(
                                         Capsule(style: .continuous)
-                                            .fill(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.075))
+                                            .fill(nameColor.opacity(colorScheme == .dark ? 0.12 : 0.075))
                                             .overlay(
                                                 Capsule(style: .continuous)
                                                     .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.14 : 0.36), lineWidth: 0.6)
@@ -455,7 +468,7 @@ public struct DeviceCardView: View {
                     } label: {
                         Image(systemName: isFavorite ? "star.fill" : "star")
                             .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(isFavorite ? favoriteStarColor : Color.secondary.opacity(0.65))
+                            .foregroundStyle(isFavorite ? favoriteStarColor : statusColor.opacity(0.75))
                             .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
                     }
@@ -471,14 +484,13 @@ public struct DeviceCardView: View {
                     } label: {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.primary.opacity(0.68))
+                            .foregroundStyle(nameColor.opacity(0.68))
                             .rotationEffect(.degrees(isExpanded ? 90 : 0))
                             .frame(width: 24, height: 24)
                             .background {
                                 if isExpanded {
                                     Circle()
-                                        .fill(Color.primary.opacity(0.08))
-                                        .adaptiveGlass(in: Circle())
+                                        .fill(nameColor.opacity(0.08))
                                 }
                             }
                             .contentShape(Rectangle())
@@ -523,7 +535,13 @@ public struct DeviceCardView: View {
             Circle()
                 .fill(on ? (skin == .capsule && lightOn ? Color(red: 1, green: 0.84, blue: 0.04) : p.accent) : p.chip)
                 .frame(width: 36, height: 36)
-                .shadowIf(on, color: p.accent.opacity(0.25 + glow * 0.45), radius: 3 + glow * 9)
+                .overlay {
+                    if !on {
+                        Circle()
+                            .strokeBorder(p.neumorphic ? Color.white.opacity(0.65) : p.line.opacity(0.6), lineWidth: 0.7)
+                    }
+                }
+                .shadowIf(on, color: p.accent.opacity(0.22 + glow * 0.35), radius: 3 + glow * 6)
             Image(systemName: resolvedSymbolName)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(on ? (skin == .capsule && lightOn ? Color(red: 0.23, green: 0.18, blue: 0) : p.onAccent) : p.muted)
@@ -698,7 +716,9 @@ public struct DeviceCardView: View {
                             }
                         }
                     }
+                    .padding(6)
                 }
+                .padding(-6)
             }
         }
     }
@@ -765,7 +785,9 @@ public struct DeviceCardView: View {
                         }
                     }
                 }
+                .padding(6)
             }
+            .padding(-6)
         }
     }
 
@@ -866,7 +888,9 @@ public struct DeviceCardView: View {
                             }
                         }
                     }
+                    .padding(6)
                 }
+                .padding(-6)
             }
         }
     }
@@ -1127,7 +1151,9 @@ public struct DeviceCardView: View {
                         }
                     }
                 }
+                .padding(6)
             }
+            .padding(-6)
         }
     }
 }

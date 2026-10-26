@@ -64,18 +64,27 @@ public struct PillActionButtonStyle: ButtonStyle {
     private func skinnedBody(_ configuration: Configuration) -> some View {
         let p = skin.palette
         let capsule = Capsule(style: .continuous)
-        let fill: AnyShapeStyle = tintColor == .accentColor ? AnyShapeStyle(p.accentGradient) : AnyShapeStyle(tintColor)
         return configuration.label
             .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
-            .foregroundStyle(isSelected ? (tintColor == .accentColor ? p.onAccent : .white) : p.fg.opacity(0.88))
+            .foregroundStyle(isSelected ? p.onAccent : p.fg.opacity(0.88))
             .padding(.horizontal, 10.5)
             .padding(.vertical, 5)
             .background {
                 if isSelected {
-                    capsule.fill(fill)
+                    capsule
+                        .fill(p.accentGradient)
+                        .shadowIf(p.neumorphic || p.glow, color: p.accent.opacity(0.32), radius: 4, x: 0, y: 1.5)
                 }
             }
-            .adaptiveGlass(in: capsule)
+            .modifier(
+                SkinChipSurface(
+                    shape: capsule,
+                    tint: nil,
+                    interactive: false,
+                    clear: false,
+                    isHidden: isSelected
+                )
+            )
             .scaleEffect(configuration.isPressed ? 0.94 : 1.0)
             .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
     }
@@ -344,14 +353,8 @@ public struct AdaptiveGlassContainer<Content: View>: View {
             GlassEffectContainer(spacing: spacing) {
                 content()
             }
-        } else if skin.isClassic {
-            content()
         } else {
-            // Skins draw opaque chips; skipping the glass container also stops it clipping the
-            // first chip inside horizontal scroll views. The inset keeps chip edges off the clip.
             content()
-                .padding(.horizontal, 2)
-                .padding(.vertical, 1)
         }
     }
 }
@@ -434,7 +437,7 @@ public struct LiquidGlassSlider: View {
                         Capsule(style: .continuous)
                             .fill(p.accentGradient)
                             .frame(width: max(x, 6), height: 6)
-                            .shadow(color: p.glow ? p.accent.opacity(0.6) : .clear, radius: 4)
+                            .shadowIf(p.glow, color: p.accent.opacity(0.55), radius: 4)
                     }
                     Circle()
                         .fill(p.fg)
