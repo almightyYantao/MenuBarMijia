@@ -56,12 +56,20 @@ public struct DeviceCardView: View {
 
     private var statusColor: Color {
         guard !skin.isClassic else { return DevicePalette.statusTextColor(for: device, colorScheme: colorScheme) }
-        return device.isOnline && device.isActiveOn ? skin.palette.activeText : skin.palette.muted
+        if skin == .glass || skin == .capsule {
+            return device.isOnline && device.isActiveOn ? skin.palette.activeText.opacity(0.7) : skin.palette.muted
+        }
+        return skin.palette.muted
     }
 
     private var nameColor: Color {
         guard !skin.isClassic else { return .primary }
         return device.isActiveOn && device.isOnline && (skin == .glass || skin == .capsule) ? skin.palette.activeText : skin.palette.fg
+    }
+
+    private var nameGlow: Color {
+        guard skin.palette.glow, device.isActiveOn, device.isOnline else { return .clear }
+        return skin.palette.accent.opacity(0.85)
     }
 
     /// Current brightness 0...1 for lights (live while dragging), nil for other kinds.
@@ -276,12 +284,13 @@ public struct DeviceCardView: View {
                 HStack(spacing: 4) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(device.name)
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.system(size: skin.isClassic ? 12 : 13.5, weight: .semibold))
                             .foregroundStyle(nameColor)
+                            .shadow(color: nameGlow, radius: 6)
                             .lineLimit(1)
 
                         Text(dragBrightness.map { L10n.tr("亮度 \(Int($0 * 100))%", "Brightness \(Int($0 * 100))%") } ?? device.statusSubtitle)
-                            .font(.system(size: 10.5, weight: device.isActiveOn ? .semibold : .regular))
+                            .font(.system(size: skin.isClassic ? 10.5 : 11.5, weight: device.isActiveOn && skin.isClassic ? .semibold : .regular))
                             .monospacedDigit()
                             .foregroundStyle(statusColor)
                             .lineLimit(1)
@@ -291,7 +300,7 @@ public struct DeviceCardView: View {
 
                     if let quickIndex, shouldShowQuickBadge {
                         quickIndexPill(quickIndex)
-                    } else if device.hasDetailDrawer {
+                    } else if device.hasDetailDrawer && skin.isClassic {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 9.5, weight: .semibold))
                             .foregroundStyle(.secondary)
@@ -302,8 +311,8 @@ public struct DeviceCardView: View {
             .buttonStyle(.plain)
             .help(device.hasDetailDrawer ? L10n.tr("点击展开详细控制", "Click to expand controls") : device.name)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 8.5)
+        .padding(.horizontal, skin.isClassic ? 9 : 11)
+        .padding(.vertical, skin.isClassic ? 8.5 : 12)
     }
 
     // MARK: - Standard Single-Column Row (1-Click Toggle + Expand Trigger)
@@ -435,9 +444,8 @@ public struct DeviceCardView: View {
         let lightOn = on && lightLevel != nil
         return ZStack {
             Circle()
-                .fill(on ? AnyShapeStyle(skin == .capsule && lightOn ? AnyShapeStyle(Color(red: 1, green: 0.84, blue: 0.04)) : AnyShapeStyle(p.accentGradient)) : AnyShapeStyle(p.chip))
-                .frame(width: 33, height: 33)
-                .overlay { Circle().stroke(on ? Color.clear : p.line, lineWidth: 0.8) }
+                .fill(on ? (skin == .capsule && lightOn ? Color(red: 1, green: 0.84, blue: 0.04) : p.accent) : p.chip)
+                .frame(width: 36, height: 36)
                 .shadow(color: on ? p.accent.opacity(0.25 + glow * 0.45) : .clear, radius: on ? 3 + glow * 9 : 0)
             Image(systemName: resolvedSymbolName)
                 .font(.system(size: 14, weight: .semibold))

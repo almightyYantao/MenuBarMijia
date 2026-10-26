@@ -35,7 +35,7 @@ public struct ControlCenterPanel: View {
 
             overlayNotifications
         }
-        .frame(width: 356, height: 460)
+        .frame(width: skin.isClassic ? 356 : 376, height: skin.isClassic ? 460 : 500)
         .skinRoot(skin)
         .task {
             await store.checkForUpdatesIfNeeded()
@@ -58,7 +58,8 @@ public struct ControlCenterPanel: View {
                     .transition(AppleMotion.drawerTransition)
             }
 
-            if store.showQuickActionsBar {
+            // Skins follow the demo layout: no quick-scene strip.
+            if store.showQuickActionsBar && skin.isClassic {
                 quickActionsAndScenesBar
                     .padding(.horizontal, 14)
                     .padding(.bottom, 8)
@@ -278,6 +279,7 @@ public struct ControlCenterPanel: View {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
+                        if skin.isClassic {
                         Image(systemName: store.activeDeviceCount > 0 ? "house.fill" : "house")
                             .font(.system(size: 13.5, weight: .semibold))
                             .foregroundStyle(
@@ -286,8 +288,10 @@ public struct ControlCenterPanel: View {
                                     : Color.secondary
                             )
 
+                        }
+
                         Text(store.homeName)
-                            .font(.system(size: 15, weight: .bold))
+                            .font(.system(size: skin.isClassic ? 15 : 17, weight: .bold))
                             .tracking(-0.2)
                     }
 

@@ -279,11 +279,11 @@ struct SkinTileSurface: ViewModifier {
                 if p.dashedIdle && !isActive {
                     shape.stroke(p.line, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
                 } else {
-                    shape.stroke(isActive ? p.activeLine : p.line, lineWidth: isActive && p.glow ? 1.2 : 0.9)
+                    shape.strokeBorder(isActive ? p.activeLine : p.line, lineWidth: isActive && p.glow ? 2 : 1)
                 }
             }
-            .shadow(color: isActive && p.glow ? p.accent.opacity(0.45) : .clear, radius: 10)
             .clipShape(shape)
+            .shadow(color: isActive && p.glow ? p.accent.opacity(0.5) : .clear, radius: 9)
             .animation(.easeOut(duration: 0.25), value: isActive)
     }
 }
