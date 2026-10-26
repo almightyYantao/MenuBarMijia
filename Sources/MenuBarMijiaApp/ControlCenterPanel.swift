@@ -99,12 +99,15 @@ public struct ControlCenterPanel: View {
         .opacity(isPresented ? 1 : 0)
         .blur(radius: isPresented || reduceMotion ? 0 : 6)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
-            guard (note.object as? NSWindow)?.className.contains("MenuBarExtra") ?? false || !isPresented else { return }
-            isPresented = false
+            guard !isPresented else { return }
             withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
-            isPresented = false
+        // Reset only when the panel is really hidden. Resigning key also happens when a context
+        // menu opens, and resetting then left the panel at opacity 0 (a blank window).
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { note in
+            guard let w = note.object as? NSWindow, w.className.contains("MenuBarExtra") else { return }
+            if !w.occlusionState.contains(.visible) { isPresented = false }
+            else if !isPresented { withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true } }
         }
         .onAppear {
             withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true }
