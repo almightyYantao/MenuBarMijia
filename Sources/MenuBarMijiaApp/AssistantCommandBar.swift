@@ -811,14 +811,16 @@ struct AssistantSettingsSection: View {
         let normalizedModel = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? fallbackModel
             : modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        baseURLDraft = normalizedBase
-        modelDraft = normalizedModel
         let cfg = AssistantConfig(
             baseURL: normalizedBase,
             model: normalizedModel,
             apiKey: apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         )
         store.assistantConfig = cfg
+        let resolved = store.assistantConfig
+        baseURLDraft = resolved.baseURL
+        modelDraft = resolved.model
+        selectedPreset = resolved.preset
         return cfg
     }
 

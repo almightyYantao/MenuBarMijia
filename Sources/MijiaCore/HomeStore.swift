@@ -1675,6 +1675,8 @@ public final class HomeStore {
     var assistantResetTask: Task<Void, Never>?
     /// Test seam replacing the network resolver built from `assistantConfig`.
     var assistantResolverOverride: ModelIntentResolver?
+    /// Test seam replacing only the HTTP transport while still resolving `assistantConfig` from `userDefaults`.
+    var assistantTransportOverride: ModelIntentResolver.Transport?
     /// Commands waiting on a spoken delay ("10 分钟后关灯"), soonest first. Persisted across launches.
     public internal(set) var scheduledCommands: [ScheduledCommand] = []
     /// Persisted commands whose fireDate passed while the app was closed. Never auto-executed without user confirmation.

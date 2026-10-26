@@ -627,6 +627,77 @@ struct AssistantTests {
         #expect(AssistantConfig.loadAmbientAPIKey(forBaseURL: "https://api.deepseek.com/v1", configURL: tempURL) == nil)
     }
 
+    @Test("Explicitly saved localhost:3425 and 127.0.0.1:3425 custom endpoints survive save/load round-trip and share effective config between Test AI and command execution")
+    @MainActor
+    func customPort3425RoundTripAndProviderKeyIsolation() async throws {
+        let suite = "test.assistant.port3425.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        // Seed an OpenRouter key in the same defaults suite to ensure custom endpoints never resolve OpenRouter's key.
+        AssistantConfig(
+            baseURL: "https://openrouter.ai/api/v1",
+            model: "~typesafe/jev-latest",
+            apiKey: "sk-or-wrong-provider-key"
+        ).save(to: defaults)
+
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: Self.devices, scenes: Self.scenes))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        for _ in 0..<50 where store.devices.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        for customURL in ["http://127.0.0.1:3425/v1", "http://localhost:3425/v1"] {
+            var observedURLs: [String] = []
+            var observedAuths: [String] = []
+            var observedModels: [String] = []
+
+            store.assistantTransportOverride = { request in
+                let urlString = request.url?.absoluteString ?? ""
+                let auth = request.value(forHTTPHeaderField: "Authorization") ?? ""
+                let body = request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                let model = body?["model"] as? String ?? ""
+                await MainActor.run {
+                    observedURLs.append(urlString)
+                    observedAuths.append(auth)
+                    observedModels.append(model)
+                }
+                let content = #"{"actions":[{"device":"d1","op":"power","value":true}],"reply":"已打开书房灯"}"#
+                let data = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": content]]]])
+                return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+
+            let draft = AssistantConfig(
+                baseURL: customURL,
+                model: "local-custom-model",
+                apiKey: "sk-local-3425-key"
+            )
+
+            // 1. Test AI persists and verifies via the reloaded store.assistantConfig
+            let testResult = await store.verifyAssistantConfig(draft)
+            #expect(testResult.isSuccess == true)
+
+            // 2. Reopening settings / restarting app loads the exact custom endpoint, model, and custom provider key
+            let reloaded = AssistantConfig.load(from: defaults, includeAmbientKey: false)
+            #expect(reloaded.baseURL == customURL)
+            #expect(reloaded.model == "local-custom-model")
+            #expect(reloaded.preset == .custom)
+            #expect(reloaded.apiKey == "sk-local-3425-key")
+            #expect(reloaded.isLoopbackEndpoint == true)
+            #expect(store.assistantConfig.baseURL == customURL)
+            #expect(store.assistantConfig.model == "local-custom-model")
+            #expect(store.assistantConfig.apiKey == "sk-local-3425-key")
+            #expect(AssistantConfig.userStoredAPIKey(forBaseURL: customURL, defaults: defaults) == "sk-local-3425-key")
+
+            // 3. Running an AI-fallback command uses the exact same endpoint, model, and credentials as Test AI
+            let plan = try #require(await store.runAssistantCommand("我要睡觉了"))
+            #expect(plan.source == .model)
+            #expect(observedURLs == ["\(customURL)/chat/completions", "\(customURL)/chat/completions"])
+            #expect(observedAuths == ["Bearer sk-local-3425-key", "Bearer sk-local-3425-key"])
+            #expect(observedModels == ["local-custom-model", "local-custom-model"])
+        }
+    }
+
     // MARK: - Live (opt-in)
 
     @Test("ModelIntentResolver resolves against live OpenRouter ~typesafe/jev-latest when ASSISTANT_RUN_LIVE_TEST=1")

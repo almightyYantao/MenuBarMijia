@@ -263,12 +263,7 @@ public struct AssistantConfig: Equatable, Sendable {
         let savedBase = nonEmpty(baseURLKey)
         let savedModel = nonEmpty(modelKey)
 
-        let resolvedBase: String
-        if let savedBase, !isLegacyLocalRouterURL(savedBase) {
-            resolvedBase = savedBase
-        } else {
-            resolvedBase = defaultBaseURL
-        }
+        let resolvedBase = savedBase ?? defaultBaseURL
 
         let resolvedModel: String
         if let savedModel, !legacyDefaultModels.contains(savedModel) {
@@ -278,14 +273,12 @@ public struct AssistantConfig: Equatable, Sendable {
             resolvedModel = inferredPreset.defaultModel.isEmpty ? "gpt-4o-mini" : inferredPreset.defaultModel
         }
 
+        let explicitKey = userStoredAPIKey(forBaseURL: resolvedBase, defaults: defaults)
         let effectiveKey: String
-        if includeAmbientKey {
-            let explicitKey = userStoredAPIKey(forBaseURL: resolvedBase)
-            if !explicitKey.isEmpty {
-                effectiveKey = explicitKey
-            } else {
-                effectiveKey = loadAmbientAPIKey(forBaseURL: resolvedBase) ?? ""
-            }
+        if !explicitKey.isEmpty {
+            effectiveKey = explicitKey
+        } else if includeAmbientKey {
+            effectiveKey = loadAmbientAPIKey(forBaseURL: resolvedBase) ?? ""
         } else {
             effectiveKey = ""
         }
@@ -297,14 +290,6 @@ public struct AssistantConfig: Equatable, Sendable {
         )
     }
 
-    private static func isLegacyLocalRouterURL(_ urlString: String) -> Bool {
-        guard let url = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let host = url.host?.lowercased() else {
-            return false
-        }
-        return (host == "localhost" || host == "127.0.0.1") && url.port == 3425
-    }
-
     public func save(to defaults: UserDefaults) {
         let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -312,16 +297,30 @@ public struct AssistantConfig: Equatable, Sendable {
         defaults.set(trimmedBase, forKey: Self.baseURLKey)
         defaults.set(trimmedModel, forKey: Self.modelKey)
         let inferred = AssistantProviderPreset.infer(baseURL: trimmedBase)
-        KeychainHelper.saveSecret(trimmedKey, account: KeychainHelper.assistantProviderAPIKeyAccount(for: inferred))
-        if inferred == .openRouterJev {
-            KeychainHelper.saveSecret(trimmedKey, account: KeychainHelper.assistantAPIKeyAccount)
+        let providerAccount = KeychainHelper.assistantProviderAPIKeyAccount(for: inferred)
+        if defaults === UserDefaults.standard {
+            KeychainHelper.saveSecret(trimmedKey, account: providerAccount)
+            if inferred == .openRouterJev {
+                KeychainHelper.saveSecret(trimmedKey, account: KeychainHelper.assistantAPIKeyAccount)
+            }
+        } else {
+            if trimmedKey.isEmpty {
+                defaults.removeObject(forKey: providerAccount)
+            } else {
+                defaults.set(trimmedKey, forKey: providerAccount)
+            }
         }
     }
 
     /// Returns only the user's explicitly saved Keychain API key for the given endpoint (excluding ambient CodexBar/env keys).
-    public static func userStoredAPIKey(forBaseURL baseURL: String) -> String {
+    public static func userStoredAPIKey(forBaseURL baseURL: String, defaults: UserDefaults = .standard) -> String {
         let preset = AssistantProviderPreset.infer(baseURL: baseURL)
-        let providerKey = KeychainHelper.loadSecret(account: KeychainHelper.assistantProviderAPIKeyAccount(for: preset))
+        let providerAccount = KeychainHelper.assistantProviderAPIKeyAccount(for: preset)
+        if defaults !== UserDefaults.standard {
+            return defaults.string(forKey: providerAccount)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        let providerKey = KeychainHelper.loadSecret(account: providerAccount)
         if !providerKey.isEmpty {
             return providerKey
         }

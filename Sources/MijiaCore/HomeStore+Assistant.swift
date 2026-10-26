@@ -87,14 +87,14 @@ extension HomeStore {
     public func requestProactiveJevSuggestions() async {
         guard !isProactiveRecommending else { return }
         let config = assistantConfig
-        if assistantResolverOverride == nil && !config.hasAPIKey && !config.isLoopbackEndpoint {
+        if shouldRejectMissingAPIKey(for: config) {
             setAssistantState(.failed(AssistantError.userMessage(for: AssistantError.missingAPIKey)))
             return
         }
         isProactiveRecommending = true
         defer { isProactiveRecommending = false }
 
-        let resolver = assistantResolverOverride ?? ModelIntentResolver(config: config)
+        let resolver = makeAssistantResolver(config: config)
         let context = buildAssistantContext()
         do {
             let inferred = try await resolver.recommendProactiveSuggestions(
@@ -116,18 +116,14 @@ extension HomeStore {
         }
     }
 
-    /// Verifies the given AI configuration against the live endpoint and returns `(isSuccess, statusMessage)`.
+    /// Persists and verifies the given AI configuration against the live endpoint using the same reloaded `assistantConfig` as normal command execution.
     public func verifyAssistantConfig(_ draftConfig: AssistantConfig) async -> (isSuccess: Bool, message: String) {
-        let trimmedKey = draftConfig.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let effectiveKey = trimmedKey.isEmpty
-            ? (AssistantConfig.loadAmbientAPIKey(forBaseURL: draftConfig.baseURL) ?? "")
-            : trimmedKey
-        let resolved = AssistantConfig(
-            baseURL: draftConfig.baseURL,
-            model: draftConfig.model,
-            apiKey: effectiveKey
-        )
-        let resolver = assistantResolverOverride ?? ModelIntentResolver(config: resolved)
+        assistantConfig = draftConfig
+        let resolved = assistantConfig
+        if shouldRejectMissingAPIKey(for: resolved) {
+            return (false, AssistantError.userMessage(for: AssistantError.missingAPIKey))
+        }
+        let resolver = makeAssistantResolver(config: resolved)
         do {
             let ms = try await resolver.testConnection()
             let presetLabel = resolved.preset.shortTitle
@@ -141,6 +137,14 @@ extension HomeStore {
         } catch {
             return (false, AssistantError.userMessage(for: error))
         }
+    }
+
+    private func shouldRejectMissingAPIKey(for config: AssistantConfig) -> Bool {
+        assistantResolverOverride == nil && !config.hasAPIKey && !config.isLoopbackEndpoint
+    }
+
+    private func makeAssistantResolver(config: AssistantConfig) -> ModelIntentResolver {
+        assistantResolverOverride ?? ModelIntentResolver(config: config, transport: assistantTransportOverride)
     }
 
     public func applyAssistantSuggestion(_ suggestion: AssistantSuggestion) async {
@@ -177,11 +181,11 @@ extension HomeStore {
             plan = local
         } else {
             let config = assistantConfig
-            if assistantResolverOverride == nil && !config.hasAPIKey && !config.isLoopbackEndpoint {
+            if shouldRejectMissingAPIKey(for: config) {
                 setAssistantState(.failed(AssistantError.userMessage(for: AssistantError.missingAPIKey)))
                 return nil
             }
-            let resolver = assistantResolverOverride ?? ModelIntentResolver(config: config)
+            let resolver = makeAssistantResolver(config: config)
             let context = buildAssistantContext()
             do {
                 plan = try await resolver.resolve(utterance, devices: devices, scenes: scenes, context: context)
