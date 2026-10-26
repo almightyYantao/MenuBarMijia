@@ -303,6 +303,47 @@ struct MiotSynthesizerTests {
         ])
     }
 
+    @Test("Split keys of a multi-key Mesh panel become separate plugs addressed at the parent did")
+    func splitPanelKeys() throws {
+        let onProp = MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:on:00000006:lemesh-sw2f12:1", format: "bool", access: ["read", "write", "notify"])
+        let spec = MiotDeviceSpec(type: "urn:miot-spec-v2:device:switch:0000A003:lemesh-sw2f12:1", services: [
+            MiotService(iid: 2, type: "urn:miot-spec-v2:service:switch:0000780C:lemesh-sw2f12:1", properties: [onProp]),
+            MiotService(iid: 3, type: "urn:miot-spec-v2:service:switch:0000780C:lemesh-sw2f12:1", properties: [onProp]),
+        ])
+        let model = "lemesh.switch.sw2f12"
+        let parent = MiDeviceRecord(did: "100", name: "二键开关", model: model, isOnline: true)
+        let key2 = MiDeviceRecord(did: "100.s2", name: "筒灯", model: model, isOnline: true, splitParentDid: "100", splitSiid: 2)
+        let key3 = MiDeviceRecord(did: "100.s3", name: "氛围灯", model: model, isOnline: true, splitParentDid: "100", splitSiid: 3)
+        let home = MiotSynthesizer.synthesize(
+            devices: [parent, key2, key3],
+            rooms: [MiRoom(id: "r1", name: "主卧", dids: ["100.s2", "100.s3"])],
+            specs: [model: spec],
+            values: [MiotFixtures.key("100", 2, 1): .bool(false), MiotFixtures.key("100", 3, 1): .bool(true)]
+        )
+        #expect(home.devices.map(\.id).sorted() == ["100.s2", "100.s3"])
+        let ambient = try #require(home.devices.first { $0.id == "100.s3" })
+        #expect(ambient.roomName == "主卧")
+        if case .plug(let p) = ambient.kind {
+            #expect(p.switchEntityId == "miot:100:3")
+            #expect(p.isOn)
+        } else {
+            Issue.record("expected plug")
+        }
+        #expect(MiotSynthesizer.requiredProps(for: key3, spec: spec) == [MiotFixtures.key("100", 3, 1)])
+    }
+
+    @Test("device_list_page split metadata is parsed from extra.split")
+    func parseSplitRecord() {
+        let result: JSONValue = .object(["list": .array([.object([
+            "did": .string("100.s3"), "name": .string("氛围灯"), "model": .string("lemesh.switch.sw2f12"),
+            "isOnline": .bool(true),
+            "extra": .object(["split": .object(["parentId": .string("100"), "moduleId": .number(3)])]),
+        ])])])
+        #expect(MiCloudClient.parseDeviceList(result) == [
+            MiDeviceRecord(did: "100.s3", name: "氛围灯", model: "lemesh.switch.sw2f12", isOnline: true, splitParentDid: "100", splitSiid: 3),
+        ])
+    }
+
     @Test("Devices without a spec or with an unsupported type are skipped")
     func unknownSkipped() {
         let home = MiotSynthesizer.synthesize(

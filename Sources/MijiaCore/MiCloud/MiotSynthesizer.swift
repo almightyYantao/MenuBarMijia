@@ -43,13 +43,16 @@ public enum MiotSynthesizer {
             for did in room.dids where roomByDid[did] == nil { roomByDid[did] = room }
         }
 
+        // A panel whose keys are listed as split devices is shown through those keys only.
+        let splitParents = Set(devices.compactMap(\.splitParentDid))
+
         var smartDevices: [SmartDevice] = []
         var readings: [EnvironmentReading] = []
 
-        for record in devices {
+        for record in devices where !splitParents.contains(record.did) {
             guard let spec = specs[record.model],
-                  let (service, build) = primary(for: spec) else { continue }
-            let reader = MiotReader(did: record.did, spec: spec, values: values)
+                  let (service, build) = primary(for: record, spec: spec) else { continue }
+            let reader = MiotReader(did: record.miotDid, spec: spec, values: values)
             let kind = build(reader, service)
 
             let room = roomByDid[record.did]
@@ -85,8 +88,8 @@ public enum MiotSynthesizer {
 
     /// The (did, siid, piid) triples the synthesizer reads for this device; poll exactly these.
     public static func requiredProps(for device: MiDeviceRecord, spec: MiotDeviceSpec) -> [MiotPropKey] {
-        guard let (service, build) = primary(for: spec) else { return [] }
-        let reader = MiotReader(did: device.did, spec: spec, values: [:])
+        guard let (service, build) = primary(for: device, spec: spec) else { return [] }
+        let reader = MiotReader(did: device.miotDid, spec: spec, values: [:])
         _ = build(reader, service)
         return reader.touched
     }
@@ -94,6 +97,14 @@ public enum MiotSynthesizer {
     /// Registry key of the builder that will handle this spec, or nil when unsupported.
     public static func supportedServiceName(for spec: MiotDeviceSpec) -> String? {
         primary(for: spec)?.0.shortName
+    }
+
+    /// Split keys use their own switch service instead of the panel's first one.
+    static func primary(for record: MiDeviceRecord, spec: MiotDeviceSpec) -> (MiotService, KindBuilder)? {
+        guard record.splitParentDid != nil, let siid = record.splitSiid else { return primary(for: spec) }
+        guard let service = spec.service(iid: siid),
+              let entry = registry.first(where: { $0.service == service.shortName }) else { return nil }
+        return (service, entry.build)
     }
 
     static func primary(for spec: MiotDeviceSpec) -> (MiotService, KindBuilder)? {

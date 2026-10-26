@@ -237,6 +237,20 @@ export interface MiDeviceRecord {
   readonly model: string;
   readonly isOnline: boolean;
   readonly specType: string | null;
+  /** Split key of a multi-key panel (did like `<parent>.s2`): MIoT calls go to the parent did, switch service `splitSiid`. */
+  readonly splitParentDid?: string | null;
+  readonly splitSiid?: number | null;
+}
+
+/** The did MIoT property and action calls address. */
+export function miotDid(record: MiDeviceRecord): string {
+  return record.splitParentDid ?? record.did;
+}
+
+/** Narrows a panel spec to the switch service a split key controls. */
+function specForRecord(record: MiDeviceRecord, spec: MiotDeviceSpec): MiotDeviceSpec {
+  if (!record.splitParentDid || record.splitSiid == null) return spec;
+  return { ...spec, services: spec.services.filter((s) => s.iid === record.splitSiid) };
 }
 
 export interface MiRoom {
@@ -372,12 +386,17 @@ export class MiCloudClient {
       const did = asIdString(rec["did"]);
       const model = typeof rec["model"] === "string" ? rec["model"] : null;
       if (!did || !model) continue;
+      const extra = rec["extra"] && typeof rec["extra"] === "object" ? (rec["extra"] as Record<string, unknown>) : {};
+      const split = extra["split"] && typeof extra["split"] === "object" ? (extra["split"] as Record<string, unknown>) : null;
+      const splitParentDid = split ? asIdString(split["parentId"]) : null;
+      const splitSiid = split && typeof split["moduleId"] === "number" ? Math.trunc(split["moduleId"]) : null;
       out.push({
         did,
         name: typeof rec["name"] === "string" ? rec["name"] : model,
         model,
         isOnline: typeof rec["isOnline"] === "boolean" ? rec["isOnline"] : true,
         specType: typeof rec["spec_type"] === "string" ? rec["spec_type"] : null,
+        ...(splitParentDid && splitSiid !== null ? { splitParentDid, splitSiid } : {}),
       });
     }
     return out;
@@ -409,7 +428,37 @@ export class MiCloudClient {
     return rooms;
   }
 
+  /**
+   * `v2/home/device_list_page` also returns the split keys of multi-key Mesh panels, which
+   * `home/device_list` omits even with `get_split_device`; fall back to the latter on failure.
+   */
   async deviceList(): Promise<MiDeviceRecord[]> {
+    try {
+      return await this.deviceListPaged();
+    } catch (err) {
+      if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
+      return this.legacyDeviceList();
+    }
+  }
+
+  private async deviceListPaged(): Promise<MiDeviceRecord[]> {
+    const records: MiDeviceRecord[] = [];
+    let startDid = "";
+    for (let page = 0; page < 20; page++) {
+      const data: Record<string, unknown> = { get_split_device: true, support_smart_home: true, limit: 200 };
+      if (startDid) data["start_did"] = startDid;
+      const res = await this.request("v2/home/device_list_page", data);
+      records.push(...MiCloudClient.parseDeviceList(res));
+      const obj = res && typeof res === "object" ? (res as Record<string, unknown>) : {};
+      const next = asIdString(obj["next_start_did"]) ?? "";
+      if (obj["has_more"] !== true || !next || next === startDid) break;
+      startDid = next;
+    }
+    const seen = new Set<string>();
+    return records.filter((r) => !seen.has(r.did) && (seen.add(r.did), true));
+  }
+
+  private async legacyDeviceList(): Promise<MiDeviceRecord[]> {
     const res = await this.request("home/device_list", {
       getVirtualModel: true,
       getHuamiDevices: 1,
@@ -1021,14 +1070,19 @@ export const MiotSynthesizer = {
       }
     }
 
+    // A panel whose keys are listed as split devices is shown through those keys only.
+    const splitParents = new Set(devices.map((d) => d.splitParentDid).filter((d): d is string => !!d));
+
     const smartDevices: SmartDevice[] = [];
     const readings: EnvironmentReading[] = [];
 
     for (const record of devices) {
+      if (splitParents.has(record.did)) continue;
       const spec = specs[record.model] ?? inferFallbackSpec(record);
-      const built =
-        this.buildDeviceKind(record.did, spec, values) ??
-        this.buildDeviceKind(record.did, inferFallbackSpec(record), values);
+      const built = record.splitParentDid
+        ? this.buildDeviceKind(miotDid(record), specForRecord(record, spec), values)
+        : this.buildDeviceKind(record.did, spec, values) ??
+          this.buildDeviceKind(record.did, inferFallbackSpec(record), values);
       if (!built) continue;
 
       const room = roomByDid.get(record.did);
@@ -1100,7 +1154,7 @@ export const MiotSynthesizer = {
         return Reflect.get(target, prop);
       },
     });
-    this.buildDeviceKind(device.did, spec, proxyValues);
+    this.buildDeviceKind(miotDid(device), specForRecord(device, spec), proxyValues);
     return touched;
   },
 
