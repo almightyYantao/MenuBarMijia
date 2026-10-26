@@ -4,6 +4,7 @@ import MijiaCore
 public struct DeviceCardView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.appSkin) private var skin
+    @Environment(\.isEditingLayout) private var isEditingLayout
     @AppStorage(AppSkin.climatePanelKey) private var climatePanelModule: Bool = true
     @AppStorage(DeviceLayoutPrefs.storageKey) private var tileSizesRaw: String = "{}"
 
@@ -163,7 +164,7 @@ public struct DeviceCardView: View {
     private var dimGesture: some Gesture {
         DragGesture(minimumDistance: 12)
             .onChanged { drag in
-                guard !skin.isClassic, device.isOnline, lightLevel != nil,
+                guard !skin.isClassic, !isEditingLayout, device.isOnline, lightLevel != nil,
                       abs(drag.translation.width) > abs(drag.translation.height) else { return }
                 dragBrightness = min(max(drag.location.x / max(cardWidth, 1), 0.01), 1)
             }

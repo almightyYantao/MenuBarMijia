@@ -120,6 +120,7 @@ struct LayoutEditable: ViewModifier {
     let onCycleSize: () -> Void
 
     @State private var dragActive = false
+    @State private var pressTask: Task<Void, Never>?
 
     // Per-card phase so neighbouring cards do not swing in sync.
     private var phase: Double { Double(abs(deviceId.hashValue % 97)) / 97 * .pi * 2 }
@@ -149,37 +150,47 @@ struct LayoutEditable: ViewModifier {
                     .transition(.scale.combined(with: .opacity))
                 }
             }
-            .simultaneousGesture(editing ? AnyGesture(editDrag.map { _ in () }) : AnyGesture(pressThenDrag.map { _ in () }))
+            .simultaneousGesture(pressAndDrag)
+            .onChange(of: editing) { _, on in
+                if !on { reset() }
+            }
     }
 
-    /// While editing: any drag moves the card.
-    private var editDrag: some Gesture {
-        DragGesture(minimumDistance: 3, coordinateSpace: .named(TileSpace.name))
+    /// One gesture for the whole interaction. Swapping gestures when edit mode turned on cancelled
+    /// the in-flight press without an end event, leaving the card stuck "picked up". Holding still
+    /// for 0.45s enters edit mode and picks the card up; the same press then keeps dragging. In edit
+    /// mode a plain drag (> 3pt) picks a card up straight away.
+    private var pressAndDrag: some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(TileSpace.name))
             .onChanged { d in
-                if !dragActive { dragActive = true; onDragBegan(deviceId, d.startLocation) }
-                onDragChanged(deviceId, d.location)
-            }
-            .onEnded { _ in finish() }
-    }
-
-    /// Not editing: hold 0.45s to enter edit mode with this card picked up, then drag without releasing.
-    private var pressThenDrag: some Gesture {
-        LongPressGesture(minimumDuration: 0.45)
-            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named(TileSpace.name)))
-            .onChanged { value in
-                guard case .second(true, let drag) = value else { return }
-                if !dragActive {
-                    dragActive = true
-                    NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
-                    onEnterEditing()
-                    if let drag { onDragBegan(deviceId, drag.startLocation) }
+                let moved = hypot(d.translation.width, d.translation.height)
+                if editing {
+                    if !dragActive && moved > 3 {
+                        dragActive = true
+                        onDragBegan(deviceId, d.startLocation)
+                    }
+                } else if pressTask == nil && !dragActive {
+                    let start = d.startLocation
+                    pressTask = Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(450))
+                        guard !Task.isCancelled else { return }
+                        NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+                        onEnterEditing()
+                        dragActive = true
+                        onDragBegan(deviceId, start)
+                    }
+                } else if moved > 8 && !dragActive {
+                    // Moving before the hold completes is an ordinary drag (e.g. dimming), not a pick-up.
+                    pressTask?.cancel()
                 }
-                if let drag { onDragChanged(deviceId, drag.location) }
+                if dragActive { onDragChanged(deviceId, d.location) }
             }
-            .onEnded { _ in finish() }
+            .onEnded { _ in reset() }
     }
 
-    private func finish() {
+    private func reset() {
+        pressTask?.cancel()
+        pressTask = nil
         guard dragActive else { return }
         dragActive = false
         onDragEnded()
