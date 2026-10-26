@@ -983,6 +983,36 @@ public final class HomeStore {
         )
     }
 
+    public func setClimateFanMode(_ deviceId: String, fanMode: String) {
+        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
+              case .climate(var s) = devices[idx].kind else { return }
+        let previous = devices[idx]
+        s.fanMode = fanMode
+        devices[idx].kind = .climate(s)
+        lockOptimistic(deviceId, duration: .seconds(2.2))
+
+        dispatchImmediate(
+            deviceId: deviceId,
+            fallback: previous,
+            command: .setClimateFanMode(entityId: s.entityId, fanMode: fanMode)
+        )
+    }
+
+    public func setClimateSwingMode(_ deviceId: String, swingMode: String) {
+        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
+              case .climate(var s) = devices[idx].kind else { return }
+        let previous = devices[idx]
+        s.swingMode = swingMode
+        devices[idx].kind = .climate(s)
+        lockOptimistic(deviceId, duration: .seconds(2.2))
+
+        dispatchImmediate(
+            deviceId: deviceId,
+            fallback: previous,
+            command: .setClimateSwingMode(entityId: s.entityId, swingMode: swingMode)
+        )
+    }
+
     public func setFanPresetMode(_ deviceId: String, preset: String) {
         guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
               case .fan(var s) = devices[idx].kind else { return }

@@ -43,6 +43,7 @@ public struct PressableCardButtonStyle: ButtonStyle {
 
 public struct PillActionButtonStyle: ButtonStyle {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.appSkin) private var skin
     public var isSelected: Bool = false
     public var tintColor: Color = .accentColor
 
@@ -51,7 +52,36 @@ public struct PillActionButtonStyle: ButtonStyle {
         self.tintColor = tintColor
     }
 
+    @ViewBuilder
     public func makeBody(configuration: Configuration) -> some View {
+        if skin.isClassic {
+            classicBody(configuration)
+        } else {
+            skinnedBody(configuration)
+        }
+    }
+
+    private func skinnedBody(_ configuration: Configuration) -> some View {
+        let p = skin.palette
+        let capsule = Capsule(style: .continuous)
+        let fill: AnyShapeStyle = tintColor == .accentColor ? AnyShapeStyle(p.accentGradient) : AnyShapeStyle(tintColor)
+        return configuration.label
+            .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
+            .foregroundStyle(isSelected ? (tintColor == .accentColor ? p.onAccent : .white) : p.fg.opacity(0.88))
+            .padding(.horizontal, 10.5)
+            .padding(.vertical, 5)
+            .background {
+                if isSelected {
+                    capsule.fill(fill)
+                }
+            }
+            .adaptiveGlass(in: capsule)
+            .scaleEffect(configuration.isPressed ? 0.94 : 1.0)
+            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
+    }
+
+    @ViewBuilder
+    private func classicBody(_ configuration: Configuration) -> some View {
         let capsule = Capsule(style: .continuous)
         configuration.label
             .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
@@ -182,11 +212,22 @@ public enum DevicePalette {
 
 public struct GlassTileBackground: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.appSkin) private var skin
     public var isActive: Bool
     public var accent: Color
     public var cornerRadius: CGFloat
 
+    @ViewBuilder
     public func body(content: Content) -> some View {
+        if skin.isClassic {
+            classicBody(content)
+        } else {
+            content.modifier(SkinTileSurface(isActive: isActive, cornerRadius: cornerRadius))
+        }
+    }
+
+    @ViewBuilder
+    private func classicBody(_ content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
             .background {
@@ -237,42 +278,33 @@ public struct GlassTileBackground: ViewModifier {
     }
 }
 
-extension View {
-    public func glassTile(isActive: Bool, accent: Color, cornerRadius: CGFloat = 14) -> some View {
-        modifier(GlassTileBackground(isActive: isActive, accent: accent, cornerRadius: cornerRadius))
-    }
+/// The original adaptive glass behaviour, kept verbatim for the classic skin.
+struct ClassicGlass<S: Shape>: ViewModifier {
+    let shape: S
+    let tint: Color?
+    let interactive: Bool
+    let clear: Bool
+    var translucentOnly = false
 
-    @ViewBuilder
-    public func adaptiveGlass<S: Shape>(
-        in shape: S,
-        tint: Color? = nil,
-        interactive: Bool = false,
-        clear: Bool = false
-    ) -> some View {
-        if #available(macOS 26.0, *) {
+    func body(content: Content) -> some View {
+        if translucentOnly {
+            content
+                .background { shape.fill(.white.opacity(0.14)); if let tint { shape.fill(tint) } }
+                .overlay { shape.stroke(.white.opacity(0.28), lineWidth: 0.8) }
+        } else if #available(macOS 26.0, *) {
             if clear {
-                self.glassEffect(
-                    interactive ? .clear.interactive() : .clear,
-                    in: shape
-                )
+                content.glassEffect(interactive ? .clear.interactive() : .clear, in: shape)
             } else if let tint {
-                self.glassEffect(
-                    interactive ? .regular.tint(tint).interactive() : .regular.tint(tint),
-                    in: shape
-                )
+                content.glassEffect(interactive ? .regular.tint(tint).interactive() : .regular.tint(tint), in: shape)
             } else {
-                self.glassEffect(
-                    interactive ? .regular.interactive() : .regular,
-                    in: shape
-                )
+                content.glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
             }
         } else {
-            self.background {
+            content.background {
                 if clear {
                     shape.fill(.thinMaterial)
                 } else if let tint {
-                    shape.fill(.ultraThinMaterial)
-                        .overlay(shape.fill(tint))
+                    shape.fill(.ultraThinMaterial).overlay(shape.fill(tint))
                 } else {
                     shape.fill(.ultraThinMaterial)
                 }
@@ -281,7 +313,24 @@ extension View {
     }
 }
 
+extension View {
+    public func glassTile(isActive: Bool, accent: Color, cornerRadius: CGFloat = 14) -> some View {
+        modifier(GlassTileBackground(isActive: isActive, accent: accent, cornerRadius: cornerRadius))
+    }
+
+    /// Glass on the classic skin; an opaque chip from the active skin's palette otherwise.
+    public func adaptiveGlass<S: Shape>(
+        in shape: S,
+        tint: Color? = nil,
+        interactive: Bool = false,
+        clear: Bool = false
+    ) -> some View {
+        modifier(SkinChipSurface(shape: shape, tint: tint, interactive: interactive, clear: clear))
+    }
+}
+
 public struct AdaptiveGlassContainer<Content: View>: View {
+    @Environment(\.appSkin) private var skin
     public var spacing: CGFloat
     @ViewBuilder public var content: () -> Content
 
@@ -291,12 +340,18 @@ public struct AdaptiveGlassContainer<Content: View>: View {
     }
 
     public var body: some View {
-        if #available(macOS 26.0, *) {
+        if skin.isClassic, #available(macOS 26.0, *) {
             GlassEffectContainer(spacing: spacing) {
                 content()
             }
-        } else {
+        } else if skin.isClassic {
             content()
+        } else {
+            // Skins draw opaque chips; skipping the glass container also stops it clipping the
+            // first chip inside horizontal scroll views. The inset keeps chip edges off the clip.
+            content()
+                .padding(.horizontal, 2)
+                .padding(.vertical, 1)
         }
     }
 }
@@ -345,7 +400,75 @@ public struct LiquidGlassSlider: View {
         return CGFloat((clamped - range.lowerBound) / span)
     }
 
+    @Environment(\.appSkin) private var skin
+
+    @ViewBuilder
     public var body: some View {
+        if skin.isClassic {
+            classicBody
+        } else {
+            skinnedBody
+        }
+    }
+
+    /// Flat track with an accent fill and a small round knob that grows while dragging.
+    private var skinnedBody: some View {
+        let p = skin.palette
+        return HStack(spacing: 10) {
+            Image(systemName: iconName)
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(p.muted)
+                .frame(width: 16)
+
+            GeometryReader { geo in
+                let width = max(geo.size.width, 1)
+                let knob: CGFloat = isDragging ? 18 : 14
+                let x = knob / 2 + normalizedProgress * (width - knob)
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(isSpectrumTrack ? AnyShapeStyle(trackFill) : AnyShapeStyle(p.chip))
+                        .opacity(isSpectrumTrack ? 0.75 : 1)
+                        .frame(height: 6)
+                        .overlay(Capsule(style: .continuous).stroke(p.line, lineWidth: 0.6))
+                    if !isSpectrumTrack {
+                        Capsule(style: .continuous)
+                            .fill(p.accentGradient)
+                            .frame(width: max(x, 6), height: 6)
+                            .shadow(color: p.glow ? p.accent.opacity(0.6) : .clear, radius: 4)
+                    }
+                    Circle()
+                        .fill(p.fg)
+                        .frame(width: knob, height: knob)
+                        .overlay(Circle().stroke(isSpectrumTrack ? p.line : p.accent, lineWidth: 2))
+                        .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                        .position(x: x, y: geo.size.height / 2)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { drag in
+                            guard isEnabled else { return }
+                            if !isDragging { withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { isDragging = true } }
+                            updateValue(at: drag.location.x, in: width, thumbWidth: knob)
+                        }
+                        .onEnded { _ in
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { isDragging = false }
+                        }
+                )
+            }
+            .frame(height: 22)
+
+            Text(formattedValue)
+                .font(.system(size: 11, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(p.fg.opacity(0.85))
+                .frame(width: 44, alignment: .trailing)
+        }
+        .opacity(isEnabled ? 1.0 : 0.5)
+    }
+
+    private var classicBody: some View {
         HStack(spacing: 8) {
             Image(systemName: iconName)
                 .font(.system(size: 11.5, weight: .semibold))

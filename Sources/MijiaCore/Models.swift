@@ -552,6 +552,16 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
         switch effect {
         case "Day": return L10n.tr("日光", "Daylight")
         case "Night": return L10n.tr("月光", "Moonlight")
+        case "None": return L10n.tr("无", "None")
+        case "Warmth": return L10n.tr("温馨", "Warmth")
+        case "Tv", "TV": return L10n.tr("观影", "TV")
+        case "Reading": return L10n.tr("阅读", "Reading")
+        case "Computer": return L10n.tr("电脑", "Computer")
+        case "Hospitality": return L10n.tr("会客", "Hospitality")
+        case "Entertainment": return L10n.tr("娱乐", "Entertainment")
+        case "Wakeup": return L10n.tr("起床", "Wake Up")
+        case "Dusk": return L10n.tr("黄昏", "Dusk")
+        case "Sleep": return L10n.tr("睡眠", "Sleep")
         default: return effect
         }
     }
