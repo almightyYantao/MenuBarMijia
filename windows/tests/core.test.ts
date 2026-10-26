@@ -8,6 +8,9 @@ import {
   LocalIntentParser,
   ModelIntentResolver,
   UndoPhrase,
+  assistantEndpointIdentity,
+  endpointAllowsSendingSecrets,
+  inferAssistantPreset,
 } from "../src/core/assistant.js";
 import {
   MiAccountLogin,
@@ -633,5 +636,81 @@ describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", 
     for (const item of corpus.undoCases) {
       assert.equal(UndoPhrase.isUndo(item.utterance), item.isUndo, item.utterance);
     }
+  });
+});
+
+describe("AI provider detection and key transport (#19)", () => {
+  const studyLight: SmartDevice = {
+    id: "dev_ceiling",
+    name: "书房吸顶灯",
+    roomId: "study",
+    roomName: "书房",
+    model: "yeelink.light.ceiling20",
+    isOnline: true,
+    kind: {
+      kind: "light",
+      entityId: "miot:dev_ceiling:2",
+      isOn: false,
+      brightnessPercent: 80,
+      colorTempKelvin: 4000,
+      minKelvin: 2700,
+      maxKelvin: 6500,
+      currentEffect: "Day",
+      availableEffects: ["Day", "Night"],
+    },
+  };
+
+  it("matches the cross-platform provider corpus shared with MijiaCoreTests", () => {
+    const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/provider_golden.json"), "utf8");
+    const golden = JSON.parse(raw) as {
+      presets: Array<{ url: string; preset: string }>;
+      keyTransport: Array<{ url: string; allowsKey: boolean }>;
+    };
+    assert.ok(golden.presets.length >= 30);
+    for (const item of golden.presets) {
+      assert.equal(inferAssistantPreset(item.url).id, item.preset, item.url);
+    }
+    for (const item of golden.keyTransport) {
+      assert.equal(endpointAllowsSendingSecrets(item.url), item.allowsKey, item.url);
+    }
+  });
+
+  it("binds keys to host and port", () => {
+    assert.equal(assistantEndpointIdentity("https://Proxy.Example.com:8443/v1"), "proxy.example.com:8443");
+    assert.equal(assistantEndpointIdentity("https://openrouter.ai/api/v1"), "openrouter.ai");
+    assert.equal(assistantEndpointIdentity("http://[::1]:8080/v1"), "[::1]:8080");
+    assert.equal(assistantEndpointIdentity(""), null);
+  });
+
+  it("refuses plain http to a public host before sending anything", async () => {
+    let calls = 0;
+    const resolver = new ModelIntentResolver(
+      { baseURL: "http://api.deepseek.com/v1", model: "deepseek-chat", apiKey: "sk-deepseek" },
+      async () => {
+        calls += 1;
+        return { status: 200, headers: {}, body: "{}" };
+      }
+    );
+    await assert.rejects(resolver.resolve("打开书房灯", [studyLight], []), /https/);
+    assert.equal(calls, 0);
+  });
+
+  it("sends a schemeless URL over https and gives a look-alike OpenRouter host no /api rewrite", async () => {
+    const urls: string[] = [];
+    const reply = JSON.stringify({ choices: [{ message: { content: JSON.stringify({ actions: [], reply: "好" }) } }] });
+    const transport = async (req: { url: string }) => {
+      urls.push(req.url);
+      return { status: 200, headers: {}, body: reply };
+    };
+    await new ModelIntentResolver({ baseURL: "api.deepseek.com/v1", model: "deepseek-chat", apiKey: "sk" }, transport)
+      .resolve("打开书房灯", [studyLight], [])
+      .catch(() => undefined);
+    await new ModelIntentResolver({ baseURL: "https://openrouter.ai.evil.com", model: "gpt-4o-mini", apiKey: "sk" }, transport)
+      .resolve("打开书房灯", [studyLight], [])
+      .catch(() => undefined);
+    assert.deepEqual(urls, [
+      "https://api.deepseek.com/v1/chat/completions",
+      "https://openrouter.ai.evil.com/v1/chat/completions",
+    ]);
   });
 });

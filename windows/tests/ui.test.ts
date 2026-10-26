@@ -179,3 +179,45 @@ describe("Windows device control and undo", () => {
     assert.match(document.body.textContent ?? "", /已撤销/);
   });
 });
+
+describe("AI key stays with the server it was saved for (#19)", () => {
+  function keyField(): HTMLInputElement {
+    return element("#settings-api-key") as HTMLInputElement;
+  }
+
+  it("does not carry the saved key to another provider, and restores it when switching back", async () => {
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+      assistantBaseURL: "https://openrouter.ai/api/v1",
+      openRouterApiKey: "sk-or-saved",
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
+    await click("#btn-settings");
+    assert.equal(keyField().value, "sk-or-saved");
+
+    await click('[data-ai-preset="deepseek"]');
+    assert.equal(keyField().value, "");
+
+    await click('[data-ai-preset="openrouter_jev"]');
+    assert.equal(keyField().value, "sk-or-saved");
+
+    const base = element("#settings-base-url") as HTMLInputElement;
+    base.value = "https://openrouter.ai.evil.com/api/v1";
+    base.dispatchEvent(new Event("input", { bubbles: true }));
+    assert.equal(keyField().value, "");
+  });
+
+  it("never sends a key that was saved for a different server", async () => {
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+      assistantBaseURL: "https://my-proxy.example.com/v1",
+      openRouterApiKey: "sk-saved-for-openrouter",
+      assistantKeyEndpoint: "openrouter.ai",
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
+    await command("帮我想想今晚怎么安排灯光氛围");
+    assert.match(document.body.textContent ?? "", /未命中本地规则。请在设置中填写 AI 服务的 API Key/);
+  });
+});

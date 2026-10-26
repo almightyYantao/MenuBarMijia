@@ -626,6 +626,8 @@ struct AssistantSettingsSection: View {
         let hasCustomKey = !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let ambientSource = AssistantConfig.ambientKeySourceLabel(forBaseURL: baseURLDraft)
         let isLoopback = AssistantConfig(baseURL: baseURLDraft, model: modelDraft, apiKey: "").isLoopbackEndpoint
+        let isInsecure = !baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !AssistantConfig(baseURL: baseURLDraft, model: modelDraft, apiKey: "").allowsSendingAPIKey
         let isSystemOne = ModelIntentResolver.isSystemOneModel(modelDraft)
 
         VStack(alignment: .leading, spacing: 9) {
@@ -634,7 +636,11 @@ struct AssistantSettingsSection: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if hasCustomKey {
+                if isInsecure {
+                    Text(L10n.tr("● 地址需用 https，否则不会发送", "● Use https; nothing will be sent"))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.orange)
+                } else if hasCustomKey {
                     Text(L10n.tr("● 已配置自定义密钥", "● Custom API Key Set"))
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(.green)
@@ -672,7 +678,10 @@ struct AssistantSettingsSection: View {
                                 if modelDraft == oldPreset.defaultModel || ModelIntentResolver.isSystemOneModel(modelDraft) {
                                     modelDraft = "gpt-4o-mini"
                                 }
-                                apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: "https://custom.local/v1")
+                                // Keys never follow the user to another provider; a custom key reappears once its own URL is typed.
+                                apiKeyDraft = AssistantProviderPreset.infer(baseURL: baseURLDraft) == .custom
+                                    ? AssistantConfig.userStoredAPIKey(forBaseURL: baseURLDraft)
+                                    : ""
                             }
                         }
                     )
@@ -696,8 +705,15 @@ struct AssistantSettingsSection: View {
                         get: { baseURLDraft },
                         set: { newValue in
                             let oldPreset = selectedPreset
+                            let oldURL = baseURLDraft
                             baseURLDraft = newValue
                             let inferred = AssistantProviderPreset.infer(baseURL: newValue)
+                            if inferred == .custom, inferred == oldPreset,
+                               AssistantEndpoint(newValue)?.identity != AssistantEndpoint(oldURL)?.identity,
+                               apiKeyDraft.isEmpty || apiKeyDraft == AssistantConfig.userStoredAPIKey(forBaseURL: oldURL) {
+                                // Another custom server: the saved key stays with its own server (#19).
+                                apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: newValue)
+                            }
                             if inferred != oldPreset {
                                 selectedPreset = inferred
                                 apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: newValue)

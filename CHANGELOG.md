@@ -1,5 +1,10 @@
 # 更新记录
 
+## 未发布
+
+### 安全与隐私
+- **AI 服务商改为精确域名识别（[#19](https://github.com/jryang1997/MenuBarMijia/issues/19)）**：`openrouter.ai.evil.com`、`notopenrouter.ai` 这类仿冒地址不再被当成 OpenRouter，也拿不到你保存的 Key。自定义地址的 Key 只发给保存时的那台服务器；换地址要重新填。非 https 的公网地址一律不发送（本机和局域网除外）。macOS 与 Windows 共用 `Tests/Fixtures/provider_golden.json` 校验。
+
 ## 1.0.6
 
 本次提供 macOS (`MenuBarMijia-1.0.6.dmg`) 与 Windows 安装包。

@@ -7,6 +7,10 @@ import {
   ModelIntentResolver,
   UndoPhrase,
   inferAssistantPreset,
+  assistantEndpointIdentity,
+  endpointAllowsSendingSecrets,
+  isLocalAssistantEndpoint,
+  INSECURE_ENDPOINT_MESSAGE,
 } from "../core/assistant.js";
 import {
   type HttpRequest,
@@ -109,6 +113,8 @@ interface PersistedSettings {
   haToken: string;
   assistantBaseURL: string;
   openRouterApiKey: string;
+  /** host[:port] the API key was saved for; the key is never sent to another server (#19). */
+  assistantKeyEndpoint: string | null;
   assistantModel: string;
   habitLearningEnabled: boolean;
   learnedShortcuts: LearnedShortcut[];
@@ -367,6 +373,13 @@ function loadSettings(): PersistedSettings {
         haToken: parsed.haToken ?? "",
         assistantBaseURL: parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1",
         openRouterApiKey: parsed.openRouterApiKey ?? "",
+        // Keys saved before binding existed belong to the URL saved alongside them.
+        assistantKeyEndpoint:
+          parsed.assistantKeyEndpoint !== undefined
+            ? parsed.assistantKeyEndpoint
+            : parsed.openRouterApiKey
+              ? assistantEndpointIdentity(parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1")
+              : null,
         assistantModel: parsed.assistantModel ?? "~typesafe/jev-latest",
         habitLearningEnabled: parsed.habitLearningEnabled ?? true,
         learnedShortcuts: parsed.learnedShortcuts ?? [],
@@ -396,6 +409,7 @@ function loadSettings(): PersistedSettings {
     haToken: "",
     assistantBaseURL: "https://openrouter.ai/api/v1",
     openRouterApiKey: "",
+    assistantKeyEndpoint: null,
     assistantModel: "~typesafe/jev-latest",
     habitLearningEnabled: true,
     learnedShortcuts: [],
@@ -775,9 +789,15 @@ export class MenuMijiaWindowsApp {
       let sourceLabel = "0ms 本地直达";
 
       if (!plan) {
-        const apiKey = this.settings.openRouterApiKey.trim();
         const baseURL = this.settings.assistantBaseURL.trim() || "https://openrouter.ai/api/v1";
-        const isLoopback = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(baseURL);
+        const apiKey = this.apiKeyFor(baseURL);
+        const isLoopback = isLocalAssistantEndpoint(baseURL);
+        if (!endpointAllowsSendingSecrets(baseURL)) {
+          this.replyBanner = { text: INSECURE_ENDPOINT_MESSAGE, source: "地址不安全", isError: true };
+          this.isResolvingIntent = false;
+          this.render();
+          return;
+        }
         if (!apiKey && !isLoopback) {
           this.replyBanner = {
             text: "未命中本地规则。请在设置中填写 AI 服务的 API Key（支持 OpenRouter Jev、原生 Jev、DeepSeek 等）。",
@@ -2064,7 +2084,7 @@ export class MenuMijiaWindowsApp {
               class="cc-input"
               type="password"
               placeholder="sk-or-v1-..."
-              value="${this.escapeHtml(this.settings.openRouterApiKey)}"
+              value="${this.escapeHtml(this.apiKeyFor(this.settings.assistantBaseURL))}"
             />
           </div>
 
@@ -2193,7 +2213,7 @@ export class MenuMijiaWindowsApp {
               class="cc-input"
               type="password"
               placeholder="${this.escapeHtml(inferAssistantPreset(this.settings.assistantBaseURL).keyPlaceholder)}"
-              value="${this.escapeHtml(this.settings.openRouterApiKey)}"
+              value="${this.escapeHtml(this.apiKeyFor(this.settings.assistantBaseURL))}"
             />
           </div>
 
@@ -2678,6 +2698,7 @@ export class MenuMijiaWindowsApp {
       const keyInput = this.root.querySelector<HTMLInputElement>("#onboarding-api-key");
       if (keyInput && keyInput.value.trim()) {
         this.settings.openRouterApiKey = keyInput.value.trim();
+        this.settings.assistantKeyEndpoint = assistantEndpointIdentity(this.settings.assistantBaseURL);
       }
       this.settings.hasCompletedOnboarding = true;
       saveSettings(this.settings);
@@ -2738,11 +2759,20 @@ export class MenuMijiaWindowsApp {
         const apiKeyEl = this.root.querySelector<HTMLInputElement>("#settings-api-key");
         if (baseEl) baseEl.value = preset.defaultBaseURL;
         if (modelEl) modelEl.value = preset.defaultModel;
-        if (apiKeyEl) apiKeyEl.placeholder = preset.keyPlaceholder;
+        if (apiKeyEl) {
+          apiKeyEl.placeholder = preset.keyPlaceholder;
+          this.syncKeyFieldWithEndpoint(apiKeyEl, preset.defaultBaseURL);
+        }
         this.root.querySelectorAll<HTMLElement>("[data-ai-preset]").forEach((el) => {
           el.classList.toggle("is-active", el.dataset.aiPreset === preset.id);
         });
       });
+    });
+
+    this.root.querySelector<HTMLInputElement>("#settings-base-url")?.addEventListener("input", (event) => {
+      const apiKeyEl = this.root.querySelector<HTMLInputElement>("#settings-api-key");
+      const target = event.target as HTMLInputElement;
+      if (apiKeyEl) this.syncKeyFieldWithEndpoint(apiKeyEl, target.value);
     });
 
     this.root.querySelector("#btn-save-settings")?.addEventListener("click", () => {
@@ -2752,6 +2782,9 @@ export class MenuMijiaWindowsApp {
       const habitEl = this.root.querySelector<HTMLInputElement>("#settings-habit");
       if (baseEl) this.settings.assistantBaseURL = baseEl.value.trim() || "https://openrouter.ai/api/v1";
       if (apiKeyEl) this.settings.openRouterApiKey = apiKeyEl.value.trim();
+      this.settings.assistantKeyEndpoint = this.settings.openRouterApiKey
+        ? assistantEndpointIdentity(this.settings.assistantBaseURL)
+        : null;
       const inferredPreset = inferAssistantPreset(this.settings.assistantBaseURL);
       const fallbackModel = inferredPreset.defaultModel || "gpt-4o-mini";
       if (modelEl) this.settings.assistantModel = modelEl.value.trim() || fallbackModel;
@@ -2993,6 +3026,26 @@ export class MenuMijiaWindowsApp {
   private applyPanelHeight(): void {
     const h = PANEL_HEIGHTS.find((x) => x.id === this.settings.panelHeight) ?? PANEL_HEIGHTS[1]!;
     invokeTauriVoid("set_panel_height", { height: h.px });
+  }
+
+  /** The saved API key, only when it was saved for this server (#19). */
+  private apiKeyFor(baseURL: string): string {
+    const key = this.settings.openRouterApiKey.trim();
+    if (!key) return "";
+    const identity = assistantEndpointIdentity(baseURL);
+    return identity !== null && identity === this.settings.assistantKeyEndpoint ? key : "";
+  }
+
+  /** Pointing the address at another server clears the saved key from the form; switching back restores it. */
+  private syncKeyFieldWithEndpoint(apiKeyEl: HTMLInputElement, baseURL: string): void {
+    const savedKey = this.settings.openRouterApiKey.trim();
+    if (!savedKey) return;
+    const belongs = this.apiKeyFor(baseURL) !== "";
+    if (!belongs && apiKeyEl.value.trim() === savedKey) {
+      apiKeyEl.value = "";
+    } else if (belongs && apiKeyEl.value.trim() === "") {
+      apiKeyEl.value = savedKey;
+    }
   }
 
   private escapeHtml(str: string): string {

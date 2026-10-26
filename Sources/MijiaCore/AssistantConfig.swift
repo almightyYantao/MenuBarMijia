@@ -170,7 +170,8 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
         case .gemini: return ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
         case .groq: return ["GROQ_API_KEY"]
         case .ollama: return []
-        case .custom: return ["OPENAI_API_KEY"]
+        // A custom endpoint can be any server, so it never receives keys meant for a known provider.
+        case .custom: return []
         }
     }
 
@@ -191,21 +192,22 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
         }
     }
 
+    /// Maps an endpoint to the provider whose saved key it may use. Unknown or look-alike hosts are `.custom` (#19).
     public static func infer(baseURL: String) -> AssistantProviderPreset {
-        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let parsed = URL(string: trimmed)
-        let host = parsed?.host?.lowercased() ?? trimmed
-        if host.contains("openrouter.ai") { return .openRouterJev }
-        if host.contains("typesafe.ai") { return .nativeJev }
-        if host.contains("deepseek.com") { return .deepSeek }
-        if host.contains("siliconflow.cn") { return .siliconFlow }
-        if host.contains("aliyuncs.com") { return .dashScope }
-        if host.contains("bigmodel.cn") { return .zhipuGLM }
-        if host.contains("moonshot.cn") || host.contains("moonshot.ai") { return .moonshotKimi }
-        if host.contains("openai.com") { return .openAI }
-        if host.contains("googleapis.com") { return .gemini }
-        if host.contains("groq.com") { return .groq }
-        if parsed?.port == 11434 || trimmed.contains(":11434") { return .ollama }
+        guard let endpoint = AssistantEndpoint(baseURL) else { return .custom }
+        let host = endpoint.host
+        if endpoint.hostMatches(domain: "openrouter.ai") { return .openRouterJev }
+        if endpoint.hostMatches(domain: "typesafe.ai") { return .nativeJev }
+        if endpoint.hostMatches(domain: "deepseek.com") { return .deepSeek }
+        if endpoint.hostMatches(domain: "siliconflow.cn") { return .siliconFlow }
+        // aliyuncs.com and googleapis.com also serve customer-owned buckets, so only the API hosts count.
+        if host == "dashscope.aliyuncs.com" || host == "dashscope-intl.aliyuncs.com" { return .dashScope }
+        if endpoint.hostMatches(domain: "bigmodel.cn") { return .zhipuGLM }
+        if endpoint.hostMatches(domain: "moonshot.cn") || endpoint.hostMatches(domain: "moonshot.ai") { return .moonshotKimi }
+        if endpoint.hostMatches(domain: "openai.com") { return .openAI }
+        if host == "generativelanguage.googleapis.com" { return .gemini }
+        if endpoint.hostMatches(domain: "groq.com") { return .groq }
+        if endpoint.port == 11434 && endpoint.isLocalNetwork { return .ollama }
         return .custom
     }
 }
@@ -222,6 +224,8 @@ public struct AssistantConfig: Equatable, Sendable {
 
     static let baseURLKey = "assistant_base_url"
     static let modelKey = "assistant_model"
+    /// Every custom URL shares one Keychain slot, so this records which server (host:port) the saved custom key belongs to.
+    static let customKeyEndpointKey = "assistant_custom_key_endpoint"
 
     public var baseURL: String
     public var model: String
@@ -241,16 +245,14 @@ public struct AssistantConfig: Equatable, Sendable {
         !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// The endpoint is on this computer or the local network, so it may run without an API key.
     public var isLoopbackEndpoint: Bool {
-        guard let host = URL(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines))?.host?.lowercased() else {
-            return false
-        }
-        return host == "localhost"
-            || host == "127.0.0.1"
-            || host == "::1"
-            || host.hasSuffix(".local")
-            || host.hasPrefix("192.168.")
-            || host.hasPrefix("10.")
+        AssistantEndpoint(baseURL)?.isLocalNetwork ?? false
+    }
+
+    /// False for plain http to a public host: the key and the user's words would cross the internet unencrypted.
+    public var allowsSendingAPIKey: Bool {
+        AssistantEndpoint(baseURL)?.allowsSendingSecrets ?? false
     }
 
     public static func load(from defaults: UserDefaults, includeAmbientKey: Bool = true) -> AssistantConfig {
@@ -299,6 +301,13 @@ public struct AssistantConfig: Equatable, Sendable {
         let inferred = AssistantProviderPreset.infer(baseURL: trimmedBase)
         let providerAccount = KeychainHelper.assistantProviderAPIKeyAccount(for: inferred)
         KeychainHelper.saveSecret(trimmedKey, account: providerAccount, defaults: defaults)
+        if inferred == .custom {
+            if trimmedKey.isEmpty {
+                defaults.removeObject(forKey: Self.customKeyEndpointKey)
+            } else {
+                defaults.set(AssistantEndpoint(trimmedBase)?.identity, forKey: Self.customKeyEndpointKey)
+            }
+        }
         if inferred == .openRouterJev {
             KeychainHelper.saveSecret(trimmedKey, account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults)
         }
@@ -310,6 +319,9 @@ public struct AssistantConfig: Equatable, Sendable {
         let providerAccount = KeychainHelper.assistantProviderAPIKeyAccount(for: preset)
         let providerKey = KeychainHelper.loadSecret(account: providerAccount, defaults: defaults)
         if !providerKey.isEmpty {
+            if preset == .custom {
+                return customKeyBelongs(to: baseURL, defaults: defaults) ? providerKey : ""
+            }
             return providerKey
         }
         // Pre-v1.0.4 versions stored the OpenRouter key in the generic `assistant_api_key` slot.
@@ -317,6 +329,22 @@ public struct AssistantConfig: Equatable, Sendable {
             return KeychainHelper.loadSecret(account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults)
         }
         return ""
+    }
+
+    /// A custom key is only sent to the server it was saved for. Keys saved before this check existed
+    /// belong to the custom URL that was saved alongside them.
+    private static func customKeyBelongs(to baseURL: String, defaults: UserDefaults) -> Bool {
+        guard let identity = AssistantEndpoint(baseURL)?.identity else { return false }
+        if let bound = defaults.string(forKey: customKeyEndpointKey) {
+            return bound == identity
+        }
+        guard let savedBase = defaults.string(forKey: baseURLKey),
+              AssistantProviderPreset.infer(baseURL: savedBase) == .custom,
+              let savedIdentity = AssistantEndpoint(savedBase)?.identity else {
+            return false
+        }
+        defaults.set(savedIdentity, forKey: customKeyEndpointKey)
+        return savedIdentity == identity
     }
 
     /// Reads an ambient API key from environment variables or `~/.config/codexbar/config.json` matching the provider for `baseURL`.

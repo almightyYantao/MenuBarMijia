@@ -6,6 +6,8 @@ public enum AssistantError: LocalizedError, Equatable, Sendable {
     case httpStatus(Int)
     case emptyResponse
     case malformedResponse
+    /// Plain http to a public host: the key and the user's words would travel unencrypted.
+    case insecureEndpoint(String)
 
     public var errorDescription: String? {
         switch self {
@@ -19,6 +21,11 @@ public enum AssistantError: LocalizedError, Equatable, Sendable {
             return L10n.tr("AI 没有返回内容", "AI returned an empty response")
         case .malformedResponse:
             return L10n.tr("AI 返回的内容无法解析", "Could not parse AI response")
+        case .insecureEndpoint(let url):
+            return L10n.tr(
+                "AI 服务地址不是 https：\(url)。为保护 API Key，只有本机或局域网地址可以用 http",
+                "AI service URL is not https: \(url). To protect your API key, plain http is only allowed for this Mac or the local network."
+            )
         }
     }
 
@@ -390,8 +397,7 @@ public struct ModelIntentResolver: Sendable {
     private func resolvedSystemOneModel(for url: URL) -> String {
         let trimmedModel = config.model.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowerModel = trimmedModel.lowercased()
-        let host = url.host?.lowercased() ?? ""
-        if host.contains("openrouter.ai") {
+        if AssistantEndpoint(url.absoluteString)?.hostMatches(domain: "openrouter.ai") == true {
             if lowerModel.contains("jev"), !trimmedModel.hasPrefix("~") {
                 if lowerModel.hasPrefix("typesafe/") {
                     return "~" + trimmedModel
@@ -428,15 +434,18 @@ public struct ModelIntentResolver: Sendable {
                 while base.hasSuffix("/") { base.removeLast() }
             }
         }
-        guard let baseURL = URL(string: base),
-              let scheme = baseURL.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              let host = baseURL.host?.lowercased(),
-              !host.isEmpty else {
+        if !base.isEmpty, !base.contains("://") {
+            base = "https://" + base
+        }
+        guard let endpoint = AssistantEndpoint(base),
+              let baseURL = URL(string: base) else {
             throw AssistantError.invalidBaseURL(config.baseURL)
         }
+        guard endpoint.allowsSendingSecrets else {
+            throw AssistantError.insecureEndpoint(config.baseURL)
+        }
         let basePath = baseURL.path
-        if host.contains("openrouter.ai") {
+        if endpoint.hostMatches(domain: "openrouter.ai") {
             if basePath.isEmpty {
                 base += "/api/v1"
             } else if basePath == "/api" {
