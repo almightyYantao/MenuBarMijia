@@ -649,9 +649,15 @@ public struct UpdateSystemDriver: Sendable {
                 errReadHandle.readDataToEndOfFile()
             }.value
             let (stdout, stderrData) = await (outData, errData)
+            #if os(macOS)
+            while process.isRunning {
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+            #else
             await Task.detached(priority: .userInitiated) {
                 process.waitUntilExit()
             }.value
+            #endif
             if terminateOnCancel {
                 try Task.checkCancellation()
             }

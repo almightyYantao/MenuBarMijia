@@ -448,7 +448,9 @@ struct UpdateCheckerTests {
         process.standardError = errPipe
         try process.run()
         let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        while process.isRunning {
+            Thread.sleep(forTimeInterval: 0.005)
+        }
         if process.terminationStatus != 0 {
             let errText = String(data: errData, encoding: .utf8) ?? ""
             throw UpdateInstallError.unpackFailed("\(executable) exited \(process.terminationStatus): \(errText)")
