@@ -990,6 +990,24 @@ public struct ControlCenterPanel: View {
                         withTransaction(t) { proxy.scrollTo(store.selectedRoomId ?? "roomsStart", anchor: .leading) }
                     }
                     .onAppear { proxy.scrollTo("roomsStart", anchor: .leading) }
+                    // Keep the chosen room fully visible; tapping a half-hidden one slides it in.
+                    .onChange(of: store.selectedRoomId) { _, id in
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                            proxy.scrollTo(id ?? "roomsStart", anchor: .center)
+                        }
+                    }
+                    // Soft fade at both ends instead of letters being sliced by the track edge.
+                    .mask(
+                        LinearGradient(
+                            stops: [
+                                .init(color: .black.opacity(0.0), location: 0.0),
+                                .init(color: .black, location: 0.035),
+                                .init(color: .black, location: 0.86),
+                                .init(color: .black.opacity(0.0), location: 1.0)
+                            ],
+                            startPoint: .leading, endPoint: .trailing
+                        )
+                    )
                 }
                 .clipShape(Capsule(style: .continuous))
                 .background(Capsule(style: .continuous).fill(skin.palette.chip))
