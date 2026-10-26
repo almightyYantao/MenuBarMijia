@@ -357,8 +357,8 @@ struct AssistantCommandBar: View {
 
             if let reply = replyLine {
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Image(systemName: reply.isError ? "xmark.octagon.fill" : "checkmark.circle.fill")
-                        .foregroundStyle(reply.isError ? Color.red : Color.green)
+                    Image(systemName: reply.isChoice ? "hand.tap.fill" : (reply.isError ? "xmark.octagon.fill" : "checkmark.circle.fill"))
+                        .foregroundStyle(reply.isChoice ? Color.orange : (reply.isError ? Color.red : Color.green))
                     Text(reply.text)
                         .foregroundStyle(.primary.opacity(0.85))
                         .lineLimit(2)
@@ -638,13 +638,14 @@ struct AssistantCommandBar: View {
         }
     }
 
-    private var replyLine: (text: String, isError: Bool)? {
+    private var replyLine: (text: String, isError: Bool, isChoice: Bool)? {
         if let speechError = speech.errorMessage {
-            return (speechError, true)
+            return (speechError, true, false)
         }
         switch store.assistantState {
-        case .done(let text): return (text.isEmpty ? L10n.tr("已执行", "Done") : text, false)
-        case .failed(let message): return (message, true)
+        case .done(let text): return (text.isEmpty ? L10n.tr("已执行", "Done") : text, false, false)
+        case .failed(let message): return (message, true, false)
+        case .awaitingChoice(let message): return (message, false, true)
         case .idle, .thinking: return nil
         }
     }

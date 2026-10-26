@@ -62,6 +62,8 @@ public enum AssistantState: Equatable, Sendable {
     case thinking
     case done(String)
     case failed(String)
+    /// Nothing ran by itself; the user picks one of the suggestion chips (#21).
+    case awaitingChoice(String)
 }
 
 /// The first request to a cloud AI service waits for the user's OK, so they see once what is sent and to whom (#20).

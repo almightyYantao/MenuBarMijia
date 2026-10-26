@@ -270,3 +270,41 @@ describe("First cloud AI request asks once (#20)", () => {
     assert.equal(urls.length, 0);
   });
 });
+
+describe("AI suggestions wait for a tap (#21)", () => {
+  it("shows a chip for an unsure guess and runs it only when tapped", async () => {
+    const answers = {
+      target: { choice: "d3", confidence: 0.9 },
+      op: { choice: "power_off", confidence: 0.55 },
+      temp: { choice: "none", confidence: 0.99 },
+    };
+    const invoke = async (name: string) => {
+      if (name !== "native_http") return undefined;
+      return { status: 200, headers: {}, body: JSON.stringify({ answers }) };
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+      assistantBaseURL: "https://openrouter.ai/api/v1",
+      assistantModel: "~typesafe/jev-latest",
+      openRouterApiKey: "sk-or-test",
+      assistantKeyEndpoint: "openrouter.ai",
+      cloudConsentEndpoints: ["openrouter.ai"],
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
+    const before = tile("light.study_desk");
+    await command("帮我想想今晚怎么安排灯光氛围");
+    await setImmediate();
+    assert.match(document.body.textContent ?? "", /没把握直接执行，点下面的建议再执行/);
+    assert.equal(tile("light.study_desk"), before);
+
+    const chip = element("[data-suggestion-id]");
+    assert.match(chip.textContent ?? "", /关闭书房台灯 · 55%/);
+    chip.click();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(document.querySelector("[data-suggestion-id]"), null);
+    assert.match(tile("light.study_desk"), /已关闭/);
+  });
+});

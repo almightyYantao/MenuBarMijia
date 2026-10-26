@@ -257,6 +257,10 @@ extension HomeStore {
         guard !plan.intents.isEmpty else {
             if !plan.suggestions.isEmpty {
                 assistantSuggestions = plan.suggestions
+                setAssistantState(.awaitingChoice(plan.reply.isEmpty
+                    ? ModelActionPolicy.confirmationReply(ranReply: nil)
+                    : plan.reply))
+                return plan
             }
             setAssistantState(.failed(plan.reply.isEmpty ? L10n.tr("没有找到可执行的设备操作", "No matching device actions found") : plan.reply))
             return plan
@@ -704,9 +708,11 @@ extension HomeStore {
         assistantState = state
         assistantResetTask?.cancel()
         switch state {
-        case .done, .failed:
+        case .done, .failed, .awaitingChoice:
+            // A "tap a suggestion" hint stays longer so it can be read next to the chips.
+            let delay: Double = if case .awaitingChoice = state { 8 } else { 3.2 }
             assistantResetTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(3.2))
+                try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled, let self, self.assistantState == state else { return }
                 self.assistantState = .idle
             }

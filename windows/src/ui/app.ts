@@ -11,6 +11,7 @@ import {
   endpointAllowsSendingSecrets,
   isLocalAssistantEndpoint,
   INSECURE_ENDPOINT_MESSAGE,
+  ModelActionPolicy,
 } from "../core/assistant.js";
 import {
   type HttpRequest,
@@ -28,6 +29,7 @@ import {
   maskedMiUserId,
 } from "../core/miCloudClient.js";
 import {
+  type AssistantSuggestion,
   type DeviceCommand,
   type DeviceIntent,
   type EnvironmentReading,
@@ -456,6 +458,8 @@ export class MenuMijiaWindowsApp {
   private replyBanner: ReplyBannerState | null = null;
   /** A command waiting for the user to allow sending it to a cloud AI service (#20). */
   private pendingCloudConsent: { utterance: string; endpoint: string } | null = null;
+  /** AI guesses that wait for a tap instead of running by themselves (#21). */
+  private pendingSuggestions: AssistantSuggestion[] = [];
   private isResolvingIntent = false;
   private isSyncingCloud = false;
   private isListeningVoice = false;
@@ -742,8 +746,9 @@ export class MenuMijiaWindowsApp {
   private async handleNaturalCommand(rawInput: string, fromScheduled = false): Promise<void> {
     const trimmed = rawInput.trim();
     if (!trimmed) return;
-    // A new command replaces any question still waiting for cloud consent.
+    // A new command replaces any question still waiting for cloud consent, and old suggestions.
     this.pendingCloudConsent = null;
+    this.pendingSuggestions = [];
 
     if (UndoPhrase.isUndo(trimmed)) {
       await this.performUndo();
@@ -842,6 +847,11 @@ export class MenuMijiaWindowsApp {
       }
 
       const sanitized = IntentValidator.sanitize(plan.intents, aliasedDevices, this.scenes);
+      this.pendingSuggestions = [...plan.suggestions];
+      if (sanitized.length === 0 && plan.suggestions.length > 0) {
+        this.replyBanner = { text: plan.reply || ModelActionPolicy.confirmationReply(null), source: "需要确认" };
+        return;
+      }
       const replyText =
         plan.reply || IntentReply.describe(sanitized, aliasedDevices, this.scenes);
       const succeeded = await this.executeIntents(sanitized, replyText, sourceLabel);
@@ -1478,7 +1488,7 @@ export class MenuMijiaWindowsApp {
             </div>
 
             ${
-              this.replyBanner || this.scheduledCommands.length > 0 || activeUndo
+              this.replyBanner || this.scheduledCommands.length > 0 || activeUndo || this.pendingSuggestions.length > 0
                 ? `
               <div class="cc-feedback-card ${this.replyBanner?.isError ? "is-error" : ""}">
                 ${
@@ -1498,6 +1508,21 @@ export class MenuMijiaWindowsApp {
                         ? `<button class="cc-inline-pill" id="btn-undo">撤销</button>`
                         : ""
                     }
+                  </div>
+                `
+                    : ""
+                }
+                ${
+                  this.pendingSuggestions.length > 0
+                    ? `
+                  <div class="cc-suggestion-row">
+                    ${this.pendingSuggestions
+                      .map(
+                        (item) => `<button class="cc-inline-pill" data-suggestion-id="${this.escapeHtml(item.id)}">${this.escapeHtml(item.title)}${
+                          item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""
+                        }</button>`,
+                      )
+                      .join("")}
                   </div>
                 `
                     : ""
@@ -2542,6 +2567,17 @@ export class MenuMijiaWindowsApp {
 
     this.root.querySelector("#btn-undo")?.addEventListener("click", () => {
       void this.performUndo();
+    });
+
+    this.root.querySelectorAll<HTMLElement>("[data-suggestion-id]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const suggestion = this.pendingSuggestions.find((s) => s.id === btn.dataset.suggestionId);
+        if (!suggestion) return;
+        this.pendingSuggestions = this.pendingSuggestions.filter((s) => s.id !== suggestion.id);
+        const aliasedDevices = withAliases(this.layout, this.devices);
+        const intents = IntentValidator.sanitize(suggestion.intents, aliasedDevices, this.scenes);
+        void this.executeIntents(intents, IntentReply.describe(intents, aliasedDevices, this.scenes), "已确认");
+      });
     });
 
     this.root.querySelectorAll<HTMLElement>("[data-cancel-timer]").forEach((btn) => {

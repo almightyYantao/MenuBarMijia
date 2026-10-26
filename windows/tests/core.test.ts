@@ -6,6 +6,7 @@ import {
   ASSISTANT_PROVIDER_PRESETS,
   DelayPhrase,
   LocalIntentParser,
+  ModelActionPolicy,
   ModelIntentResolver,
   UndoPhrase,
   assistantEndpointIdentity,
@@ -712,5 +713,128 @@ describe("AI provider detection and key transport (#19)", () => {
       "https://api.deepseek.com/v1/chat/completions",
       "https://openrouter.ai.evil.com/v1/chat/completions",
     ]);
+  });
+});
+
+describe("AI guesses below 80% and risky actions wait for a tap (#21)", () => {
+  const light: SmartDevice = {
+    id: "dev_light",
+    name: "书房台灯",
+    roomId: "study",
+    roomName: "书房",
+    model: "yeelink.light.lamp4",
+    isOnline: true,
+    kind: {
+      kind: "light",
+      entityId: "miot:dev_light:2",
+      isOn: false,
+      brightnessPercent: 50,
+      colorTempKelvin: null,
+      minKelvin: 2700,
+      maxKelvin: 6500,
+      currentEffect: null,
+      availableEffects: [],
+    },
+  };
+  const heater: SmartDevice = {
+    id: "dev_heater",
+    name: "次卧取暖器",
+    roomId: "guest",
+    roomName: "次卧",
+    model: "zhimi.heater.za2",
+    isOnline: true,
+    kind: {
+      kind: "climate",
+      entityId: "miot:dev_heater:2",
+      isOn: false,
+      hvacMode: "off",
+      availableModes: ["off", "heat"],
+      targetTemperature: 20,
+      currentTemperature: 16,
+      minTemp: 16,
+      maxTemp: 28,
+      step: 1,
+      fanMode: null,
+      availableFanModes: [],
+    },
+  };
+  const devices = [light, heater];
+
+  function systemOne(answers: Record<string, unknown>): ModelIntentResolver {
+    return new ModelIntentResolver(
+      { baseURL: "https://openrouter.ai/api/v1", model: "typesafe/jev-latest", apiKey: "test-key" },
+      async () => ({ status: 200, headers: {}, body: JSON.stringify({ answers }) })
+    );
+  }
+
+  it("reads probabilities, then confidence; a missing number counts as 0", () => {
+    assert.equal(ModelActionPolicy.probabilityOf({ probabilities: { a: 0.9 }, confidence: 0.1 }, "a"), 0.9);
+    assert.equal(ModelActionPolicy.probabilityOf({ confidence: "85%" }, "a"), 0.85);
+    assert.equal(ModelActionPolicy.probabilityOf({ confidence: 50 }, "a"), 0.5);
+    assert.equal(ModelActionPolicy.probabilityOf({ choice: "a" }, "a"), 0);
+    assert.equal(ModelActionPolicy.probabilityOf(undefined, "a"), 0);
+  });
+
+  it("flags heater on but not heater off", () => {
+    const needs = (isOn: boolean) =>
+      ModelActionPolicy.needsConfirmation({ targetId: "dev_heater", operation: { kind: "power", isOn } }, devices);
+    assert.equal(needs(true), true);
+    assert.equal(needs(false), false);
+    assert.equal(
+      ModelActionPolicy.needsConfirmation({ targetId: "dev_light", operation: { kind: "power", isOn: true } }, devices),
+      false
+    );
+  });
+
+  it("turns a 60% System One answer into a chip instead of running it", async () => {
+    const plan = await systemOne({
+      target: { choice: "d1", confidence: 0.95 },
+      op: { choice: "power_on", confidence: 0.6 },
+      temp: { choice: "none", confidence: 0.99 },
+    }).resolve("有点暗", devices, []);
+    assert.deepEqual(plan.intents, []);
+    assert.equal(plan.suggestions.length, 1);
+    assert.equal(plan.suggestions[0]?.title, "打开书房台灯");
+    assert.equal(plan.suggestions[0]?.confidencePercent, 60);
+    assert.equal(plan.reply, "没把握直接执行，点下面的建议再执行");
+  });
+
+  it("never auto-runs answers that carry no probability", async () => {
+    const plan = await systemOne({
+      target: { choice: "d1" },
+      op: { choice: "power_on" },
+      temp: { choice: "none" },
+    }).resolve("开灯", devices, []);
+    assert.deepEqual(plan.intents, []);
+    assert.deepEqual(plan.suggestions, []);
+  });
+
+  it("keeps a confident heater-on as a chip", async () => {
+    const plan = await systemOne({
+      target: { choice: "d2", confidence: 0.99 },
+      op: { choice: "power_on", confidence: 0.99 },
+      temp: { choice: "none", confidence: 0.99 },
+    }).resolve("次卧有点冷", devices, []);
+    assert.deepEqual(plan.intents, []);
+    assert.deepEqual(plan.suggestions[0]?.intents, [{ targetId: "dev_heater", operation: { kind: "power", isOn: true } }]);
+  });
+
+  it("chat models: the light runs, the heater waits, and the reply does not claim it ran", async () => {
+    const content = JSON.stringify({
+      actions: [
+        { device: "d1", op: "power", value: true },
+        { device: "d2", op: "power", value: true },
+      ],
+      reply: "已打开台灯和取暖器",
+    });
+    const resolver = new ModelIntentResolver(
+      { baseURL: "https://api.deepseek.com/v1", model: "deepseek-chat", apiKey: "test-key" },
+      async () => ({ status: 200, headers: {}, body: JSON.stringify({ choices: [{ message: { content } }] }) })
+    );
+    const plan = await resolver.resolve("我要看书，有点冷", devices, []);
+    assert.deepEqual(plan.intents, [{ targetId: "dev_light", operation: { kind: "power", isOn: true } }]);
+    assert.equal(plan.suggestions[0]?.id, "confirm:dev_heater");
+    assert.equal(plan.suggestions[0]?.confidencePercent, null);
+    assert.equal(plan.reply, "已打开书房台灯；下面的建议要点一下才执行");
   });
 });

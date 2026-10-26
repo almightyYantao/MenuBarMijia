@@ -426,6 +426,13 @@ body {
   cursor: pointer;
 }
 
+.cc-suggestion-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
 .cc-timers-stack {
   display: flex;
   flex-direction: column;

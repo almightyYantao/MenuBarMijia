@@ -358,7 +358,9 @@ const CONSUMED_MARKER = "\u001f";
 
 function deviceCategory(dev: SmartDevice): IntentCategory {
   if (dev.kind.kind === "light") return "light";
-  if (dev.kind.kind === "climate") return dev.name.includes("暖") ? "heater" : "climate";
+  if (dev.kind.kind === "climate") {
+    return dev.model.includes("heater") || dev.name.includes("暖") ? "heater" : "climate";
+  }
   if (dev.kind.kind === "fan") return "fan";
   if (dev.kind.kind === "plug") return "plug";
   if (dev.kind.kind === "vacuum") return "vacuum";
@@ -927,6 +929,101 @@ export const LocalIntentParser = {
   },
 };
 
+// MARK: - When AI actions may run by themselves (#21)
+
+function readProbability(raw: unknown): number | null {
+  let value: number | null = null;
+  if (typeof raw === "number") {
+    value = raw;
+  } else if (typeof raw === "string" && raw.trim() !== "") {
+    const text = raw.trim();
+    value = text.endsWith("%") ? Number(text.slice(0, -1).trim()) / 100 : Number(text);
+  }
+  if (value === null || !Number.isFinite(value)) return null;
+  if (value > 1) value /= 100;
+  return Math.min(Math.max(value, 0), 1);
+}
+
+/** Mirrors MijiaCore.ModelActionPolicy: guesses below 80% and risky actions wait for a tap. */
+export const ModelActionPolicy = {
+  AUTO_RUN_THRESHOLD: 0.8,
+  SUGGESTION_FLOOR: 0.2,
+
+  /** probabilities[choice], else confidence, else 0 — a missing number means "not sure". */
+  probabilityOf(answer: Record<string, unknown> | undefined, choice: string): number {
+    if (!answer) return 0;
+    const probs = answer["probabilities"];
+    if (probs && typeof probs === "object") {
+      const value = readProbability((probs as Record<string, unknown>)[choice]);
+      if (value !== null) return value;
+    }
+    return readProbability(answer["confidence"]) ?? 0;
+  },
+
+  /** Heater on, any plug switch, or a vacuum start needs a tap even when the model is sure. */
+  needsConfirmation(intent: DeviceIntent, devices: readonly SmartDevice[]): boolean {
+    const dev = devices.find((d) => d.id === intent.targetId);
+    if (!dev) return false;
+    const op = intent.operation;
+    switch (deviceCategory(dev)) {
+      case "heater":
+        if (op.kind === "power") return op.isOn;
+        if (op.kind === "hvacMode") return op.mode !== "off";
+        return true;
+      case "plug":
+        return op.kind === "power";
+      case "vacuum":
+        return op.kind === "power" && op.isOn;
+      default:
+        return false;
+    }
+  },
+
+  partition(
+    intents: readonly DeviceIntent[],
+    devices: readonly SmartDevice[]
+  ): { run: DeviceIntent[]; confirm: DeviceIntent[] } {
+    const run: DeviceIntent[] = [];
+    const confirm: DeviceIntent[] = [];
+    for (const intent of intents) {
+      (this.needsConfirmation(intent, devices) ? confirm : run).push(intent);
+    }
+    return { run, confirm };
+  },
+
+  /** One chip per device, or one chip for the whole group when `grouped`. */
+  chips(
+    intents: readonly DeviceIntent[],
+    probability: number | null,
+    idPrefix: string,
+    devices: readonly SmartDevice[],
+    scenes: readonly HomeScene[],
+    grouped = false
+  ): AssistantSuggestion[] {
+    if (intents.length === 0) return [];
+    const percent = probability === null ? null : Math.max(20, Math.min(99, Math.round(probability * 100)));
+    const title = (group: readonly DeviceIntent[]) => IntentReply.describe(group, devices, scenes).replace(/^已/, "");
+    if (grouped) {
+      return [{ id: idPrefix, title: title(intents), confidencePercent: percent, intents: [...intents] }];
+    }
+    const byTarget = new Map<string, DeviceIntent[]>();
+    for (const intent of intents) {
+      byTarget.set(intent.targetId, [...(byTarget.get(intent.targetId) ?? []), intent]);
+    }
+    return [...byTarget.entries()].map(([targetId, group]) => ({
+      id: `${idPrefix}:${targetId}`,
+      title: title(group),
+      confidencePercent: percent,
+      intents: group,
+    }));
+  },
+
+  confirmationReply(ranReply: string | null): string {
+    if (!ranReply) return "没把握直接执行，点下面的建议再执行";
+    return `${ranReply}；下面的建议要点一下才执行`;
+  },
+};
+
 // MARK: - Jev /v1/systemone & /v1/chat/completions Resolver
 
 export interface AssistantProviderPresetInfo {
@@ -1395,20 +1492,36 @@ export class ModelIntentResolver {
     const targetIds = aliasToIds.get(targetChoice) ?? [];
     const raw: DeviceIntent[] = [];
     const primaryOp = this.decodeSystemOneOp(opChoice);
+    const hasTemp = tempChoice !== "none" && Number.isFinite(Number(tempChoice));
+
+    // Runs by itself only when every answer involved is at least 80% sure (#21).
+    let confidence = ModelActionPolicy.probabilityOf(answers["target"], targetChoice);
+    if (primaryOp) confidence = Math.min(confidence, ModelActionPolicy.probabilityOf(answers["op"], opChoice));
+    if (hasTemp) confidence = Math.min(confidence, ModelActionPolicy.probabilityOf(answers["temp"], tempChoice));
 
     for (const id of targetIds) {
       if (primaryOp) raw.push({ targetId: id, operation: primaryOp });
-      if (tempChoice !== "none" && Number.isFinite(Number(tempChoice))) {
+      if (hasTemp) {
         raw.push({ targetId: id, operation: { kind: "targetTemperature", celsius: Number(tempChoice) } });
       }
     }
 
-    const intents = IntentValidator.sanitize(raw, devices, scenes);
+    const sanitized = IntentValidator.sanitize(raw, devices, scenes);
+    const confident = confidence >= ModelActionPolicy.AUTO_RUN_THRESHOLD;
+    const split = ModelActionPolicy.partition(sanitized, devices);
+    const intents = confident ? split.run : [];
+    const waiting = confident ? split.confirm : sanitized;
+    const suggestions = confidence >= ModelActionPolicy.SUGGESTION_FLOOR
+      ? ModelActionPolicy.chips(waiting, confidence, `jev:primary:${targetChoice}:${opChoice}`, devices, scenes, true)
+      : [];
+    const described = IntentReply.describe(intents, devices, scenes);
     return {
       intents,
-      reply: IntentReply.describe(intents, devices, scenes),
+      reply: suggestions.length > 0
+        ? ModelActionPolicy.confirmationReply(intents.length > 0 ? described : null)
+        : described,
       source: "model",
-      suggestions: [],
+      suggestions,
     };
   }
 
@@ -1518,9 +1631,15 @@ export class ModelIntentResolver {
         }
       }
     }
-    const intents = IntentValidator.sanitize(raw, devices, scenes);
-    const reply = String(payload["reply"] ?? "").trim() || IntentReply.describe(intents, devices, scenes);
-    return { intents, reply, source: "model", suggestions: [] };
+    // Heaters, plugs and vacuums wait for a tap even when the model asks for them directly (#21).
+    const { run: intents, confirm } = ModelActionPolicy.partition(IntentValidator.sanitize(raw, devices, scenes), devices);
+    const suggestions = ModelActionPolicy.chips(confirm, null, "confirm", devices, scenes);
+    const described = IntentReply.describe(intents, devices, scenes);
+    // The model's own reply may claim the waiting actions already happened.
+    const reply = suggestions.length > 0
+      ? ModelActionPolicy.confirmationReply(intents.length > 0 ? described : null)
+      : String(payload["reply"] ?? "").trim() || described;
+    return { intents, reply, source: "model", suggestions };
   }
 
   private decodeChatOp(name: string, val: unknown): IntentOperation | null {
