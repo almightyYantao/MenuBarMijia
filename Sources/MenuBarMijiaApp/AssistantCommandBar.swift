@@ -368,6 +368,10 @@ struct AssistantCommandBar: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
+            if let consent = store.pendingCloudConsent {
+                cloudConsentRow(consent)
+            }
+
             if !store.missedScheduledCommands.isEmpty {
                 missedScheduledRow
             }
@@ -385,6 +389,7 @@ struct AssistantCommandBar: View {
         .animation(AppleMotion.snappySpring, value: store.assistantState)
         .animation(AppleMotion.snappySpring, value: store.assistantSuggestions)
         .animation(AppleMotion.snappySpring, value: store.missedScheduledCommands)
+        .animation(AppleMotion.snappySpring, value: store.pendingCloudConsent)
         .animation(AppleMotion.snappySpring, value: store.scheduledCommands)
         .animation(AppleMotion.snappySpring, value: speech.isListening)
         .onAppear {
@@ -404,6 +409,47 @@ struct AssistantCommandBar: View {
             lastHandledVoiceRequest = newValue
             speech.toggle(store: store)
         }
+    }
+
+    /// Asked once per AI service before anything is sent to the cloud (#20).
+    private func cloudConsentRow(_ consent: PendingCloudConsent) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: "icloud.and.arrow.up")
+                    .foregroundStyle(Color.accentColor)
+                Text(consent.utterance == nil
+                     ? L10n.tr("生成建议要用云端 AI（\(consent.endpoint)），可以发送吗？", "Suggestions need the cloud AI (\(consent.endpoint)). Send?")
+                     : L10n.tr("这句话本机没听懂，要交给云端 AI（\(consent.endpoint)）处理吗？", "Not understood locally. Send it to the cloud AI (\(consent.endpoint))?"))
+                    .foregroundStyle(.primary.opacity(0.88))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(L10n.tr(
+                "会发送：这句话、设备名称/房间/状态、时间段、室温\(store.isHabitLearningEnabled ? "、习惯摘要" : "")。只问这一次，可在设置里撤销。",
+                "Sends: your words, device names/rooms/states, time of day, room temperature\(store.isHabitLearningEnabled ? ", habit summary" : ""). Asked once; revoke in Settings."
+            ))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Spacer(minLength: 0)
+                Button(L10n.tr("不用了", "Not Now")) {
+                    store.declinePendingCloudRequest()
+                }
+                .buttonStyle(PillActionButtonStyle())
+                Button(L10n.tr("允许并发送", "Allow & Send")) {
+                    Task { @MainActor in
+                        await store.allowPendingCloudRequest()
+                        if case .done = store.assistantState {
+                            speech.draft = ""
+                        }
+                    }
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .padding(.horizontal, 4)
+        .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
     /// Timers that expired while the app was closed; user can run or dismiss each one.
@@ -617,14 +663,17 @@ struct AssistantSettingsSection: View {
     @State private var isShowingHabits = false
     /// Habit memory lives in UserDefaults (not observed), so bump this to redraw after edits.
     @State private var habitRevision = 0
+    /// Imported-key labels and cloud consent also live in UserDefaults; bump to redraw after import/undo/revoke.
+    @State private var storageRevision = 0
 
     var body: some View {
         let _ = store.effectiveLanguage
         let _ = habitRevision
+        let _ = storageRevision
         let habitItems = store.userHabitMemory.readableItems(devices: store.devices, scenes: store.scenes)
         let habitCount = habitItems.count
         let hasCustomKey = !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let ambientSource = AssistantConfig.ambientKeySourceLabel(forBaseURL: baseURLDraft)
+        let importedSource = hasCustomKey ? AssistantConfig.importedKeySource(forBaseURL: baseURLDraft) : nil
         let isLoopback = AssistantConfig(baseURL: baseURLDraft, model: modelDraft, apiKey: "").isLoopbackEndpoint
         let isInsecure = !baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !AssistantConfig(baseURL: baseURLDraft, model: modelDraft, apiKey: "").allowsSendingAPIKey
@@ -640,12 +689,12 @@ struct AssistantSettingsSection: View {
                     Text(L10n.tr("● 地址需用 https，否则不会发送", "● Use https; nothing will be sent"))
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(.orange)
-                } else if hasCustomKey {
-                    Text(L10n.tr("● 已配置自定义密钥", "● Custom API Key Set"))
+                } else if let importedSource {
+                    Text(L10n.tr("● 已从 \(importedSource) 导入", "● Imported from \(importedSource)"))
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(.green)
-                } else if let ambientSource {
-                    Text(L10n.tr("● 已自动接入 \(ambientSource)", "● Linked via \(ambientSource)"))
+                } else if hasCustomKey {
+                    Text(L10n.tr("● 已配置自定义密钥", "● Custom API Key Set"))
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(.green)
                 } else if isLoopback {
@@ -762,14 +811,18 @@ struct AssistantSettingsSection: View {
             }
 
             labeledField(L10n.tr(
-                "API Key（安全存入本机钥匙串；自定义密钥优先于环境配置）",
-                "API Key (Stored in Keychain; custom key takes priority)"
+                "API Key（只存在本机钥匙串）",
+                "API Key (Stored only in your Keychain)"
             )) {
                 SecureField(
                     selectedPreset.keyPlaceholder,
                     text: $apiKeyDraft
                 )
                 .textFieldStyle(.roundedBorder)
+            }
+
+            if selectedPreset.supportsKeyImport {
+                keyImportRow(importedSource: importedSource)
             }
 
             privacySection(habitItems: habitItems, habitCount: habitCount)
@@ -908,6 +961,23 @@ struct AssistantSettingsSection: View {
                 }
             }
 
+            let consented = store.consentedCloudEndpoints
+            if !consented.isEmpty {
+                HStack(spacing: 6) {
+                    Text(L10n.tr("已允许发送到：\(consented.joined(separator: "、"))", "Allowed to send to: \(consented.joined(separator: ", "))"))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Spacer(minLength: 4)
+                    Button(L10n.tr("撤销授权", "Revoke")) {
+                        store.revokeCloudConsent()
+                        storageRevision &+= 1
+                        store.showToast(L10n.tr("已撤销，下次发往云端前会再问你", "Revoked; you will be asked before the next cloud request"))
+                    }
+                    .buttonStyle(PillActionButtonStyle())
+                }
+            }
+
             Text(L10n.tr(
                 "发给 AI 的内容：你说的那句话、设备名称/房间/当前状态、时间段、室温\(store.isHabitLearningEnabled ? "、习惯摘要" : "")。只有本机解析不了的指令才会发送。API Key 和米家登录信息只存在本机钥匙串，不会发送。",
                 "Sent to AI only when local parsing cannot resolve: your command text, device names/rooms/states, time slot, room temperature\(store.isHabitLearningEnabled ? ", and habit summary" : ""). API keys and Xiaomi credentials stay in your local Keychain."
@@ -915,6 +985,48 @@ struct AssistantSettingsSection: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Keys from CodexBar or environment variables are only read and copied when the user clicks (#20).
+    @ViewBuilder
+    private func keyImportRow(importedSource: String?) -> some View {
+        let target = baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? selectedPreset.defaultBaseURL
+            : baseURLDraft
+        HStack(spacing: 6) {
+            if let importedSource {
+                Text(L10n.tr("来源：\(importedSource)（已复制到本机钥匙串）", "Source: \(importedSource) (copied to Keychain)"))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Button(L10n.tr("撤销导入", "Remove")) {
+                    AssistantConfig.removeStoredAPIKey(forBaseURL: target)
+                    apiKeyDraft = ""
+                    storageRevision &+= 1
+                    store.showToast(L10n.tr("已删除导入的 Key", "Removed the imported key"))
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+            } else {
+                Button(L10n.tr("从 CodexBar / 环境变量导入 Key", "Import key from CodexBar / environment")) {
+                    if let label = AssistantConfig.importAmbientAPIKey(forBaseURL: target) {
+                        apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: target)
+                        storageRevision &+= 1
+                        store.showToast(L10n.tr("已从 \(label) 导入 \(selectedPreset.shortTitle) 的 Key", "Imported the \(selectedPreset.shortTitle) key from \(label)"))
+                    } else {
+                        store.showToast(
+                            L10n.tr("CodexBar 和环境变量里都没有 \(selectedPreset.shortTitle) 的 Key", "No \(selectedPreset.shortTitle) key in CodexBar or environment variables"),
+                            isError: true
+                        )
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .help(L10n.tr("点了才会读取 ~/.config/codexbar/config.json 和环境变量", "Reads ~/.config/codexbar/config.json and environment variables only when clicked"))
+            }
+            Spacer(minLength: 0)
         }
     }
 

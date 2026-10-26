@@ -115,6 +115,8 @@ interface PersistedSettings {
   openRouterApiKey: string;
   /** host[:port] the API key was saved for; the key is never sent to another server (#19). */
   assistantKeyEndpoint: string | null;
+  /** Cloud AI services (host[:port]) the user allowed to receive commands; asked once per service (#20). */
+  cloudConsentEndpoints: string[];
   assistantModel: string;
   habitLearningEnabled: boolean;
   learnedShortcuts: LearnedShortcut[];
@@ -380,6 +382,9 @@ function loadSettings(): PersistedSettings {
             : parsed.openRouterApiKey
               ? assistantEndpointIdentity(parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1")
               : null,
+        cloudConsentEndpoints: Array.isArray(parsed.cloudConsentEndpoints)
+          ? parsed.cloudConsentEndpoints.filter((e): e is string => typeof e === "string")
+          : [],
         assistantModel: parsed.assistantModel ?? "~typesafe/jev-latest",
         habitLearningEnabled: parsed.habitLearningEnabled ?? true,
         learnedShortcuts: parsed.learnedShortcuts ?? [],
@@ -410,6 +415,7 @@ function loadSettings(): PersistedSettings {
     assistantBaseURL: "https://openrouter.ai/api/v1",
     openRouterApiKey: "",
     assistantKeyEndpoint: null,
+    cloudConsentEndpoints: [],
     assistantModel: "~typesafe/jev-latest",
     habitLearningEnabled: true,
     learnedShortcuts: [],
@@ -448,6 +454,8 @@ export class MenuMijiaWindowsApp {
   private activeSheet: "none" | "onboarding" | "settings" = "none";
   private onboardingStep = 0;
   private replyBanner: ReplyBannerState | null = null;
+  /** A command waiting for the user to allow sending it to a cloud AI service (#20). */
+  private pendingCloudConsent: { utterance: string; endpoint: string } | null = null;
   private isResolvingIntent = false;
   private isSyncingCloud = false;
   private isListeningVoice = false;
@@ -734,6 +742,8 @@ export class MenuMijiaWindowsApp {
   private async handleNaturalCommand(rawInput: string, fromScheduled = false): Promise<void> {
     const trimmed = rawInput.trim();
     if (!trimmed) return;
+    // A new command replaces any question still waiting for cloud consent.
+    this.pendingCloudConsent = null;
 
     if (UndoPhrase.isUndo(trimmed)) {
       await this.performUndo();
@@ -803,6 +813,17 @@ export class MenuMijiaWindowsApp {
             text: "未命中本地规则。请在设置中填写 AI 服务的 API Key（支持 OpenRouter Jev、原生 Jev、DeepSeek 等）。",
             source: "需要 API Key",
             isError: true,
+          };
+          this.isResolvingIntent = false;
+          this.render();
+          return;
+        }
+        const endpoint = assistantEndpointIdentity(baseURL);
+        if (!isLoopback && endpoint && !this.settings.cloudConsentEndpoints.includes(endpoint)) {
+          this.pendingCloudConsent = { utterance: trimmed, endpoint };
+          this.replyBanner = {
+            text: `这句话本机没听懂，要交给云端 AI（${endpoint}）处理吗？会发送：这句话、设备名称/房间/状态。只问这一次，可在设置里撤销。`,
+            source: "需要确认",
           };
           this.isResolvingIntent = false;
           this.render();
@@ -1466,6 +1487,12 @@ export class MenuMijiaWindowsApp {
                   <div class="cc-feedback-row">
                     <span class="cc-feedback-badge">${this.escapeHtml(this.replyBanner.source)}</span>
                     <span class="cc-feedback-text">${this.escapeHtml(this.replyBanner.text)}</span>
+                    ${
+                      this.pendingCloudConsent
+                        ? `<button class="cc-inline-pill" id="btn-cloud-allow">允许并发送</button>
+                           <button class="cc-inline-pill" id="btn-cloud-decline">不用了</button>`
+                        : ""
+                    }
                     ${
                       activeUndo
                         ? `<button class="cc-inline-pill" id="btn-undo">撤销</button>`
@@ -2217,6 +2244,15 @@ export class MenuMijiaWindowsApp {
             />
           </div>
 
+          ${
+            this.settings.cloudConsentEndpoints.length > 0
+              ? `<div class="cc-field">
+            <label>已允许发送到：${this.escapeHtml(this.settings.cloudConsentEndpoints.join("、"))}</label>
+            <button type="button" class="cc-btn-secondary" id="btn-revoke-cloud">撤销授权（下次发往云端前再问）</button>
+          </div>`
+              : ""
+          }
+
           <div class="cc-field">
             <label class="cc-checkbox">
               <input type="checkbox" id="settings-habit" ${this.settings.habitLearningEnabled ? "checked" : ""} />
@@ -2688,6 +2724,29 @@ export class MenuMijiaWindowsApp {
           `已${nextOsc ? "开启" : "关闭"}${dev.name}摇头`,
         );
       });
+    });
+
+    this.root.querySelector("#btn-cloud-allow")?.addEventListener("click", () => {
+      const pending = this.pendingCloudConsent;
+      if (!pending) return;
+      this.pendingCloudConsent = null;
+      if (!this.settings.cloudConsentEndpoints.includes(pending.endpoint)) {
+        this.settings.cloudConsentEndpoints.push(pending.endpoint);
+        saveSettings(this.settings);
+      }
+      void this.handleNaturalCommand(pending.utterance, true);
+    });
+
+    this.root.querySelector("#btn-cloud-decline")?.addEventListener("click", () => {
+      this.pendingCloudConsent = null;
+      this.replyBanner = { text: "没有发送。「打开书房灯」这类简单指令不用联网。", source: "已取消" };
+      this.render();
+    });
+
+    this.root.querySelector("#btn-revoke-cloud")?.addEventListener("click", () => {
+      this.settings.cloudConsentEndpoints = [];
+      saveSettings(this.settings);
+      this.render();
     });
 
     this.root.querySelector("#btn-start-qr")?.addEventListener("click", () => {

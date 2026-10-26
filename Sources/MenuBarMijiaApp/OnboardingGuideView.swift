@@ -243,10 +243,10 @@ public struct OnboardingGuideView: View {
 
     private var step2JevModelCard: some View {
         let effectiveBase = selectedPreset.defaultBaseURL.isEmpty ? store.assistantConfig.baseURL : selectedPreset.defaultBaseURL
-        let ambientSource = AssistantConfig.ambientKeySourceLabel(forBaseURL: effectiveBase)
         let hasCustomKey = !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let importedSource = hasCustomKey ? AssistantConfig.importedKeySource(forBaseURL: effectiveBase) : nil
         let isLoopback = AssistantConfig(baseURL: effectiveBase, model: selectedPreset.defaultModel, apiKey: "").isLoopbackEndpoint
-        let isReady = hasCustomKey || (ambientSource != nil) || isLoopback
+        let isReady = hasCustomKey || isLoopback
 
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
@@ -254,12 +254,12 @@ public struct OnboardingGuideView: View {
                 Text(L10n.tr("AI 决策模型（支持 Jev / DeepSeek / 自定义 Key）", "AI Decision Model (Jev / DeepSeek / Custom Key)"))
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
-                if hasCustomKey {
-                    Label(L10n.tr("已配置密钥", "Key Configured"), systemImage: "checkmark.circle.fill")
+                if let importedSource {
+                    Label(L10n.tr("已从 \(importedSource) 导入", "Imported from \(importedSource)"), systemImage: "checkmark.circle.fill")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.green)
-                } else if let ambientSource {
-                    Label(L10n.tr("已自动接入 \(ambientSource)", "Linked via \(ambientSource)"), systemImage: "checkmark.circle.fill")
+                } else if hasCustomKey {
+                    Label(L10n.tr("已配置密钥", "Key Configured"), systemImage: "checkmark.circle.fill")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.green)
                 } else if isLoopback {
@@ -314,6 +314,23 @@ public struct OnboardingGuideView: View {
                     store.showToast(L10n.tr("已保存 \(selectedPreset.shortTitle) 配置", "Saved \(selectedPreset.shortTitle) config"))
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: !apiKeyDraft.isEmpty, tintColor: .accentColor))
+            }
+
+            if selectedPreset.supportsKeyImport && !hasCustomKey {
+                Button(L10n.tr("已在 CodexBar 或环境变量里配过？点此导入 Key", "Already set up in CodexBar or env vars? Import the key")) {
+                    if let label = AssistantConfig.importAmbientAPIKey(forBaseURL: effectiveBase) {
+                        apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: effectiveBase)
+                        store.showToast(L10n.tr("已从 \(label) 导入 \(selectedPreset.shortTitle) 的 Key", "Imported the \(selectedPreset.shortTitle) key from \(label)"))
+                    } else {
+                        store.showToast(
+                            L10n.tr("CodexBar 和环境变量里都没有 \(selectedPreset.shortTitle) 的 Key", "No \(selectedPreset.shortTitle) key in CodexBar or environment variables"),
+                            isError: true
+                        )
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(Color.accentColor)
             }
         }
         .padding(11)

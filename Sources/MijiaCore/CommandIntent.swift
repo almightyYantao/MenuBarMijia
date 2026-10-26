@@ -64,6 +64,21 @@ public enum AssistantState: Equatable, Sendable {
     case failed(String)
 }
 
+/// The first request to a cloud AI service waits for the user's OK, so they see once what is sent and to whom (#20).
+public struct PendingCloudConsent: Equatable, Sendable {
+    /// The full command to run once allowed; nil when the user asked for proactive suggestions.
+    public let utterance: String?
+    /// host[:port] of the AI service, shown to the user and remembered once allowed.
+    public let endpoint: String
+    public let providerTitle: String
+
+    public init(utterance: String?, endpoint: String, providerTitle: String) {
+        self.utterance = utterance
+        self.endpoint = endpoint
+        self.providerTitle = providerTitle
+    }
+}
+
 // MARK: - Device Category Used by Both Resolvers
 
 public enum IntentDeviceCategory: String, Equatable, Sendable, CaseIterable {

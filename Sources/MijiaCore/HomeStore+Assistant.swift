@@ -91,6 +91,10 @@ extension HomeStore {
             setAssistantState(.failed(AssistantError.userMessage(for: AssistantError.missingAPIKey)))
             return
         }
+        if let consent = cloudConsentNeeded(for: config, utterance: nil) {
+            pendingCloudConsent = consent
+            return
+        }
         isProactiveRecommending = true
         defer { isProactiveRecommending = false }
 
@@ -139,6 +143,57 @@ extension HomeStore {
         }
     }
 
+    // MARK: - Cloud consent (#20)
+
+    static let cloudConsentKey = "assistant_cloud_consent_v1"
+
+    /// AI services (host[:port]) the user has allowed to receive commands. Local endpoints never need this.
+    public var consentedCloudEndpoints: [String] {
+        userDefaults.stringArray(forKey: Self.cloudConsentKey) ?? []
+    }
+
+    /// The consent request to show before the first cloud call to this service, or nil when sending is already allowed.
+    func cloudConsentNeeded(for config: AssistantConfig, utterance: String?) -> PendingCloudConsent? {
+        guard assistantResolverOverride == nil, !config.isLoopbackEndpoint,
+              let endpoint = AssistantEndpoint(config.baseURL)?.identity,
+              !consentedCloudEndpoints.contains(endpoint) else {
+            return nil
+        }
+        return PendingCloudConsent(utterance: utterance, endpoint: endpoint, providerTitle: config.preset.shortTitle)
+    }
+
+    /// Remembers the user's OK for the waiting service, then runs what was waiting.
+    @discardableResult
+    public func allowPendingCloudRequest() async -> IntentPlan? {
+        guard let pending = pendingCloudConsent else { return nil }
+        pendingCloudConsent = nil
+        var endpoints = consentedCloudEndpoints
+        if !endpoints.contains(pending.endpoint) {
+            endpoints.append(pending.endpoint)
+        }
+        userDefaults.set(endpoints, forKey: Self.cloudConsentKey)
+        guard let utterance = pending.utterance else {
+            await requestProactiveJevSuggestions()
+            return nil
+        }
+        return await runAssistantCommand(utterance)
+    }
+
+    public func declinePendingCloudRequest() {
+        guard pendingCloudConsent != nil else { return }
+        pendingCloudConsent = nil
+        setAssistantState(.failed(L10n.tr(
+            "没有发送。「打开书房灯」这类简单指令不用联网",
+            "Not sent. Direct commands like \"turn on study light\" work offline."
+        )))
+    }
+
+    /// Forgets every allowed AI service; the next cloud request asks again.
+    public func revokeCloudConsent() {
+        userDefaults.removeObject(forKey: Self.cloudConsentKey)
+        pendingCloudConsent = nil
+    }
+
     private func shouldRejectMissingAPIKey(for config: AssistantConfig) -> Bool {
         assistantResolverOverride == nil && !config.hasAPIKey && !config.isLoopbackEndpoint
     }
@@ -183,6 +238,11 @@ extension HomeStore {
             let config = assistantConfig
             if shouldRejectMissingAPIKey(for: config) {
                 setAssistantState(.failed(AssistantError.userMessage(for: AssistantError.missingAPIKey)))
+                return nil
+            }
+            if let consent = cloudConsentNeeded(for: config, utterance: spoken) {
+                pendingCloudConsent = consent
+                setAssistantState(.idle)
                 return nil
             }
             let resolver = makeAssistantResolver(config: config)

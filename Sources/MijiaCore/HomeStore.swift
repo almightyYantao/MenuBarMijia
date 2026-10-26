@@ -1793,6 +1793,8 @@ public final class HomeStore {
     /// Bumped to ask the command bar to start or toggle live speech recognition.
     public internal(set) var assistantVoiceRequest: Int = 0
     public internal(set) var assistantState: AssistantState = .idle
+    /// A command or suggestion request waiting for the user to allow sending it to a cloud AI service (#20).
+    public internal(set) var pendingCloudConsent: PendingCloudConsent?
     public internal(set) var assistantSuggestions: [AssistantSuggestion] = []
     public internal(set) var isProactiveRecommending: Bool = false
     var assistantResetTask: Task<Void, Never>?

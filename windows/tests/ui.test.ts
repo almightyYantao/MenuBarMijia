@@ -221,3 +221,52 @@ describe("AI key stays with the server it was saved for (#19)", () => {
     assert.match(document.body.textContent ?? "", /未命中本地规则。请在设置中填写 AI 服务的 API Key/);
   });
 });
+
+describe("First cloud AI request asks once (#20)", () => {
+  function fakeModel(): string[] {
+    const urls: string[] = [];
+    const content = JSON.stringify({ actions: [], reply: "已经很合适了" });
+    const invoke = async (name: string, args: Record<string, unknown> = {}) => {
+      if (name !== "native_http") return undefined;
+      urls.push(String(args.url));
+      return { status: 200, headers: {}, body: JSON.stringify({ choices: [{ message: { content } }] }) };
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+      assistantBaseURL: "https://api.deepseek.com/v1",
+      assistantModel: "deepseek-chat",
+      openRouterApiKey: "sk-deepseek",
+      assistantKeyEndpoint: "api.deepseek.com",
+    }));
+    return urls;
+  }
+
+  it("sends nothing until allowed, then remembers the service", async () => {
+    const urls = fakeModel();
+    new MenuMijiaWindowsApp(element("#app"));
+    await command("帮我想想今晚怎么安排灯光氛围");
+    assert.match(document.body.textContent ?? "", /要交给云端 AI（api\.deepseek\.com）处理吗/);
+    assert.equal(urls.length, 0);
+
+    await click("#btn-cloud-allow");
+    await setImmediate();
+    assert.deepEqual(urls, ["https://api.deepseek.com/v1/chat/completions"]);
+    const saved = JSON.parse(localStorage.getItem("menumijia.windows.settings.v2") ?? "{}") as { cloudConsentEndpoints?: string[] };
+    assert.deepEqual(saved.cloudConsentEndpoints, ["api.deepseek.com"]);
+
+    await command("帮我想想今晚怎么安排灯光氛围");
+    assert.equal(urls.length, 2);
+    assert.equal(document.querySelector("#btn-cloud-allow"), null);
+  });
+
+  it("declining sends nothing", async () => {
+    const urls = fakeModel();
+    new MenuMijiaWindowsApp(element("#app"));
+    await command("帮我想想今晚怎么安排灯光氛围");
+    await click("#btn-cloud-decline");
+    assert.match(document.body.textContent ?? "", /没有发送/);
+    assert.equal(urls.length, 0);
+  });
+});

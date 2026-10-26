@@ -192,6 +192,11 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
         }
     }
 
+    /// Whether "从 CodexBar / 环境变量导入" applies: custom endpoints and keyless Ollama have nothing to import.
+    public var supportsKeyImport: Bool {
+        !envVarNames.isEmpty || !codexBarProviderIds.isEmpty
+    }
+
     /// Maps an endpoint to the provider whose saved key it may use. Unknown or look-alike hosts are `.custom` (#19).
     public static func infer(baseURL: String) -> AssistantProviderPreset {
         guard let endpoint = AssistantEndpoint(baseURL) else { return .custom }
@@ -255,7 +260,8 @@ public struct AssistantConfig: Equatable, Sendable {
         AssistantEndpoint(baseURL)?.allowsSendingSecrets ?? false
     }
 
-    public static func load(from defaults: UserDefaults, includeAmbientKey: Bool = true) -> AssistantConfig {
+    /// Ambient keys (CodexBar / environment variables) are never used implicitly; the user imports them explicitly (#20).
+    public static func load(from defaults: UserDefaults, includeAmbientKey: Bool = false) -> AssistantConfig {
         let nonEmpty = { (key: String) -> String? in
             guard let v = defaults.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !v.isEmpty else { return nil }
@@ -296,9 +302,13 @@ public struct AssistantConfig: Equatable, Sendable {
         let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let inferred = AssistantProviderPreset.infer(baseURL: trimmedBase)
+        // A key typed by hand replaces an imported one, so the "imported from" label no longer applies.
+        if Self.userStoredAPIKey(forBaseURL: trimmedBase, defaults: defaults) != trimmedKey {
+            defaults.removeObject(forKey: Self.importedKeySourceKey(for: inferred))
+        }
         defaults.set(trimmedBase, forKey: Self.baseURLKey)
         defaults.set(trimmedModel, forKey: Self.modelKey)
-        let inferred = AssistantProviderPreset.infer(baseURL: trimmedBase)
         let providerAccount = KeychainHelper.assistantProviderAPIKeyAccount(for: inferred)
         KeychainHelper.saveSecret(trimmedKey, account: providerAccount, defaults: defaults)
         if inferred == .custom {
@@ -345,6 +355,53 @@ public struct AssistantConfig: Equatable, Sendable {
         }
         defaults.set(savedIdentity, forKey: customKeyEndpointKey)
         return savedIdentity == identity
+    }
+
+    static func importedKeySourceKey(for preset: AssistantProviderPreset) -> String {
+        "assistant_key_source_\(preset.rawValue)"
+    }
+
+    /// Copies a key from CodexBar or an environment variable into this app's Keychain, only when the user clicks
+    /// "导入" (#20). CodexBar's file is not read before that. Returns where the key came from, or nil if none was found.
+    @discardableResult
+    public static func importAmbientAPIKey(
+        forBaseURL baseURL: String,
+        defaults: UserDefaults = .standard,
+        configURL: URL? = nil
+    ) -> String? {
+        let preset = AssistantProviderPreset.infer(baseURL: baseURL)
+        guard preset.supportsKeyImport,
+              AssistantEndpoint(baseURL)?.allowsSendingSecrets == true,
+              let label = ambientKeySourceLabel(forBaseURL: baseURL, configURL: configURL),
+              let key = loadAmbientAPIKey(forBaseURL: baseURL, configURL: configURL) else {
+            return nil
+        }
+        KeychainHelper.saveSecret(key, account: KeychainHelper.assistantProviderAPIKeyAccount(for: preset), defaults: defaults)
+        if preset == .openRouterJev {
+            KeychainHelper.saveSecret(key, account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults)
+        }
+        defaults.set(label, forKey: importedKeySourceKey(for: preset))
+        return label
+    }
+
+    /// Where the saved key for `baseURL` was imported from ("CodexBar", "OPENROUTER_API_KEY"), or nil if typed by hand.
+    public static func importedKeySource(forBaseURL baseURL: String, defaults: UserDefaults = .standard) -> String? {
+        let preset = AssistantProviderPreset.infer(baseURL: baseURL)
+        guard !userStoredAPIKey(forBaseURL: baseURL, defaults: defaults).isEmpty else { return nil }
+        return defaults.string(forKey: importedKeySourceKey(for: preset))
+    }
+
+    /// Forgets the saved key for `baseURL`'s provider (the "撤销" button next to an imported key).
+    public static func removeStoredAPIKey(forBaseURL baseURL: String, defaults: UserDefaults = .standard) {
+        let preset = AssistantProviderPreset.infer(baseURL: baseURL)
+        KeychainHelper.saveSecret("", account: KeychainHelper.assistantProviderAPIKeyAccount(for: preset), defaults: defaults)
+        if preset == .openRouterJev {
+            KeychainHelper.saveSecret("", account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults)
+        }
+        if preset == .custom {
+            defaults.removeObject(forKey: customKeyEndpointKey)
+        }
+        defaults.removeObject(forKey: importedKeySourceKey(for: preset))
     }
 
     /// Reads an ambient API key from environment variables or `~/.config/codexbar/config.json` matching the provider for `baseURL`.
