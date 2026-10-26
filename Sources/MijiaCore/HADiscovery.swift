@@ -8,6 +8,30 @@ import Glibc
 
 // MARK: - Discovered Home Assistant Instance Model
 
+/// Decides whether a Home Assistant found on the network may be offered as the new address (#18).
+/// Offering is all it does: switching (and sending the token) always waits for the user.
+public enum HAAddressPolicy {
+    /// UserDefaults key for the instance id (mDNS `uuid`) of the Home Assistant the user chose.
+    public static let rememberedUUIDKey = "ha_instance_uuid"
+    /// A LAN scan after disconnects runs at most this often.
+    public static let rediscoveryInterval: TimeInterval = 10 * 60
+
+    /// - Returns: false for the current address, a dismissed one, or one whose id differs from the remembered id.
+    public static func canOffer(
+        _ candidate: HADiscoveredInstance,
+        currentURL: String,
+        rememberedUUID: String?,
+        dismissedURLs: Set<String> = []
+    ) -> Bool {
+        let url = HAWebSocketProvider.normalizeBaseURL(candidate.baseURL)
+        guard url != HAWebSocketProvider.normalizeBaseURL(currentURL), !dismissedURLs.contains(url) else { return false }
+        guard let remembered = rememberedUUID?.trimmingCharacters(in: .whitespacesAndNewlines), !remembered.isEmpty else {
+            return true
+        }
+        return candidate.uuid?.caseInsensitiveCompare(remembered) == .orderedSame
+    }
+}
+
 public struct HADiscoveredInstance: Equatable, Sendable, Identifiable {
     public var baseURL: String
     public var locationName: String

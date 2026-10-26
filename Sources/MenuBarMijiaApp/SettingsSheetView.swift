@@ -374,7 +374,6 @@ public struct SettingsSheetView: View {
                                         let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: false)
                                         if let first = found.first {
                                             urlDraft = first.baseURL
-                                            store.applyDiscoveredHAInstance(first, reconnectProvider: false)
                                             store.showToast(L10n.tr("已发现：\(first.displaySummary)", "Found: \(first.displaySummary)"))
                                         } else {
                                             store.showToast(L10n.tr("未在局域网扫描到 Home Assistant", "No Home Assistant found on LAN"), isError: true)

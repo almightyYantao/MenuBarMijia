@@ -161,6 +161,13 @@ public struct ControlCenterPanel: View {
                     .padding(.bottom, 8)
             }
 
+            if let suggestion = store.pendingHAAddressSuggestion {
+                haAddressSuggestionBanner(suggestion)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 8)
+                    .transition(AppleMotion.drawerTransition)
+            }
+
             roomFilterBar
                 .padding(.horizontal, 14)
                 .padding(.bottom, 8)
@@ -1262,6 +1269,42 @@ public struct ControlCenterPanel: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 36)
+    }
+
+    // MARK: - Home Assistant Address Question (#18)
+
+    /// The app never moves the token to a new address by itself; it asks here first.
+    private func haAddressSuggestionBanner(_ instance: HADiscoveredInstance) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 11, style: .continuous)
+        let place = instance.locationName.isEmpty || instance.locationName == "Home Assistant"
+            ? instance.hostAndPort
+            : "\(instance.locationName)（\(instance.hostAndPort)）"
+        return VStack(alignment: .leading, spacing: 6) {
+            Label(
+                L10n.tr("连不上 Home Assistant。发现了 \(place)，要切换过去吗？", "Can't reach Home Assistant. Found \(place). Switch to it?"),
+                systemImage: "questionmark.circle.fill"
+            )
+            .font(.system(size: 11.5, weight: .medium))
+            Text(L10n.tr(
+                "切换后会把访问令牌发给这个地址。不认识这个地址就点「不切换」。",
+                "Switching sends your access token to this address. If you don't recognize it, choose Don't Switch."
+            ))
+            .font(.system(size: 10.5))
+            .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Button(L10n.tr("切换", "Switch")) {
+                    withAnimation(AppleMotion.snappySpring) { store.acceptHAAddressSuggestion() }
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+                Button(L10n.tr("不切换", "Don't Switch")) {
+                    withAnimation(AppleMotion.snappySpring) { store.dismissHAAddressSuggestion() }
+                }
+                .buttonStyle(PillActionButtonStyle())
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .adaptiveGlass(in: shape)
     }
 
     // MARK: - 3. Floating Undo & Toast Banner

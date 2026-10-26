@@ -215,6 +215,9 @@ public final class HomeStore {
     }
 
     public private(set) var discoveredHAInstances: [HADiscoveredInstance] = []
+    /// Another Home Assistant address found after disconnects; only used if the user taps 切换 (#18).
+    public private(set) var pendingHAAddressSuggestion: HADiscoveredInstance?
+    var dismissedHAAddressURLs: Set<String> = []
     public private(set) var isDiscoveringHA: Bool = false
 
     var provider: any HomeProvider
@@ -1550,15 +1553,52 @@ public final class HomeStore {
         } else {
             callback = { @Sendable [weak self] instance in
                 Task { @MainActor [weak self] in
-                    self?.applyDiscoveredHAInstance(instance, reconnectProvider: false)
+                    self?.offerHAAddress(instance)
                 }
             }
         }
         return HAWebSocketProvider(
             baseURLString: baseURLString,
             token: token,
-            onDiscoveredInstance: callback
+            onAddressSuggestion: callback
         )
+    }
+
+    /// Shows a found address as a question instead of switching to it (#18). An address whose instance id
+    /// differs from the Home Assistant the user chose before is ignored.
+    public func offerHAAddress(_ instance: HADiscoveredInstance) {
+        guard HAAddressPolicy.canOffer(
+            instance,
+            currentURL: serverURLString,
+            rememberedUUID: userDefaults.string(forKey: HAAddressPolicy.rememberedUUIDKey),
+            dismissedURLs: dismissedHAAddressURLs
+        ) else { return }
+        if !discoveredHAInstances.contains(where: { $0.baseURL == instance.baseURL }) {
+            discoveredHAInstances.insert(instance, at: 0)
+        }
+        pendingHAAddressSuggestion = instance
+    }
+
+    public func acceptHAAddressSuggestion() {
+        guard let instance = pendingHAAddressSuggestion else { return }
+        pendingHAAddressSuggestion = nil
+        applyDiscoveredHAInstance(instance, reconnectProvider: true)
+    }
+
+    public func dismissHAAddressSuggestion() {
+        guard let instance = pendingHAAddressSuggestion else { return }
+        pendingHAAddressSuggestion = nil
+        dismissedHAAddressURLs.insert(HAWebSocketProvider.normalizeBaseURL(instance.baseURL))
+    }
+
+    /// Remembers which Home Assistant the user picked so a look-alike elsewhere is not offered later.
+    private func rememberHAInstanceId(forURL url: String) {
+        let normalized = HAWebSocketProvider.normalizeBaseURL(url)
+        if let uuid = discoveredHAInstances.first(where: { $0.baseURL == normalized })?.uuid {
+            userDefaults.set(uuid, forKey: HAAddressPolicy.rememberedUUIDKey)
+        } else {
+            userDefaults.removeObject(forKey: HAAddressPolicy.rememberedUUIDKey)
+        }
     }
 
     public func switchBackend(_ backend: HomeBackend) {
@@ -1625,6 +1665,10 @@ public final class HomeStore {
 
     public func updateConnection(serverURL: String, token: String) {
         let normalized = HAWebSocketProvider.normalizeBaseURL(serverURL)
+        if normalized != HAWebSocketProvider.normalizeBaseURL(serverURLString) {
+            rememberHAInstanceId(forURL: normalized)
+        }
+        pendingHAAddressSuggestion = nil
         self.serverURLString = normalized
         KeychainHelper.saveToken(token)
         if !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1640,9 +1684,13 @@ public final class HomeStore {
         showToast(L10n.tr("已保存并重新连接 Home Assistant", "Saved and reconnecting to Home Assistant"))
     }
 
+    /// The user chose `instance` (a tap in setup or settings, or 切换 on a suggestion).
     public func applyDiscoveredHAInstance(_ instance: HADiscoveredInstance, reconnectProvider: Bool = true) {
         if !discoveredHAInstances.contains(where: { $0.baseURL == instance.baseURL }) {
             discoveredHAInstances.insert(instance, at: 0)
+        }
+        if let uuid = instance.uuid {
+            userDefaults.set(uuid, forKey: HAAddressPolicy.rememberedUUIDKey)
         }
         let normalizedCurrent = HAWebSocketProvider.normalizeBaseURL(serverURLString)
         if userDefaults.string(forKey: "home_name") == nil,
@@ -1666,12 +1714,15 @@ public final class HomeStore {
         defer { isDiscoveringHA = false }
         let found = await HADiscovery.discoverOnLAN(currentURLHint: serverURLString)
         self.discoveredHAInstances = found
+        // Only pre-fills the address during first setup. With a token already saved, the user picks the
+        // address, because connecting sends the token to it (#18).
         if autoApplyIfDefault, let first = found.first {
             let normalizedCurrent = HAWebSocketProvider.normalizeBaseURL(serverURLString)
             let isDefaultURL = (normalizedCurrent == KeychainHelper.defaultNASURL)
                 || (userDefaults.string(forKey: "ha_server_url") == nil)
-            if isDefaultURL && first.baseURL != normalizedCurrent {
-                applyDiscoveredHAInstance(first, reconnectProvider: true)
+            let hasToken = !KeychainHelper.loadToken().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if isDefaultURL && !hasToken && first.baseURL != normalizedCurrent {
+                applyDiscoveredHAInstance(first, reconnectProvider: false)
             }
         }
         return found
