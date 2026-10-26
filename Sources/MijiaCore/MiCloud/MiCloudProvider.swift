@@ -196,7 +196,7 @@ public actor MiCloudProvider: HomeProvider {
 
     private func poll(_ api: any MiCloudAPI, dids: Set<String>?) async throws {
         var keys: [MiotPropKey] = []
-        for d in devices where d.isOnline && (dids?.contains(d.did) ?? true) {
+        for d in devices where d.isOnline && (dids?.contains(d.miotDid) ?? true) {
             guard let spec = specsByModel[d.model] else { continue }
             keys.append(contentsOf: MiotSynthesizer.requiredProps(for: d, spec: spec))
         }
@@ -218,7 +218,7 @@ public actor MiCloudProvider: HomeProvider {
         let entityId = command.targetEntityId
         guard let (did, _) = MiotAddress.parse(entityId) else { throw MiotCommandError.invalidAddress(entityId) }
         guard let api else { throw MiCloudError.notLoggedIn }
-        guard let record = devices.first(where: { $0.did == did }), let spec = specsByModel[record.model] else {
+        guard let record = devices.first(where: { $0.miotDid == did }), let spec = specsByModel[record.model] else {
             throw MiotCommandError.unsupported("设备规格未加载")
         }
         let write = try MiotCommandMapper.map(command, spec: spec)
