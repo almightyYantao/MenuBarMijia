@@ -197,7 +197,7 @@
 
 ### 1. 下载安装（或从源码编译）
 
-- **直接安装 DMG**：前往 [GitHub Releases](https://github.com/jryang1997/MenuBarMijia/releases/latest) 下载 `MenuBarMijia-1.0.4.dmg`，将 `MenuBarMijia.app` 拖入 `/Applications`（应用程序）。由于个人开源项目未购买付费 Apple 开发者公证，首次打开若遇到系统拦截，可在终端运行一行命令放行（或在「系统设置 → 隐私与安全性」底部点击「仍要打开」）：
+- **直接安装 DMG**：前往 [GitHub Releases](https://github.com/jryang1997/MenuBarMijia/releases/latest) 下载 `MenuBarMijia-1.0.5.dmg`，将 `MenuBarMijia.app` 拖入 `/Applications`（应用程序）。由于个人开源项目未购买付费 Apple 开发者公证，首次打开若遇到系统拦截，可在终端运行一行命令放行（或在「系统设置 → 隐私与安全性」底部点击「仍要打开」）：
   ```bash
   xattr -cr /Applications/MenuBarMijia.app
   ```
@@ -254,7 +254,7 @@ npm run build   # TypeScript 严格类型检查 + 前端打包
 npx tauri build # 在 Windows 上打包 .exe (NSIS) 与 .msi 安装包
 ```
 
-每次推送到 `main` 分支时，GitHub Actions 会在核心测试通过后编译 Windows 安装包，并保存为 `MenuBarMijia-Windows-x64` 构建产物。发布时将产物和 SHA-256 校验文件上传到对应版本的 [GitHub Releases](https://github.com/jryang1997/MenuBarMijia/releases)，普通推送不会覆盖已发布的安装包。最新双端版本下载见 [v1.0.4](https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.4)。
+每次推送到 `main` 分支时，GitHub Actions 会在核心测试通过后编译 Windows 安装包，并保存为 `MenuBarMijia-Windows-x64` 构建产物。发布时将产物和 SHA-256 校验文件上传到对应版本的 [GitHub Releases](https://github.com/jryang1997/MenuBarMijia/releases)，普通推送不会覆盖已发布的安装包。最新双端版本下载见 [v1.0.5](https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.5)。
 
 ### 发布 macOS 安装版
 
