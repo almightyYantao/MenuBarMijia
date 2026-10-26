@@ -5,6 +5,7 @@ public struct ControlCenterPanel: View {
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(AppSkin.storageKey) private var skinRaw: String = AppSkin.classic.rawValue
     @AppStorage(AppSkin.climatePanelKey) private var climatePanelModule: Bool = true
+    @AppStorage(DeviceLayoutPrefs.storageKey) private var tileSizesRaw: String = "{}"
     @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
     @Namespace private var roomPillNamespace
     public let store: HomeStore
@@ -172,9 +173,6 @@ public struct ControlCenterPanel: View {
 
     private func buildRows(from devices: [SmartDevice]) -> [DeviceRowItem] {
         if skin == .bento && store.isCompactGridMode { return buildBentoRows(from: devices) }
-        guard store.isCompactGridMode else {
-            return devices.map { .single($0) }
-        }
         var rows: [DeviceRowItem] = []
         var buffer: SmartDevice?
 
@@ -199,8 +197,17 @@ public struct ControlCenterPanel: View {
     }
 
     private func usesClimatePanel(_ device: SmartDevice) -> Bool {
-        guard climatePanelModule, case .climate = device.kind else { return false }
-        return true
+        tileSize(device) != .half
+    }
+
+    /// The device's card size with `.auto` resolved; full and panel sizes take a whole row.
+    private func tileSize(_ device: SmartDevice) -> TileSize {
+        DeviceLayoutPrefs.resolved(
+            DeviceLayoutPrefs.decode(tileSizesRaw)[device.id] ?? .auto,
+            device: device,
+            compactGrid: store.isCompactGridMode,
+            climatePanel: climatePanelModule
+        )
     }
 
     @ViewBuilder

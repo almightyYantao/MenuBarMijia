@@ -5,6 +5,7 @@ public struct DeviceCardView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.appSkin) private var skin
     @AppStorage(AppSkin.climatePanelKey) private var climatePanelModule: Bool = true
+    @AppStorage(DeviceLayoutPrefs.storageKey) private var tileSizesRaw: String = "{}"
 
     public let device: SmartDevice
     public let store: HomeStore
@@ -34,8 +35,21 @@ public struct DeviceCardView: View {
         self.quickIndex = quickIndex
     }
 
+    private var chosenSize: TileSize { DeviceLayoutPrefs.decode(tileSizesRaw)[device.id] ?? .auto }
+
+    private var resolvedSize: TileSize {
+        DeviceLayoutPrefs.resolved(chosenSize, device: device, compactGrid: store.isCompactGridMode, climatePanel: climatePanelModule)
+    }
+
+    private func setSize(_ size: TileSize) {
+        var sizes = DeviceLayoutPrefs.decode(tileSizesRaw)
+        sizes[device.id] = size
+        withAnimation(AppleMotion.snappySpring) { tileSizesRaw = DeviceLayoutPrefs.encode(sizes) }
+    }
+
     private var isExpanded: Bool {
-        store.expandedDeviceId == device.id
+        if resolvedSize == .panel { return true }
+        return store.expandedDeviceId == device.id
     }
 
     private var isFavorite: Bool {
@@ -88,8 +102,9 @@ public struct DeviceCardView: View {
 
     public var body: some View {
         let _ = store.effectiveLanguage
-        if climatePanelModule, case .climate(let spec) = device.kind {
-            ClimatePanelModule(device: device, spec: spec, store: store, showRoomBadge: showRoomBadge)
+        if !isCompactTile, resolvedSize != .half, case .climate(let spec) = device.kind,
+           climatePanelModule || chosenSize != .auto {
+            ClimatePanelModule(device: device, spec: spec, store: store, showRoomBadge: showRoomBadge, forceExpanded: resolvedSize == .panel)
                 .contextMenu { contextMenuItems }
         } else {
             cardBody
@@ -171,6 +186,20 @@ public struct DeviceCardView: View {
 
     @ViewBuilder
     private var contextMenuItems: some View {
+            Menu {
+                ForEach(TileSize.allCases) { size in
+                    Button {
+                        setSize(size)
+                    } label: {
+                        Label(size.title, systemImage: chosenSize == size ? "checkmark" : size.symbol)
+                    }
+                }
+            } label: {
+                Label(L10n.tr("卡片大小", "Card Size"), systemImage: "square.resize")
+            }
+
+            Divider()
+
             Button {
                 store.toggleFavorite(device.id)
             } label: {

@@ -13,6 +13,7 @@ struct ClimatePanelModule: View {
     let spec: ClimateSpec
     let store: HomeStore
     let showRoomBadge: Bool
+    var forceExpanded = false
 
     private var isRunning: Bool { device.isOnline && spec.isOn && spec.hvacMode != "off" }
 
@@ -27,7 +28,7 @@ struct ClimatePanelModule: View {
     private var fg: Color { skin.isClassic ? .primary : (isRunning ? skin.palette.activeText : skin.palette.fg) }
     private var muted: Color { skin.isClassic ? .secondary : skin.palette.muted }
 
-    private var isExpanded: Bool { store.expandedDeviceId == device.id }
+    private var isExpanded: Bool { forceExpanded || store.expandedDeviceId == device.id }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
