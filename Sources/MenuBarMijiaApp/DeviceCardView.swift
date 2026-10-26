@@ -3,6 +3,8 @@ import MijiaCore
 
 public struct DeviceCardView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.appSkin) private var skin
+    @AppStorage(AppSkin.climatePanelKey) private var climatePanelModule: Bool = true
 
     public let device: SmartDevice
     public let store: HomeStore
@@ -12,6 +14,8 @@ public struct DeviceCardView: View {
 
     @State private var isHovered: Bool = false
     @State private var speakerInputText: String = ""
+    @State private var dragBrightness: Double?
+    @State private var cardWidth: CGFloat = 1
 
     public init(
         device: SmartDevice,
@@ -44,11 +48,25 @@ public struct DeviceCardView: View {
     }
 
     private var accent: Color {
-        DevicePalette.accentColor(for: device)
+        skin.isClassic ? DevicePalette.accentColor(for: device) : skin.palette.accent
     }
 
     private var statusColor: Color {
-        DevicePalette.statusTextColor(for: device, colorScheme: colorScheme)
+        guard !skin.isClassic else { return DevicePalette.statusTextColor(for: device, colorScheme: colorScheme) }
+        return device.isOnline && device.isActiveOn ? skin.palette.activeText : skin.palette.muted
+    }
+
+    private var nameColor: Color {
+        guard !skin.isClassic else { return .primary }
+        return device.isActiveOn && device.isOnline && (skin == .glass || skin == .capsule) ? skin.palette.activeText : skin.palette.fg
+    }
+
+    /// Current brightness 0...1 for lights (live while dragging), nil for other kinds.
+    private var lightLevel: Double? {
+        guard case .light(let spec) = device.kind else { return nil }
+        if let dragBrightness { return dragBrightness }
+        guard spec.isOn else { return 0 }
+        return Double(spec.brightnessPercent ?? 100) / 100
     }
 
     private var favoriteStarColor: Color {
@@ -59,6 +77,15 @@ public struct DeviceCardView: View {
 
     public var body: some View {
         let _ = store.effectiveLanguage
+        if climatePanelModule, case .climate(let spec) = device.kind {
+            ClimatePanelModule(device: device, spec: spec, store: store, showRoomBadge: showRoomBadge)
+                .contextMenu { contextMenuItems }
+        } else {
+            cardBody
+        }
+    }
+
+    private var cardBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             if isCompactTile {
                 compactHeaderRow
@@ -77,7 +104,16 @@ public struct DeviceCardView: View {
                     .transition(AppleMotion.drawerTransition)
             }
         }
+        .background(alignment: .leading) { brightnessFill }
         .glassTile(isActive: device.isActiveOn, accent: accent, cornerRadius: 14)
+        .background {
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { cardWidth = geo.size.width }
+                    .onChange(of: geo.size.width) { _, w in cardWidth = w }
+            }
+        }
+        .simultaneousGesture(dimGesture)
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(isKeyboardFocused ? accent.opacity(0.85) : Color.clear, lineWidth: 1.6)
@@ -86,7 +122,41 @@ public struct DeviceCardView: View {
         .onHover { hovering in
             isHovered = hovering
         }
-        .contextMenu {
+        .contextMenu { contextMenuItems }
+    }
+
+    // MARK: - Drag-to-Dim (skins only)
+
+    /// Horizontal drag across a light card sets brightness; committed once on release.
+    private var dimGesture: some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { drag in
+                guard !skin.isClassic, device.isOnline, lightLevel != nil,
+                      abs(drag.translation.width) > abs(drag.translation.height) else { return }
+                dragBrightness = min(max(drag.location.x / max(cardWidth, 1), 0.01), 1)
+            }
+            .onEnded { _ in
+                guard let level = dragBrightness else { return }
+                store.setLightBrightness(device.id, percent: max(1, Int((level * 100).rounded())))
+                withAnimation(.easeOut(duration: 0.3)) { dragBrightness = nil }
+            }
+    }
+
+    @ViewBuilder
+    private var brightnessFill: some View {
+        if !skin.isClassic, let level = lightLevel, level > 0 {
+            GeometryReader { geo in
+                Rectangle()
+                    .fill(skin.palette.fill)
+                    .frame(width: geo.size.width * level)
+                    .animation(dragBrightness == nil ? .easeOut(duration: 0.3) : nil, value: level)
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder
+    private var contextMenuItems: some View {
             Button {
                 store.toggleFavorite(device.id)
             } label: {
@@ -132,7 +202,6 @@ public struct DeviceCardView: View {
             } label: {
                 Label(L10n.tr("隐藏此设备", "Hide Device"), systemImage: "eye.slash")
             }
-        }
     }
 
     // MARK: - Compact 2-Column Header (Left Icon Toggles, Right Area Expands)
@@ -162,10 +231,10 @@ public struct DeviceCardView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(device.name)
                             .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(nameColor)
                             .lineLimit(1)
 
-                        Text(device.statusSubtitle)
+                        Text(dragBrightness.map { L10n.tr("亮度 \(Int($0 * 100))%", "Brightness \(Int($0 * 100))%") } ?? device.statusSubtitle)
                             .font(.system(size: 10.5, weight: device.isActiveOn ? .semibold : .regular))
                             .monospacedDigit()
                             .foregroundStyle(statusColor)
@@ -207,7 +276,7 @@ public struct DeviceCardView: View {
                         HStack(spacing: 5) {
                             Text(device.name)
                                 .font(.system(size: 12.5, weight: .semibold))
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(nameColor)
                                 .lineLimit(1)
 
                             if showRoomBadge {
@@ -227,7 +296,7 @@ public struct DeviceCardView: View {
                             }
                         }
 
-                        Text(device.statusSubtitle)
+                        Text(dragBrightness.map { L10n.tr("亮度 \(Int($0 * 100))%", "Brightness \(Int($0 * 100))%") } ?? device.statusSubtitle)
                             .font(.system(size: 11, weight: device.isActiveOn ? .semibold : .regular))
                             .monospacedDigit()
                             .foregroundStyle(statusColor)
@@ -304,7 +373,38 @@ public struct DeviceCardView: View {
             )
     }
 
+    @ViewBuilder
     private var iconBadge: some View {
+        if skin.isClassic {
+            classicIconBadge
+        } else {
+            skinIconBadge
+        }
+    }
+
+    private var skinIconBadge: some View {
+        let p = skin.palette
+        let on = device.isActiveOn && device.isOnline
+        let glow = lightLevel ?? (on ? 0.6 : 0)
+        let lightOn = on && lightLevel != nil
+        return ZStack {
+            Circle()
+                .fill(on ? AnyShapeStyle(skin == .capsule && lightOn ? AnyShapeStyle(Color(red: 1, green: 0.84, blue: 0.04)) : AnyShapeStyle(p.accentGradient)) : AnyShapeStyle(p.chip))
+                .frame(width: 33, height: 33)
+                .overlay { Circle().stroke(on ? Color.clear : p.line, lineWidth: 0.8) }
+                .shadow(color: on ? p.accent.opacity(0.25 + glow * 0.45) : .clear, radius: on ? 3 + glow * 9 : 0)
+            Image(systemName: resolvedSymbolName)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(on ? (skin == .capsule && lightOn ? Color(red: 0.23, green: 0.18, blue: 0) : p.onAccent) : p.muted)
+                .rotationEffect(.degrees(on ? -8 : 0))
+                .scaleEffect(on ? 1.06 : 1)
+                .symbolEffect(.bounce, value: on)
+        }
+        .toggleRipple(isOn: on, color: p.accent)
+        .animation(.spring(response: 0.45, dampingFraction: 0.55), value: on)
+    }
+
+    private var classicIconBadge: some View {
         ZStack {
             if device.isActiveOn {
                 Circle()

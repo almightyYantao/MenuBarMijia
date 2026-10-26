@@ -9,6 +9,8 @@ public struct SettingsSheetView: View {
     @State private var urlDraft: String = ""
     @State private var tokenDraft: String = ""
     @State private var launchAtLogin: Bool = (SMAppService.mainApp.status == .enabled)
+    @AppStorage(AppSkin.storageKey) private var skinRaw: String = AppSkin.classic.rawValue
+    @AppStorage(AppSkin.climatePanelKey) private var climatePanelModule: Bool = true
 
     public init(store: HomeStore) {
         self.store = store
@@ -63,6 +65,35 @@ public struct SettingsSheetView: View {
             // Scrollable Settings Body
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 11) {
+                    // 0. Panel Skin
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(L10n.tr("面板皮肤", "Panel Skin"))
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+
+                        SkinPickerGrid(selection: Binding(
+                            get: { AppSkin(rawValue: skinRaw) ?? .classic },
+                            set: { skinRaw = $0.rawValue }
+                        ))
+
+                        Text(L10n.tr(
+                            "经典之外的皮肤还带有：房间滑块、卡片依次入场、在灯上左右拖动调亮度、按住「全关」0.6 秒确认。",
+                            "Skins other than Classic add a sliding room pill, staggered tiles, drag across a light to dim, and hold-to-confirm All Off."
+                        ))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                        Divider().overlay(Color.primary.opacity(0.06))
+
+                        settingsToggleRow(
+                            title: L10n.tr("空调使用整行面板模块", "Full-Width Climate Panel"),
+                            isOn: $climatePanelModule
+                        )
+                    }
+                    .padding(12)
+                    .glassTile(isActive: false, accent: .accentColor, cornerRadius: 12)
+
                     // 1. Menu Bar & Interface Options
                     VStack(alignment: .leading, spacing: 10) {
                         Text(L10n.tr("菜单栏与交互体验", "Menu Bar & Interface"))

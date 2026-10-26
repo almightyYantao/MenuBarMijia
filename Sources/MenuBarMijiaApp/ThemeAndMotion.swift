@@ -43,6 +43,7 @@ public struct PressableCardButtonStyle: ButtonStyle {
 
 public struct PillActionButtonStyle: ButtonStyle {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.appSkin) private var skin
     public var isSelected: Bool = false
     public var tintColor: Color = .accentColor
 
@@ -51,7 +52,37 @@ public struct PillActionButtonStyle: ButtonStyle {
         self.tintColor = tintColor
     }
 
+    @ViewBuilder
     public func makeBody(configuration: Configuration) -> some View {
+        if skin.isClassic {
+            classicBody(configuration)
+        } else {
+            skinnedBody(configuration)
+        }
+    }
+
+    private func skinnedBody(_ configuration: Configuration) -> some View {
+        let p = skin.palette
+        let capsule = Capsule(style: .continuous)
+        let fill: AnyShapeStyle = tintColor == .accentColor ? AnyShapeStyle(p.accentGradient) : AnyShapeStyle(tintColor)
+        return configuration.label
+            .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
+            .foregroundStyle(isSelected ? (tintColor == .accentColor ? p.onAccent : .white) : p.fg.opacity(0.88))
+            .padding(.horizontal, 10.5)
+            .padding(.vertical, 5)
+            .background {
+                if isSelected {
+                    capsule.fill(fill)
+                        .shadow(color: p.glow ? p.accent.opacity(0.5) : .clear, radius: 6)
+                }
+            }
+            .adaptiveGlass(in: capsule)
+            .scaleEffect(configuration.isPressed ? 0.94 : 1.0)
+            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
+    }
+
+    @ViewBuilder
+    private func classicBody(_ configuration: Configuration) -> some View {
         let capsule = Capsule(style: .continuous)
         configuration.label
             .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
@@ -182,11 +213,22 @@ public enum DevicePalette {
 
 public struct GlassTileBackground: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.appSkin) private var skin
     public var isActive: Bool
     public var accent: Color
     public var cornerRadius: CGFloat
 
+    @ViewBuilder
     public func body(content: Content) -> some View {
+        if skin.isClassic {
+            classicBody(content)
+        } else {
+            content.modifier(SkinTileSurface(isActive: isActive, cornerRadius: cornerRadius))
+        }
+    }
+
+    @ViewBuilder
+    private func classicBody(_ content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
             .background {
@@ -242,42 +284,14 @@ extension View {
         modifier(GlassTileBackground(isActive: isActive, accent: accent, cornerRadius: cornerRadius))
     }
 
-    @ViewBuilder
+    /// Glass on the classic skin; an opaque chip from the active skin's palette otherwise.
     public func adaptiveGlass<S: Shape>(
         in shape: S,
         tint: Color? = nil,
         interactive: Bool = false,
         clear: Bool = false
     ) -> some View {
-        if #available(macOS 26.0, *) {
-            if clear {
-                self.glassEffect(
-                    interactive ? .clear.interactive() : .clear,
-                    in: shape
-                )
-            } else if let tint {
-                self.glassEffect(
-                    interactive ? .regular.tint(tint).interactive() : .regular.tint(tint),
-                    in: shape
-                )
-            } else {
-                self.glassEffect(
-                    interactive ? .regular.interactive() : .regular,
-                    in: shape
-                )
-            }
-        } else {
-            self.background {
-                if clear {
-                    shape.fill(.thinMaterial)
-                } else if let tint {
-                    shape.fill(.ultraThinMaterial)
-                        .overlay(shape.fill(tint))
-                } else {
-                    shape.fill(.ultraThinMaterial)
-                }
-            }
-        }
+        modifier(SkinChipSurface(shape: shape, tint: tint, interactive: interactive, clear: clear))
     }
 }
 

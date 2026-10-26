@@ -3,7 +3,12 @@ import MijiaCore
 
 public struct ControlCenterPanel: View {
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(AppSkin.storageKey) private var skinRaw: String = AppSkin.classic.rawValue
+    @AppStorage(AppSkin.climatePanelKey) private var climatePanelModule: Bool = true
+    @Namespace private var roomPillNamespace
     public let store: HomeStore
+
+    private var skin: AppSkin { AppSkin(rawValue: skinRaw) ?? .classic }
 
     public init(store: HomeStore) {
         self.store = store
@@ -29,7 +34,7 @@ public struct ControlCenterPanel: View {
             overlayNotifications
         }
         .frame(width: 356, height: 460)
-        .background(.ultraThinMaterial)
+        .skinRoot(skin)
         .task {
             await store.checkForUpdatesIfNeeded()
         }
@@ -141,7 +146,7 @@ public struct ControlCenterPanel: View {
         var buffer: SmartDevice?
 
         for dev in devices {
-            if store.expandedDeviceId == dev.id {
+            if store.expandedDeviceId == dev.id || usesClimatePanel(dev) {
                 if let pending = buffer {
                     rows.append(.pair(pending, nil))
                     buffer = nil
@@ -160,6 +165,11 @@ public struct ControlCenterPanel: View {
         return rows
     }
 
+    private func usesClimatePanel(_ device: SmartDevice) -> Bool {
+        guard climatePanelModule, case .climate = device.kind else { return false }
+        return true
+    }
+
     @ViewBuilder
     private func deviceCollectionView(
         devices: [SmartDevice],
@@ -168,7 +178,8 @@ public struct ControlCenterPanel: View {
     ) -> some View {
         let rows = buildRows(from: devices)
         VStack(spacing: 7) {
-            ForEach(rows) { row in
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                Group {
                 switch row {
                 case .single(let dev):
                     DeviceCardView(
@@ -204,8 +215,11 @@ public struct ControlCenterPanel: View {
                         }
                     }
                 }
+                }
+                .staggerIn(index)
             }
         }
+        .id(skin.isClassic ? "rows" : "rows_\(store.selectedRoomId ?? "all")")
     }
 
     // MARK: - 1. Hero Header & Live Environment Chips
@@ -246,6 +260,7 @@ public struct ControlCenterPanel: View {
                         .foregroundStyle(Color.primary.opacity(0.78))
                         .frame(width: 26, height: 24)
                         .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
+                        .listeningPulse(SpeechInputController.shared.isListening, color: skin.isClassic ? .accentColor : skin.palette.accent)
                 }
                 .buttonStyle(.plain)
                 .help(L10n.tr("语音指令：点击直接说话控制设备（快捷键 V）", "Voice command: click to speak (shortcut V)"))
@@ -277,7 +292,19 @@ public struct ControlCenterPanel: View {
                 .buttonStyle(.plain)
                 .help(L10n.tr("AI 指令：用一句话控制设备（快捷键 /）", "AI command: control devices with natural language (shortcut /)"))
 
-                if store.activeDeviceCount > 0 {
+                if store.activeDeviceCount > 0 && !skin.isClassic {
+                    HoldToConfirmButton(
+                        title: L10n.tr("全关", "All Off"),
+                        count: store.activeDeviceCount,
+                        onConfirm: {
+                            withAnimation(AppleMotion.snappySpring) { store.turnAllOff() }
+                        },
+                        onTap: {
+                            store.showToast(L10n.tr("按住 0.6 秒全部关闭", "Hold 0.6s to turn everything off"), isError: false)
+                        }
+                    )
+                    .transition(.scale(scale: 0.8).combined(with: .opacity))
+                } else if store.activeDeviceCount > 0 {
                     Button {
                         withAnimation(AppleMotion.snappySpring) {
                             store.turnAllOff()
@@ -526,9 +553,39 @@ public struct ControlCenterPanel: View {
         }
     }
 
+    @ViewBuilder
     private func roomPill(title: String, roomId: String?) -> some View {
         let isSelected = (store.selectedRoomId == roomId)
-        return Button(title) {
+        if skin.isClassic {
+            classicRoomPill(title: title, roomId: roomId, isSelected: isSelected)
+        } else {
+            let p = skin.palette
+            Button {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.72)) {
+                    store.selectedRoomId = roomId
+                }
+            } label: {
+                Text(title)
+                    .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(isSelected ? p.onAccent : p.muted)
+                    .padding(.horizontal, 10.5)
+                    .padding(.vertical, 5)
+                    .background {
+                        if isSelected {
+                            Capsule(style: .continuous)
+                                .fill(p.accentGradient)
+                                .shadow(color: p.glow ? p.accent.opacity(0.5) : .clear, radius: 6)
+                                .matchedGeometryEffect(id: "roomPill", in: roomPillNamespace)
+                        }
+                    }
+                    .contentShape(Capsule(style: .continuous))
+            }
+            .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.94))
+        }
+    }
+
+    private func classicRoomPill(title: String, roomId: String?, isSelected: Bool) -> some View {
+        Button(title) {
             withAnimation(AppleMotion.snappySpring) {
                 store.selectedRoomId = roomId
             }
@@ -664,9 +721,11 @@ public struct ControlCenterPanel: View {
 
     private var footerBar: some View {
         HStack(spacing: 8) {
-            Circle()
-                .fill(statusDotColor)
-                .frame(width: 7, height: 7)
+            BreathingDot(
+                color: skin.isClassic ? statusDotColor : (statusDotColor == .green ? skin.palette.ok : statusDotColor),
+                animate: !skin.isClassic && statusDotColor == .green
+            )
+            .id(statusDotColor)
 
             Text(statusFooterLabel)
                 .font(.system(size: 11, weight: .medium))
