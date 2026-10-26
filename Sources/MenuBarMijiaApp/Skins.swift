@@ -89,15 +89,15 @@ public struct SkinPalette: Sendable {
     )
 
     static let night = SkinPalette(
-        background: [hex(0x16181C)], fg: hex(0xECEAE4), muted: hex(0x8A8D93), line: hex(0x2A2D33),
-        chip: hex(0x22252A), tile: hex(0x1D2024), accent: hex(0xF2B84B), accentEnd: hex(0xF2B84B), onAccent: hex(0x1A1406),
+        background: [hex(0x131518)], fg: hex(0xECEAE4), muted: hex(0x969AA1), line: hex(0x3A3E46),
+        chip: hex(0x2A2E34), tile: hex(0x22252B), accent: hex(0xF2B84B), accentEnd: hex(0xF2B84B), onAccent: hex(0x1A1406),
         activeTile: hex(0x2A2416), activeLine: hex(0x5A4A22), activeText: hex(0xF2B84B), fill: hex(0x3A3018),
         ok: hex(0x6FD08C), scheme: .dark, tileRadius: 12, glow: true
     )
 
     static let glass = SkinPalette(
         background: [hex(0xF6A96B), hex(0x6C6F9A), hex(0x2B3A52)], fg: .white, muted: .white.opacity(0.72),
-        line: .white.opacity(0.28), chip: .white.opacity(0.14), tile: .white.opacity(0.10),
+        line: .white.opacity(0.38), chip: .white.opacity(0.18), tile: .white.opacity(0.14),
         accent: .white, accentEnd: .white, onAccent: hex(0xE4762E),
         activeTile: .white.opacity(0.85), activeLine: .white.opacity(0.9), activeText: hex(0x24324A), fill: .white.opacity(0.45),
         ok: hex(0x7CF0A6), scheme: .dark, tileRadius: 18, translucent: true
@@ -118,15 +118,15 @@ public struct SkinPalette: Sendable {
     )
 
     static let neon = SkinPalette(
-        background: [hex(0x0D0B16)], fg: hex(0xEFEAFF), muted: hex(0x8B83A8), line: hex(0x251F3A),
-        chip: hex(0x161226), tile: hex(0x120F20), accent: hex(0xFF3D9A), accentEnd: hex(0x7A5CFF), onAccent: .white,
+        background: [hex(0x0B0914)], fg: hex(0xEFEAFF), muted: hex(0x9A92B8), line: hex(0x3A3158),
+        chip: hex(0x221C38), tile: hex(0x18142A), accent: hex(0xFF3D9A), accentEnd: hex(0x7A5CFF), onAccent: .white,
         activeTile: hex(0x1D0F22), activeLine: hex(0xFF3D9A), activeText: hex(0xFF7DBE), fill: hex(0xFF3D9A, 0.16),
         ok: hex(0x33F0C8), scheme: .dark, tileRadius: 12, glow: true
     )
 
     static let capsule = SkinPalette(
-        background: [hex(0x1C1C1E)], fg: hex(0xF5F5F7), muted: hex(0x98989F), line: .clear,
-        chip: hex(0x3A3A3C), tile: hex(0x2C2C2E), accent: hex(0x30D158), accentEnd: hex(0x30D158), onAccent: hex(0x06210F),
+        background: [hex(0x161618)], fg: hex(0xF5F5F7), muted: hex(0x98989F), line: hex(0x3A3A3D),
+        chip: hex(0x48484B), tile: hex(0x2C2C2F), accent: hex(0x30D158), accentEnd: hex(0x30D158), onAccent: hex(0x06210F),
         activeTile: hex(0xF5F5F7), activeLine: .clear, activeText: hex(0x1C1C1E), fill: hex(0xFFD60A, 0.55),
         ok: hex(0x30D158), scheme: .dark, tileRadius: 22, capsuleTiles: true, fontDesign: .rounded
     )
