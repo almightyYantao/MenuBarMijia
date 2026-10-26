@@ -570,7 +570,6 @@ public struct DeviceCardView: View {
                         )
                     )
                     .frame(width: 33, height: 33)
-                    .adaptiveGlass(in: Circle(), tint: accent.opacity(0.55))
                     .overlay {
                         Circle()
                             .strokeBorder(
@@ -588,15 +587,14 @@ public struct DeviceCardView: View {
                     .shadow(color: accent.opacity(0.30), radius: 5, x: 0, y: 2)
             } else {
                 Circle()
-                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.10 : 0.06))
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.07))
                     .frame(width: 33, height: 33)
-                    .adaptiveGlass(in: Circle())
                     .overlay {
                         Circle()
                             .strokeBorder(
                                 LinearGradient(
                                     colors: [
-                                        Color.white.opacity(colorScheme == .dark ? 0.22 : 0.50),
+                                        Color.white.opacity(colorScheme == .dark ? 0.22 : 0.55),
                                         Color.primary.opacity(0.06)
                                     ],
                                     startPoint: .topLeading,
