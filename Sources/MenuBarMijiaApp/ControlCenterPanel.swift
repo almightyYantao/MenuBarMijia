@@ -25,7 +25,11 @@ public struct ControlCenterPanel: View {
     @AppStorage(GroupPrefs.mapKey) private var groupMapRaw: String = "{}"
     @AppStorage(GroupPrefs.collapsedKey) private var collapsedRaw: String = "[]"
     @State private var liveGroupMap: [String: String]?
+    @AppStorage(GroupPrefs.aliasesKey) private var aliasesRaw: String = "{}"
     @State private var layoutUI = LayoutUIState.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Drives the open animation; reset whenever the menu-bar window closes so every open replays it.
+    @State private var isPresented = false
 
     /// Card sizes are remembered per page: a room id, or "all" for the overview.
     private var layoutScope: String { store.selectedRoomId ?? "all" }
@@ -89,7 +93,27 @@ public struct ControlCenterPanel: View {
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.newGroupForDevice)
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingGroupId)
+        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingDeviceId)
         .frame(width: skin.isClassic ? 356 : 376, height: (PanelHeight(rawValue: panelHeightRaw) ?? .standard).points)
+        // Open animation: drop in from the menu bar with a slight scale and fade.
+        .scaleEffect(isPresented || reduceMotion ? 1 : 0.94, anchor: .top)
+        .offset(y: isPresented || reduceMotion ? 0 : -10)
+        .opacity(isPresented ? 1 : 0)
+        .blur(radius: isPresented || reduceMotion ? 0 : 6)
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            guard !isPresented else { return }
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true }
+        }
+        // Reset only when the panel is really hidden. Resigning key also happens when a context
+        // menu opens, and resetting then left the panel at opacity 0 (a blank window).
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { note in
+            guard let w = note.object as? NSWindow, w.className.contains("MenuBarExtra") else { return }
+            if !w.occlusionState.contains(.visible) { isPresented = false }
+            else if !isPresented { withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true } }
+        }
+        .onAppear {
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true }
+        }
         .environment(\.isEditingLayout, isEditingLayout)
         .skinRoot(skin)
         .task {
@@ -140,7 +164,7 @@ public struct ControlCenterPanel: View {
                             if section.title != nil {
                                 groupHeader(section)
                             }
-                            if !collapsedGroups.contains(section.id) {
+                            if !collapsedGroups.contains(collapseKey(section)) {
                                 deviceCollectionView(
                                     devices: section.devices,
                                     showRoomBadge: store.selectedRoomId == nil,
@@ -202,6 +226,9 @@ public struct ControlCenterPanel: View {
     private var groups: [DeviceGroup] { GroupPrefs.groups(groupsRaw) }
     private var groupMap: [String: String] { liveGroupMap ?? GroupPrefs.map(groupMapRaw) }
     private var collapsedGroups: Set<String> { GroupPrefs.set(collapsedRaw) }
+
+    /// Collapse state is per page: folding "更多设备" in All must not hide "其他" in a room.
+    private func collapseKey(_ section: PageSection) -> String { "\(layoutScope)|\(section.id)" }
 
     /// "All": 常用 first, then each custom group, then the rest. A room: custom groups then 其他;
     /// without any group in the room it is one untitled section, as before.
@@ -265,12 +292,12 @@ public struct ControlCenterPanel: View {
     @State private var hoveredHeader: String?
 
     private func groupHeader(_ section: PageSection) -> some View {
-        let collapsed = collapsedGroups.contains(section.id)
+        let collapsed = collapsedGroups.contains(collapseKey(section))
         let accent = skin.isClassic ? Color.accentColor : skin.palette.accent
         return Button {
             withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
                 var set = collapsedGroups
-                if collapsed { set.remove(section.id) } else { set.insert(section.id) }
+                if collapsed { set.remove(collapseKey(section)) } else { set.insert(collapseKey(section)) }
                 collapsedRaw = GroupPrefs.encode(set)
             }
         } label: {
@@ -351,6 +378,36 @@ public struct ControlCenterPanel: View {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layoutUI.newGroupForDevice = nil }
                 }
             }
+        } else if let did = layoutUI.renamingDeviceId, let dev = store.devices.first(where: { $0.id == did }) {
+            let currentAliases = GroupPrefs.map(aliasesRaw)
+            let originalName = store.originalDeviceName(for: did) ?? dev.name
+            promptBackdrop {
+                GroupNamePrompt(
+                    title: L10n.tr("重命名设备", "Rename Device"),
+                    name: currentAliases[did] ?? dev.name,
+                    placeholder: originalName,
+                    onReset: currentAliases[did] != nil ? {
+                        var aliases = GroupPrefs.map(aliasesRaw)
+                        aliases.removeValue(forKey: did)
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                            aliasesRaw = GroupPrefs.encode(aliases)
+                            store.applyDeviceAliases(aliases)
+                            layoutUI.renamingDeviceId = nil
+                        }
+                    } : nil
+                ) { name in
+                    var aliases = GroupPrefs.map(aliasesRaw)
+                    // Saving the original Mi Home name clears the alias.
+                    aliases[did] = name == originalName ? nil : name
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                        aliasesRaw = GroupPrefs.encode(aliases)
+                        store.applyDeviceAliases(aliases)
+                        layoutUI.renamingDeviceId = nil
+                    }
+                } onCancel: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layoutUI.renamingDeviceId = nil }
+                }
+            }
         } else if let gid = layoutUI.renamingGroupId, let group = groups.first(where: { $0.id == gid }) {
             promptBackdrop {
                 GroupNamePrompt(title: L10n.tr("重命名分组", "Rename Group"), name: group.name) { name in
@@ -375,6 +432,7 @@ public struct ControlCenterPanel: View {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                         layoutUI.newGroupForDevice = nil
                         layoutUI.renamingGroupId = nil
+                        layoutUI.renamingDeviceId = nil
                     }
                 }
                 .transition(.opacity)
@@ -576,7 +634,13 @@ public struct ControlCenterPanel: View {
         showRoomBadge: Bool,
         quickIndexMap: [String: Int]
     ) -> some View {
-        let ordered = DeviceLayoutPrefs.apply(order: currentOrder, to: devices)
+        let aliases = GroupPrefs.map(aliasesRaw)
+        let ordered = DeviceLayoutPrefs.apply(order: currentOrder, to: devices).map { dev -> SmartDevice in
+            guard let alias = aliases[dev.id] else { return dev }
+            var d = dev
+            d.name = alias
+            return d
+        }
         let spanMap = spans(for: ordered)
         let bento = skin == .bento && store.isCompactGridMode
         // Every card is its own child keyed by device id, so a reorder slides cards instead of rebuilding rows.
@@ -914,43 +978,89 @@ public struct ControlCenterPanel: View {
 
     // MARK: - 2. Room Filter Strip & Grid Toggle
 
+    private var roomPillsRow: some View {
+        HStack(spacing: 5) {
+            roomPill(title: L10n.tr("全部", "All"), roomId: nil)
+            ForEach(store.rooms) { room in
+                roomPill(title: L10n.displayRoomName(room.name), roomId: room.id)
+                    .id(room.id)
+            }
+        }
+    }
+
     private var roomFilterBar: some View {
         HStack(spacing: 6) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                AdaptiveGlassContainer(spacing: 5) {
-                    HStack(spacing: 5) {
-                        roomPill(title: L10n.tr("全部", "All"), roomId: nil)
-
-                        ForEach(store.rooms) { room in
-                            roomPill(title: L10n.displayRoomName(room.name), roomId: room.id)
-                        }
+            if skin.isClassic {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    AdaptiveGlassContainer(spacing: 5) {
+                        roomPillsRow
+                            .padding(.trailing, 10)
+                            .padding(.leading, 6)
+                            .padding(.vertical, 6)
                     }
-                    .padding(skin.isClassic ? 0 : 3)
-                    .background {
-                        if !skin.isClassic {
-                            Capsule(style: .continuous).fill(skin.palette.chip)
-                                .overlay(Capsule(style: .continuous).stroke(skin.palette.line, lineWidth: 0.8))
-                        }
-                    }
-                    .padding(.trailing, 10)
-                    // Room for the selected pill's glow, which the scroll view would otherwise clip.
-                    .padding(.leading, 6)
-                    .padding(.vertical, 6)
                 }
-            }
-            .padding(.leading, -6)
-            .padding(.vertical, -6)
-            .mask(
-                LinearGradient(
-                    stops: [
-                        .init(color: .black, location: 0.0),
-                        .init(color: .black, location: 0.91),
-                        .init(color: .clear, location: 1.0)
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
+                .padding(.leading, -6)
+                .padding(.vertical, -6)
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black, location: 0.0),
+                            .init(color: .black, location: 0.91),
+                            .init(color: .clear, location: 1.0)
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
                 )
-            )
+            } else {
+                // The track sits outside the scroll view and clips it, so the first pill's rounded
+                // edge can never be cut by the scroll view's own bounds or offset.
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 0) {
+                            Color.clear.frame(width: 0, height: 1).id("roomsStart")
+                            // Extra side inset keeps the end pills clear of the track's curved ends.
+                            roomPillsRow.padding(.vertical, 3).padding(.horizontal, 6)
+                        }
+                    }
+                    .defaultScrollAnchor(.leading)
+                    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                    // The menu-bar window restores a stale horizontal offset on reopen; snap back to
+                    // the start (or the selected room) so the first pill is not half scrolled out.
+                    // Only on a real reopen: any window becoming key (menus, submenus) used to rerun this
+                    // and re-layout the strip while a context menu was open.
+                    .onChange(of: isPresented) { _, shown in
+                        guard shown else { return }
+                        var t = Transaction(); t.disablesAnimations = true
+                        withTransaction(t) {
+                            // Selected room goes to the middle, never under the faded left edge.
+                            if let id = store.selectedRoomId { proxy.scrollTo(id, anchor: .center) } else { proxy.scrollTo("roomsStart", anchor: .leading) }
+                        }
+                    }
+                    .onAppear { proxy.scrollTo("roomsStart", anchor: .leading) }
+                    // Keep the chosen room fully visible; tapping a half-hidden one slides it in.
+                    .onChange(of: store.selectedRoomId) { _, id in
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                            proxy.scrollTo(id ?? "roomsStart", anchor: .center)
+                        }
+                    }
+                    // Soft fade at both ends instead of letters being sliced by the track edge.
+                    .mask(
+                        LinearGradient(
+                            stops: [
+                                .init(color: .black.opacity(0.0), location: 0.0),
+                                .init(color: .black, location: 0.035),
+                                .init(color: .black, location: 0.86),
+                                .init(color: .black.opacity(0.0), location: 1.0)
+                            ],
+                            startPoint: .leading, endPoint: .trailing
+                        )
+                    )
+                }
+                .clipShape(Capsule(style: .continuous))
+                .background(Capsule(style: .continuous).fill(skin.palette.chip))
+                .overlay(Capsule(style: .continuous).stroke(skin.palette.line, lineWidth: 0.8))
+            }
 
             AdaptiveGlassContainer(spacing: 5) {
                 HStack(spacing: 5) {
@@ -1033,7 +1143,6 @@ public struct ControlCenterPanel: View {
                         if isSelected {
                             Capsule(style: .continuous)
                                 .fill(p.accentGradient)
-                                .shadow(color: p.glow ? p.accent.opacity(0.5) : .clear, radius: 6)
                                 .matchedGeometryEffect(id: "roomPill", in: roomPillNamespace)
                         }
                     }

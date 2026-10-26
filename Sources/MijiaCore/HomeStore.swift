@@ -221,6 +221,8 @@ public final class HomeStore {
     var undoTimerTask: Task<Void, Never>?
     private var toastTimerTask: Task<Void, Never>?
     var optimisticLockUntil: [String: ContinuousClock.Instant] = [:]
+    public static let deviceAliasesKey = "device_aliases"
+    private var rawDeviceNames: [String: String] = [:]
 
     private var lowBatteryAlertedAt: [String: Date] = [:]
     private var activeSinceByDeviceId: [String: Date] = [:]
@@ -364,6 +366,7 @@ public final class HomeStore {
             return
         }
         latestLGDevice = dev
+        rawDeviceNames[dev.id] = dev.name
         let now = ContinuousClock.now
         if let lockTime = optimisticLockUntil[dev.id], now < lockTime {
             return
@@ -377,6 +380,7 @@ public final class HomeStore {
                 favoriteOrder.insert(dev.id, at: 0)
             }
         }
+        applyDeviceAliases()
         if !rooms.contains(where: { $0.id == dev.roomId || $0.name == dev.roomName }) {
             rooms.append(RoomArea(id: dev.roomId, name: dev.roomName, sortOrder: 1))
         }
@@ -414,6 +418,7 @@ public final class HomeStore {
             let existingById = Dictionary(uniqueKeysWithValues: self.devices.map { ($0.id, $0) })
 
             for incoming in snapshot.devices {
+                rawDeviceNames[incoming.id] = incoming.name
                 if let lockTime = optimisticLockUntil[incoming.id], now < lockTime,
                    let local = existingById[incoming.id] {
                     merged.append(local)
@@ -423,6 +428,7 @@ public final class HomeStore {
             }
             if let lgDev = latestLGDevice, lgConfig.isEnabled,
                !merged.contains(where: { $0.id == lgDev.id }) {
+                rawDeviceNames[lgDev.id] = lgDev.name
                 if let lockTime = optimisticLockUntil[lgDev.id], now < lockTime,
                    let local = existingById[lgDev.id] {
                     merged.insert(local, at: 0)
@@ -431,6 +437,7 @@ public final class HomeStore {
                 }
             }
             self.devices = merged
+            applyDeviceAliases()
             seedDefaultFavoritesIfNeeded()
 
             if enableSafetyAlerts, let handler = onSafetyAlert {
@@ -456,6 +463,38 @@ public final class HomeStore {
         if !initial.isEmpty {
             self.favoriteDeviceIds = Set(initial)
             self.favoriteOrder = initial
+        }
+    }
+
+    public func originalDeviceName(for deviceId: String) -> String? {
+        rawDeviceNames[deviceId] ?? devices.first(where: { $0.id == deviceId })?.name
+    }
+
+    public func applyDeviceAliases(_ overrides: [String: String]? = nil) {
+        let aliases: [String: String]
+        if let overrides {
+            aliases = overrides
+            if let data = try? JSONEncoder().encode(overrides),
+               let raw = String(data: data, encoding: .utf8) {
+                userDefaults.set(raw, forKey: Self.deviceAliasesKey)
+            }
+        } else if let raw = userDefaults.string(forKey: Self.deviceAliasesKey),
+                  let decoded = try? JSONDecoder().decode([String: String].self, from: Data(raw.utf8)) {
+            aliases = decoded
+        } else {
+            aliases = [:]
+        }
+        for idx in devices.indices {
+            let id = devices[idx].id
+            let baseName = rawDeviceNames[id] ?? devices[idx].name
+            rawDeviceNames[id] = baseName
+            if let alias = aliases[id]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !alias.isEmpty,
+               alias != baseName {
+                devices[idx].name = alias
+            } else {
+                devices[idx].name = baseName
+            }
         }
     }
 

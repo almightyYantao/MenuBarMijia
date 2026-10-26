@@ -5,6 +5,10 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT_DIR"
 
+if [ -d "$ROOT_DIR/.git/hooks" ] && [ ! -e "$ROOT_DIR/.git/hooks/pre-commit" ]; then
+    ln -s ../../scripts/check.sh "$ROOT_DIR/.git/hooks/pre-commit" 2>/dev/null || true
+fi
+
 search_matches() {
     local pattern="$1"
     shift
@@ -88,6 +92,13 @@ fi
 
 if command -v xmllint >/dev/null 2>&1; then
     xmllint --noout docs/assets/*.svg Resources/AppIcon/*.svg
+elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import sys, xml.etree.ElementTree as ET; [ET.parse(f) for f in sys.argv[1:]]' docs/assets/*.svg Resources/AppIcon/*.svg
+fi
+
+if ! cmp -s Resources/AppIcon/AppIcon-Dark.svg docs/assets/logo-dark.svg || ! cmp -s Resources/AppIcon/AppIcon-Light.svg docs/assets/logo-light.svg; then
+    echo "❌ docs/assets/logo-{dark,light}.svg 与 Resources/AppIcon/AppIcon-{Dark,Light}.svg 不一致，请运行 swift scripts/generate_app_icon.swift 同步！"
+    exit 1
 fi
 
 if [ "${1:-}" = "--lint-only" ]; then

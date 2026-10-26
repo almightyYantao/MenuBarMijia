@@ -413,4 +413,38 @@ struct MijiaCoreTests {
         let offlineAlerts = store.evaluateSafetyAlerts(now: after46Min.addingTimeInterval(30))
         #expect(offlineAlerts.contains(where: { $0.deviceId == "dev_coffee" && $0.title.contains("离线") }))
     }
+
+    @Test("Device aliases update HomeStore device names, work with voice/text commands, and preserve original Mi Home names")
+    @MainActor
+    func deviceAliasesUpdateStoreAndAssistantCommands() async throws {
+        let splitSwitch = SmartDevice(
+            id: "dev_split_2",
+            name: "领普三键开关（中键）",
+            roomId: "can_ting",
+            roomName: "餐厅",
+            model: "linp.switch.q33",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:100.s2:2:1", isOn: false, powerWatts: nil, childLockEntityId: nil))
+        )
+        let snapshot = SynthesizedHome(
+            rooms: [RoomArea(id: "can_ting", name: "餐厅")],
+            devices: [splitSwitch]
+        )
+        let mock = MockHomeProvider(snapshot: snapshot)
+        let store = HomeStore(provider: mock, defaultsSuiteName: "test.aliases.\(UUID().uuidString)")
+        for _ in 0..<50 where store.devices.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        store.applyDeviceAliases(["dev_split_2": "餐边柜射灯"])
+        #expect(store.devices.first?.name == "餐边柜射灯")
+        #expect(store.originalDeviceName(for: "dev_split_2") == "领普三键开关（中键）")
+
+        let plan = await store.runAssistantCommand("打开餐边柜射灯")
+        #expect(plan?.intents.count == 1)
+        #expect(store.devices.first?.isActiveOn == true)
+
+        store.applyDeviceAliases([:])
+        #expect(store.devices.first?.name == "领普三键开关（中键）")
+    }
 }

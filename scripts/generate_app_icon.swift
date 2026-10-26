@@ -36,8 +36,9 @@ func run(_ executable: String, _ arguments: [String]) throws {
 
 func parseSquircleCGPath(from svgURL: URL) throws -> CGPath {
     let svgText = try String(contentsOf: svgURL, encoding: .utf8)
-    guard let clipRange = svgText.range(of: #"<clipPath id="c"><path d="([^"]+)""#, options: .regularExpression) else {
-        throw NSError(domain: "IconGen", code: 1, userInfo: [NSLocalizedDescriptionKey: "Missing <clipPath id=\"c\"> in \(svgURL.path)"])
+    let pattern = #"(<path id="sq" d="([^"]+)"|<clipPath id="c"><path d="([^"]+)")"#
+    guard let clipRange = svgText.range(of: pattern, options: .regularExpression) else {
+        throw NSError(domain: "IconGen", code: 1, userInfo: [NSLocalizedDescriptionKey: "Missing squircle path in \(svgURL.path)"])
     }
     let match = String(svgText[clipRange])
     guard let dStart = match.range(of: #"d=""#)?.upperBound,
