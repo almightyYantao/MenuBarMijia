@@ -1015,7 +1015,10 @@ public struct ControlCenterPanel: View {
                     .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
                     // The menu-bar window restores a stale horizontal offset on reopen; snap back to
                     // the start (or the selected room) so the first pill is not half scrolled out.
-                    .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+                    // Only on a real reopen: any window becoming key (menus, submenus) used to rerun this
+                    // and re-layout the strip while a context menu was open.
+                    .onChange(of: isPresented) { _, shown in
+                        guard shown else { return }
                         var t = Transaction(); t.disablesAnimations = true
                         withTransaction(t) {
                             // Selected room goes to the middle, never under the faded left edge.
