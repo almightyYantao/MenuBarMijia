@@ -26,6 +26,15 @@ import {
 } from "../src/core/miCloudClient.js";
 import { MiCloudCrypto, RC4 } from "../src/core/miCloudCrypto.js";
 import {
+  CredentialVault,
+  credentialsFromSettings,
+  parseMiSession,
+  sanitizeSettingsForStorage,
+  serializeMiSession,
+  sessionWithoutPassToken,
+  type SecureInvoke,
+} from "../src/core/secureStore.js";
+import {
   allOffTargets,
   joinsAllOffByDefault,
   partitionDueTimers,
@@ -112,6 +121,129 @@ describe("MiCloudCrypto", () => {
         specType: null,
       },
     ]);
+  });
+});
+
+describe("Secure credential storage (#28 / #27 / #49)", () => {
+  const session = {
+    userId: "100",
+    cUserId: "abc",
+    ssecurity: "ssecurity-value",
+    serviceToken: "service-token-value",
+    passToken: "account-level-pass-token",
+    region: "cn",
+  };
+
+  function recordingVault(initial: Record<string, string> = {}) {
+    const store = new Map(Object.entries(initial));
+    const calls: Array<{ cmd: string; name: string; value?: string }> = [];
+    async function invoke<T>(cmd: string, args: Record<string, unknown>): Promise<T | null> {
+      const name = String(args["name"]);
+      if (cmd === "secure_store_get") {
+        calls.push({ cmd, name });
+        return (store.get(name) ?? null) as T | null;
+      }
+      if (cmd === "secure_store_set") {
+        const value = String(args["value"]);
+        calls.push({ cmd, name, value });
+        store.set(name, value);
+        return null;
+      }
+      calls.push({ cmd, name });
+      store.delete(name);
+      return null;
+    }
+    return { vault: new CredentialVault(invoke), calls, store };
+  }
+
+  it("strips every credential field before localStorage is written", () => {
+    const stored = sanitizeSettingsForStorage({
+      connectionMode: "xiaomiCloud",
+      miSession: session,
+      haToken: "ha-token",
+      openRouterApiKey: "sk-live",
+      assistantBaseURL: "https://openrouter.ai/api/v1",
+    });
+    assert.equal(stored["connectionMode"], "xiaomiCloud");
+    assert.equal(stored["assistantBaseURL"], "https://openrouter.ai/api/v1");
+    assert.equal("miSession" in stored, false);
+    assert.equal("haToken" in stored, false);
+    assert.equal("openRouterApiKey" in stored, false);
+    const json = JSON.stringify(stored);
+    assert.equal(json.includes("pass-token"), false);
+    assert.equal(json.includes("sk-live"), false);
+  });
+
+  it("parses old sessions but never writes passToken back (#27)", () => {
+    const old = JSON.stringify(session);
+    const parsed = parseMiSession(old);
+    assert.equal(parsed?.userId, "100");
+    assert.equal(parsed?.passToken, "");
+    const storedSession = serializeMiSession(parsed!);
+    assert.equal(storedSession.includes("passToken"), false);
+    assert.equal(storedSession.includes("account-level-pass-token"), false);
+    assert.equal(sessionWithoutPassToken(session).passToken, "");
+    assert.equal(credentialsFromSettings({ miSession: session }).miSession?.passToken, "");
+  });
+
+  it("writes fixed credential names and deletes cleared ones", async () => {
+    const { vault, calls, store } = recordingVault();
+    await vault.persist({ miSession: session, haToken: "ha-token", assistantApiKey: "sk-live" });
+    assert.deepEqual(
+      calls.filter((call) => call.cmd === "secure_store_set").map((call) => call.name).sort(),
+      ["assistant_api_key", "ha_token", "mi_session"]
+    );
+    assert.equal(store.get("mi_session")?.includes("passToken"), false);
+
+    await vault.persist({ miSession: session, haToken: "", assistantApiKey: "" });
+    assert.deepEqual(
+      calls.filter((call) => call.cmd === "secure_store_delete").map((call) => call.name).sort(),
+      ["assistant_api_key", "ha_token"]
+    );
+    assert.equal(store.has("ha_token"), false);
+    assert.equal(store.has("assistant_api_key"), false);
+  });
+
+  it("hydrates credentials from the store without rewriting them", async () => {
+    const { vault, calls } = recordingVault({
+      mi_session: serializeMiSession(session),
+      ha_token: "ha-token",
+      assistant_api_key: "sk-live",
+    });
+    const loaded = await vault.load();
+    assert.equal(loaded.miSession?.userId, "100");
+    assert.equal(loaded.miSession?.passToken, "");
+    assert.equal(loaded.haToken, "ha-token");
+    assert.equal(loaded.assistantApiKey, "sk-live");
+
+    await vault.persist(loaded);
+    assert.equal(calls.some((call) => call.cmd === "secure_store_set"), false);
+  });
+
+  it("uses Web Crypto, not Math.random, for the MIoT nonce (#49)", () => {
+    const original = Math.random;
+    Math.random = () => {
+      throw new Error("Math.random must not be used for security values");
+    };
+    try {
+      const nonce = MiCloudCrypto.makeNonce(29_000_000 * 60_000);
+      assert.equal(Buffer.from(nonce, "base64").length, 12);
+    } finally {
+      Math.random = original;
+    }
+  });
+});
+
+describe("Windows WebView hardening (#29)", () => {
+  it("ships a restrictive CSP instead of null", () => {
+    const conf = JSON.parse(readFileSync(resolve("src-tauri/tauri.conf.json"), "utf8")) as {
+      app: { security: { csp: string | null } };
+    };
+    const csp = conf.app.security.csp;
+    assert.equal(typeof csp, "string");
+    assert.match(csp!, /default-src 'self'/);
+    assert.match(csp!, /script-src 'self'/);
+    assert.doesNotMatch(csp!, /unsafe-eval/);
   });
 });
 

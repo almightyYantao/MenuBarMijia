@@ -88,11 +88,20 @@ bash scripts/release.sh
 
 Store notary credentials first with `xcrun notarytool store-credentials menumijia-notary`. `SKIP_NOTARIZE=1` packs a local DMG without notarization. The version string is the `VERSION` file. The build number is the git commit count.
 
+In-app updates additionally require a detached Ed25519 signature. Sign the DMG with the offline private key and upload the `.ed25519.sig` alongside it:
+
+```bash
+MENUBARMIJIA_UPDATE_SIGNING_KEY="<base64 32-byte seed>" \
+  swift scripts/sign_update.swift dist/MenuBarMijia-<version>.dmg
+```
+
+The app refuses to install a package whose signature is missing or does not match. Pushing a `v*` tag runs `.github/workflows/release.yml`: it signs with the pinned certificate when `MACOS_SIGNING_P12` is configured, and fails the release job when `MENUBARMIJIA_UPDATE_SIGNING_KEY` is absent. Set `MACOS_SIGNING_IDENTITY` and `MACOS_CERT_SHA1` when building to pin the certificate hash in `Info.plist`; without them the build falls back to ad-hoc. See [`docs/adr/0005-update-signing-trust-chain.md`](docs/adr/0005-update-signing-trust-chain.md).
+
 ## Connect devices
 
 Open the menu-bar icon, then the settings button.
 
-**Mi Cloud (no Home Assistant).** Choose **Mi Cloud direct**, then **Scan to sign in to Mi Home**, and confirm the QR code in the phone Mi Home app. Homes, rooms, and devices sync from your account. The client speaks Miot-Spec over Xiaomi’s RC4-signed `api.io.mi.com` API. `serviceToken` and `ssecurity` stay in the macOS Keychain. Note: `api.io.mi.com` is an undocumented private client API, and Xiaomi has restricted accounts that use unofficial clients in the past. Use the Home Assistant backend below if you want Xiaomi's official open-source `xiaomi_home` integration.
+**Mi Cloud (no Home Assistant).** Choose **Mi Cloud direct**, then **Scan to sign in to Mi Home**, and confirm the QR code in the phone Mi Home app. Homes, rooms, and devices sync from your account. The client speaks Miot-Spec over Xiaomi’s RC4-signed `api.io.mi.com` API. `serviceToken` and `ssecurity` are stored only in the macOS Keychain. Note: `api.io.mi.com` is an undocumented private client API, and Xiaomi has restricted accounts that use unofficial clients in the past. Use the Home Assistant backend below if you want Xiaomi's official open-source `xiaomi_home` integration.
 
 **Home Assistant (optional).** Choose **Home Assistant**, enter the base URL and a long-lived access token (created on your HA profile page). The default URL is `http://homeassistant.local:8123`. Use the LAN IP if that hostname does not resolve. The Mac app subscribes to `state_changed` over the LAN WebSocket. It works with [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) and [midea_ac_lan](https://github.com/wuwentao/midea_ac_lan). Separate HA entities (switch, power, energy, child lock, gateway light, and similar) are folded into one card per physical device.
 
@@ -193,7 +202,7 @@ Pushes to `main` run core tests, then GitHub Actions builds the Windows installe
 
 ## Privacy
 
-Habits, repeated phrases, and pending timers stay on your Mac in plain-text local `UserDefaults` (`~/Library/Preferences/`, keys `assistant_user_habit_memory_v1` and `assistant_scheduled_commands_v1`). Mi Home login material and API keys stay in the macOS Keychain.
+Habits, repeated phrases, and pending timers stay on your Mac in plain-text local `UserDefaults` (`~/Library/Preferences/`, keys `assistant_user_habit_memory_v1` and `assistant_scheduled_commands_v1`). Mi Home login material, the Home Assistant token, AI API keys, and the LG TV pairing key live only in the macOS Keychain: there is no plain-text copy in `UserDefaults`, and the Mi Home session no longer stores the account-level `passToken`. Upgrading from a build that mirrored credentials into plain text moves them into the Keychain and deletes those keys on first launch. Builds are ad-hoc signed, so macOS may ask once for Keychain access after an update; if access is denied, sign in (or pair the TV) again. On Windows, the Mi Home session, HA token, and AI key go to the Windows Credential Manager; WebView `localStorage` only keeps UI settings. Upgrading from an older Windows build moves any plain-text credentials into the credential manager and removes them from `localStorage`. The Windows WebView also runs under a strict CSP, and its network bridge only reaches Xiaomi’s cloud, your configured AI endpoint, and your HA address.
 
 Only utterances the local parser does not handle are sent to the model endpoint you configured. The payload is that utterance, device names, rooms, and states, the time of day, room temperature, and, if enabled, a habit summary. The API key and Mi Home credentials are not included. Settings states this on the configuration page.
 

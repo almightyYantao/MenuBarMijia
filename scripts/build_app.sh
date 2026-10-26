@@ -10,8 +10,28 @@ fi
 
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || echo 1.0.0)"
 BUILD_NUMBER="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
-# 留空 = 本机临时签名（只能自己用）；发布时由 scripts/release.sh 传入 "Developer ID Application: …"
-SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+# 留空 = 本机临时签名（只能自己用）；发布时需要固定证书：
+#   MACOS_SIGNING_IDENTITY  codesign 身份名称（CI secret 导入后自动填）
+#   MACOS_CERT_SHA1         该证书的 SHA-1（40 位十六进制），会写进 Info.plist 供更新校验钉住
+# SIGN_IDENTITY 为旧调用方式（scripts/release.sh）保留。
+SIGN_IDENTITY="${MACOS_SIGNING_IDENTITY:-${SIGN_IDENTITY:--}}"
+MACOS_CERT_SHA1="$(printf '%s' "${MACOS_CERT_SHA1:-}" | tr 'A-F' 'a-f')"
+if [ "$SIGN_IDENTITY" != "-" ] && [ -z "$MACOS_CERT_SHA1" ]; then
+    MACOS_CERT_SHA1="$(security find-identity -v -p codesigning 2>/dev/null \
+        | awk -v id="$SIGN_IDENTITY" 'index($0, id) { print $2; exit }' \
+        | tr 'A-F' 'a-f' || true)"
+fi
+if [ "$SIGN_IDENTITY" != "-" ] && [ -z "$MACOS_CERT_SHA1" ]; then
+    MACOS_CERT_SHA1="$(security find-certificate -c "$SIGN_IDENTITY" -p 2>/dev/null \
+        | openssl x509 -noout -fingerprint -sha1 2>/dev/null \
+        | sed 's/^.*=//' \
+        | tr -d ':' \
+        | tr 'A-F' 'a-f' || true)"
+fi
+if [ -n "$MACOS_CERT_SHA1" ] && ! printf '%s' "$MACOS_CERT_SHA1" | grep -Eq '^[0-9a-f]{40}$'; then
+    echo "❌ MACOS_CERT_SHA1 必须是 40 位十六进制证书 SHA-1" >&2
+    exit 1
+fi
 
 echo "▶ 正在编译 MenuBarMijiaApp $VERSION (Release)..."
 swift build -c release --product MenuBarMijiaApp
@@ -116,11 +136,27 @@ cat > "$APP_DIR/Contents/Resources/en.lproj/InfoPlist.strings" <<'STRINGS_EN'
 "NSSpeechRecognitionUsageDescription" = "Used to transcribe your voice commands into smart home actions in real time.";
 STRINGS_EN
 
+if [ -n "$MACOS_CERT_SHA1" ] && [ "$SIGN_IDENTITY" != "-" ]; then
+    /usr/libexec/PlistBuddy -c "Delete :MijiaCodeSignCertSHA1" "$APP_DIR/Contents/Info.plist" >/dev/null 2>&1 || true
+    /usr/libexec/PlistBuddy -c "Add :MijiaCodeSignCertSHA1 string $MACOS_CERT_SHA1" "$APP_DIR/Contents/Info.plist"
+    echo "🔏 已钉住代码签名证书 SHA-1：$MACOS_CERT_SHA1"
+elif [ "$SIGN_IDENTITY" != "-" ]; then
+    echo "⚠️ 使用了签名身份但拿不到证书 SHA-1；更新校验只能退回 Bundle ID 检查（Ed25519 仍兜底）。"
+fi
+
 if [ "$SIGN_IDENTITY" = "-" ]; then
+    echo "⚠️ 未设置 MACOS_SIGNING_IDENTITY：使用 ad-hoc 签名，仅适合本机自更新；发布包必须用固定证书签名。"
     codesign --force --sign - "$APP_DIR"
 else
-    # 正式签名：开启 Hardened Runtime（苹果公证的前提），并声明麦克风权限
-    codesign --force --options runtime --timestamp \
+    # 正式签名：开启 Hardened Runtime（苹果公证的前提），并声明麦克风权限。
+    # 只有 Apple 签发的证书才向苹果申请时间戳；自签名证书没有 Apple 信任链，申请会失败。
+    CODESIGN_ARGS=(--force --options runtime)
+    if security find-certificate -c "$SIGN_IDENTITY" -p 2>/dev/null \
+        | openssl x509 -noout -issuer 2>/dev/null \
+        | grep -q "Apple"; then
+        CODESIGN_ARGS+=(--timestamp)
+    fi
+    codesign "${CODESIGN_ARGS[@]}" \
         --entitlements "$ROOT/scripts/MenuBarMijia.entitlements" \
         --sign "$SIGN_IDENTITY" "$APP_DIR"
 fi

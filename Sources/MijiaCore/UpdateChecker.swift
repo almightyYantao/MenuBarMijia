@@ -1,5 +1,8 @@
 import CryptoKit
 import Foundation
+#if os(macOS)
+import Security
+#endif
 
 // MARK: - App Version
 
@@ -152,7 +155,7 @@ public struct DownloadProgress: Equatable, Sendable {
     }
 }
 
-/// Proof token constructed only after SHA-256, bundle identifier, version, quarantine removal, and code signature checks pass.
+/// Proof token constructed only after SHA-256, Ed25519 package signature, bundle identifier, version, optional quarantine removal, and code signature checks pass.
 public struct VerifiedStagedApp: Equatable, Sendable {
     public let release: AppRelease
     public let stagedBundleURL: URL
@@ -253,6 +256,10 @@ public struct UpdateChecker: Sendable {
 
     public static let latestReleaseURL = URL(string: "https://api.github.com/repos/jryang1997/MenuBarMijia/releases/latest")!
     public static let releasesPage = URL(string: "https://github.com/jryang1997/MenuBarMijia/releases")!
+
+    /// Ed25519 public key (32-byte raw, base64) that update packages must be signed with.
+    /// The private key should stay offline; see `scripts/sign_update.swift` and ADR-0005.
+    public static let updateSigningPublicKeyBase64 = "MV2JL2zxJqfhRCxpyU2gD63WxWF6z3fY5vdO/4pvpJU="
 
     public let currentVersion: String
     private let transport: Transport
@@ -375,6 +382,8 @@ public enum UpdateInstallError: LocalizedError, Equatable, Sendable {
     case bundleIdentifierMismatch(found: String?)
     case bundleVersionMismatch(found: String?, expected: String)
     case codeSignatureInvalid(String)
+    case updateSignatureMissing
+    case updateSignatureInvalid(String)
     case relaunchFailed(String)
 
     public var errorDescription: String? {
@@ -424,6 +433,16 @@ public enum UpdateInstallError: LocalizedError, Equatable, Sendable {
                 "更新包签名校验失败：\(detail)",
                 "Code signature verification failed: \(detail)"
             )
+        case .updateSignatureMissing:
+            return L10n.tr(
+                "更新包缺少 Ed25519 数字签名（.ed25519.sig），已中止安装",
+                "Update package is missing its Ed25519 signature (.ed25519.sig); installation aborted"
+            )
+        case .updateSignatureInvalid(let detail):
+            return L10n.tr(
+                "更新包 Ed25519 数字签名校验失败：\(detail)",
+                "Update package Ed25519 signature verification failed: \(detail)"
+            )
         case .relaunchFailed(let detail):
             return L10n.tr(
                 "启动更新替换脚本失败：\(detail)",
@@ -446,7 +465,7 @@ public struct UpdateSystemDriver: Sendable {
         _ destinationDir: URL
     ) async throws -> URL
     public var stripQuarantine: @Sendable (_ appBundleURL: URL) async throws -> Void
-    public var verifyCodeSignature: @Sendable (_ appBundleURL: URL) async throws -> Void
+    public var verifyCodeSignature: @Sendable (_ appBundleURL: URL, _ requirement: String) async throws -> Void
     public var launchDetachedSwapAndRelaunch: @Sendable (
         _ staged: VerifiedStagedApp,
         _ targetBundleURL: URL,
@@ -466,7 +485,7 @@ public struct UpdateSystemDriver: Sendable {
             _ destinationDir: URL
         ) async throws -> URL,
         stripQuarantine: @escaping @Sendable (_ appBundleURL: URL) async throws -> Void = { _ in },
-        verifyCodeSignature: @escaping @Sendable (_ appBundleURL: URL) async throws -> Void,
+        verifyCodeSignature: @escaping @Sendable (_ appBundleURL: URL, _ requirement: String) async throws -> Void,
         launchDetachedSwapAndRelaunch: @escaping @Sendable (
             _ staged: VerifiedStagedApp,
             _ targetBundleURL: URL,
@@ -551,8 +570,7 @@ public struct UpdateSystemDriver: Sendable {
                 arguments: ["-dr", "com.apple.quarantine", appBundleURL.path]
             )
         },
-        verifyCodeSignature: { appBundleURL in
-            let requirement = "identifier \"\(AppUpdater.expectedBundleIdentifier)\""
+        verifyCodeSignature: { appBundleURL, requirement in
             let result = try await Self.runProcess(
                 executable: "/usr/bin/codesign",
                 arguments: ["--verify", "--strict", "--deep", "-R=\(requirement)", appBundleURL.path]
@@ -791,17 +809,20 @@ public struct AppUpdater: Sendable {
     private let driver: UpdateSystemDriver
     private let targetBundleURL: URL
     private let stagingBaseDirectory: URL
+    private let updateSigningPublicKeyBase64: String
 
     public init(
         currentVersion: String = UpdateChecker.bundleVersion,
         targetBundleURL: URL = Bundle.main.bundleURL,
         stagingBaseDirectory: URL = FileManager.default.temporaryDirectory,
+        updateSigningPublicKeyBase64: String = UpdateChecker.updateSigningPublicKeyBase64,
         driver: UpdateSystemDriver = .live
     ) {
         self.checker = UpdateChecker(currentVersion: currentVersion, transport: driver.fetchData)
         self.driver = driver
         self.targetBundleURL = targetBundleURL
         self.stagingBaseDirectory = stagingBaseDirectory
+        self.updateSigningPublicKeyBase64 = updateSigningPublicKeyBase64
     }
 
     public func checkLatestRelease() async throws -> AppRelease? {
@@ -846,14 +867,22 @@ public struct AppUpdater: Sendable {
             throw UpdateInstallError.checksumMismatch(expected: expectedDigest.hex, actual: actualDigest.hex)
         }
         try Task.checkCancellation()
+        try await verifyPackageSignature(for: asset, archiveURL: archiveURL)
+        try Task.checkCancellation()
 
         let stagedBundleURL = try await driver.unpackArchive(archiveURL, asset.kind, stagingRootURL)
         try? FileManager.default.removeItem(at: archiveURL)
         try Task.checkCancellation()
 
         try validateBundleMetadata(at: stagedBundleURL, expectedVersion: release.version)
-        try await driver.stripQuarantine(stagedBundleURL)
-        try await driver.verifyCodeSignature(stagedBundleURL)
+        if Self.shouldStripQuarantine(currentAppIsAdHoc: Self.currentAppIsAdHoc()) {
+            try await driver.stripQuarantine(stagedBundleURL)
+        }
+        let requirement = Self.codeSigningRequirement(
+            bundleIdentifier: Self.expectedBundleIdentifier,
+            certificateSHA1: Self.codeSignCertificateSHA1(at: targetBundleURL)
+        )
+        try await driver.verifyCodeSignature(stagedBundleURL, requirement)
         try Task.checkCancellation()
 
         keepStaging = true
@@ -877,6 +906,78 @@ public struct AppUpdater: Sendable {
         try? FileManager.default.removeItem(at: staged.stagingRootURL)
     }
 
+    /// Detached Ed25519 signature asset that must accompany every downloadable package.
+    public static func signatureURL(for assetURL: URL) -> URL {
+        guard var components = URLComponents(url: assetURL, resolvingAgainstBaseURL: false) else {
+            return assetURL
+        }
+        components.path += ".ed25519.sig"
+        return components.url ?? assetURL
+    }
+
+    /// `codesign` requirement used to verify the staged bundle.
+    ///
+    /// The pinned leaf certificate hash itself is the anchor. `anchor apple generic` is not
+    /// assumed because the release certificate is self-signed and would never satisfy it;
+    /// without a pinned hash (local development builds) only the bundle identifier is enforced,
+    /// while the Ed25519 package signature remains mandatory.
+    public static func codeSigningRequirement(bundleIdentifier: String, certificateSHA1: String?) -> String {
+        let base = "identifier \"\(bundleIdentifier)\""
+        guard let raw = certificateSHA1?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
+            return base
+        }
+        let hash = raw.replacingOccurrences(of: " ", with: "").lowercased()
+        return base + " and certificate leaf = H\"\(hash)\""
+    }
+
+    /// Whether the staged bundle may have its quarantine attribute removed.
+    ///
+    /// Only non-Apple-anchored (ad-hoc or self-signed local) builds need this so in-app updates
+    /// keep working; official signed builds keep quarantine and let Gatekeeper check the
+    /// replacement app.
+    public static func shouldStripQuarantine(currentAppIsAdHoc: Bool) -> Bool {
+        currentAppIsAdHoc
+    }
+
+    /// True when the running app's designated requirement is not Apple-anchored.
+    ///
+    /// Failing to read the requirement is treated as ad-hoc to avoid breaking local updates.
+    public static func currentAppIsAdHoc() -> Bool {
+        #if os(macOS)
+        var code: SecCode?
+        guard SecCodeCopySelf(SecCSFlags(), &code) == errSecSuccess, let code else { return true }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, SecCSFlags(), &staticCode) == errSecSuccess,
+              let staticCode else {
+            return true
+        }
+        var requirement: SecRequirement?
+        guard SecCodeCopyDesignatedRequirement(staticCode, SecCSFlags(), &requirement) == errSecSuccess,
+              let requirement else {
+            return true
+        }
+        var text: CFString?
+        guard SecRequirementCopyString(requirement, SecCSFlags(), &text) == errSecSuccess, let text else {
+            return true
+        }
+        return !(text as String).lowercased().contains("anchor apple generic")
+        #else
+        return true
+        #endif
+    }
+
+    private static func codeSignCertificateSHA1(at appBundleURL: URL) -> String? {
+        let infoPlistURL = appBundleURL.appendingPathComponent("Contents/Info.plist")
+        guard let data = try? Data(contentsOf: infoPlistURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let raw = plist["MijiaCodeSignCertSHA1"] as? String else {
+            return nil
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     private func validateTargetBundleWritable() throws {
         guard targetBundleURL.pathExtension.lowercased() == "app" else {
             throw UpdateInstallError.notRunningFromAppBundle
@@ -897,6 +998,38 @@ public struct AppUpdater: Sendable {
         }
         for entry in entries where entry.lastPathComponent.hasPrefix(Self.stagingDirectoryPrefix) {
             try? FileManager.default.removeItem(at: entry)
+        }
+    }
+
+    private func verifyPackageSignature(for asset: AppRelease.PackageAsset, archiveURL: URL) async throws {
+        let request = URLRequest(url: Self.signatureURL(for: asset.downloadURL), timeoutInterval: 15)
+        let (data, response) = try await driver.fetchData(request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 200
+        if status == 404 {
+            throw UpdateInstallError.updateSignatureMissing
+        }
+        guard (200..<300).contains(status) else {
+            throw UpdateChecker.CheckError.httpStatus(status)
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw UpdateInstallError.updateSignatureInvalid("signature file is not UTF-8")
+        }
+        let signature = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !signature.isEmpty else {
+            throw UpdateInstallError.updateSignatureMissing
+        }
+        guard Data(base64Encoded: signature) != nil else {
+            throw UpdateInstallError.updateSignatureInvalid("signature is not valid base64")
+        }
+        guard let packageData = try? Data(contentsOf: archiveURL, options: .mappedIfSafe) else {
+            throw UpdateInstallError.updateSignatureInvalid("cannot read the downloaded package")
+        }
+        guard UpdateSignature.verify(
+            signatureBase64: signature,
+            publicKeyBase64: updateSigningPublicKeyBase64,
+            data: packageData
+        ) else {
+            throw UpdateInstallError.updateSignatureInvalid("signature does not match the package")
         }
     }
 

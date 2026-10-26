@@ -20,15 +20,13 @@ public struct MiSession: Codable, Equatable, Sendable {
     public var cUserId: String
     public var ssecurity: String
     public var serviceToken: String
-    public var passToken: String
     public var region: String
 
-    public init(userId: String, cUserId: String, ssecurity: String, serviceToken: String, passToken: String, region: String = "cn") {
+    public init(userId: String, cUserId: String, ssecurity: String, serviceToken: String, region: String = "cn") {
         self.userId = userId
         self.cUserId = cUserId
         self.ssecurity = ssecurity
         self.serviceToken = serviceToken
-        self.passToken = passToken
         self.region = region
     }
 
@@ -137,7 +135,6 @@ public struct MiAccountLogin: Sendable {
             cUserId: scanned!.cUserId,
             ssecurity: scanned!.ssecurity,
             serviceToken: token,
-            passToken: scanned!.passToken,
             region: region
         )
     }
@@ -146,7 +143,6 @@ public struct MiAccountLogin: Sendable {
         public var userId: String
         public var cUserId: String
         public var ssecurity: String
-        public var passToken: String
         public var location: URL
     }
 
@@ -162,7 +158,6 @@ public struct MiAccountLogin: Sendable {
             userId: userId,
             cUserId: json["cUserId"]?.idString ?? "",
             ssecurity: ssecurity,
-            passToken: json["passToken"]?.stringValue ?? "",
             location: location
         )
     }
@@ -195,63 +190,68 @@ public struct MiAccountLogin: Sendable {
     }
 }
 
-/// Keychain persistence for `MiSession` (service `com.jryang1997.MenuBarMijia`, account `mi_session`),
-/// with a `UserDefaults` fallback so ad-hoc signed updates that change the binary CDHash preserve login state.
+/// Keychain persistence for `MiSession` (service `com.jryang1997.MenuBarMijia`, account `mi_session`).
+/// `.standard` stores the session only in the Keychain (#16); any other suite keeps a test-only copy in
+/// `UserDefaults` so store tests never touch the real Keychain.
 public enum MiSessionStore {
-    private static let service = KeychainHelper.service
-    private static let account = "mi_session"
+    static let keychainAccount = "mi_session"
+    /// Test seam for non-`.standard` suites. ≤1.0.6 also wrote this key for `.standard`; startup migration moves
+    /// that plaintext copy into the Keychain and deletes it (#16).
     public static let fallbackDefaultsKey = "mi_session_fallback_v1"
+    /// The field name `JSONEncoder` writes for the account-level token that must not be persisted (#27).
+    private static let passTokenField = Data("\"passToken\"".utf8)
 
     public static func load(defaults: UserDefaults = .standard) -> MiSession? {
-        if let fallbackData = defaults.data(forKey: fallbackDefaultsKey),
-           let session = try? JSONDecoder().decode(MiSession.self, from: fallbackData) {
-            return session
+        guard let data = storedData(defaults: defaults),
+              let session = try? JSONDecoder().decode(MiSession.self, from: data) else { return nil }
+        // A session saved by ≤1.0.6 still carries `passToken`; rewrite it without (#27, ADR-0004).
+        if data.range(of: passTokenField) != nil, let stripped = try? JSONEncoder().encode(session) {
+            store(stripped, defaults: defaults)
         }
-        guard defaults === UserDefaults.standard else {
-            return nil
-        }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip,
-        ]
-        var item: CFTypeRef?
-        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-           let data = item as? Data,
-           let session = try? JSONDecoder().decode(MiSession.self, from: data) {
-            defaults.set(data, forKey: fallbackDefaultsKey)
-            return session
-        }
-        return nil
+        return session
     }
 
     @discardableResult
     public static func save(_ session: MiSession, defaults: UserDefaults = .standard) -> Bool {
         guard let data = try? JSONEncoder().encode(session) else { return false }
-        clear(defaults: defaults)
-        defaults.set(data, forKey: fallbackDefaultsKey)
-        guard defaults === UserDefaults.standard else { return true }
-        let add: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecValueData as String: data,
-        ]
-        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+        return store(data, defaults: defaults)
     }
 
     public static func clear(defaults: UserDefaults = .standard) {
         defaults.removeObject(forKey: fallbackDefaultsKey)
         guard defaults === UserDefaults.standard else { return }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        SecItemDelete(query as CFDictionary)
+        KeychainHelper.deleteKeychainItem(account: keychainAccount)
+    }
+
+    /// Re-encodes a ≤1.0.6 `UserDefaults` session for the Keychain, dropping the `passToken` it carried
+    /// (#27). Returns nil when the legacy data cannot be decoded.
+    static func migratedData(fromLegacyDefaults data: Data) -> Data? {
+        guard let session = try? JSONDecoder().decode(MiSession.self, from: data) else { return nil }
+        return try? JSONEncoder().encode(session)
+    }
+
+    private static func storedData(defaults: UserDefaults) -> Data? {
+        guard defaults === UserDefaults.standard else {
+            return defaults.data(forKey: fallbackDefaultsKey)
+        }
+        return KeychainHelper.readKeychainData(account: keychainAccount)
+    }
+
+    /// `data` is already re-encoded through `MiSession`, so no `passToken` reaches the store.
+    @discardableResult
+    private static func store(_ data: Data, defaults: UserDefaults) -> Bool {
+        guard defaults === UserDefaults.standard else {
+            defaults.set(data, forKey: fallbackDefaultsKey)
+            return true
+        }
+        let written = KeychainHelper.writeKeychainData(
+            data,
+            account: keychainAccount,
+            accessibility: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
+        )
+        guard written else { return false }
+        // The plaintext mirror is gone (#16): the Keychain is the only store.
+        defaults.removeObject(forKey: fallbackDefaultsKey)
+        return true
     }
 }

@@ -180,6 +180,61 @@ describe("Windows device control and undo", () => {
   });
 });
 
+describe("Credentials move out of localStorage (#28)", () => {
+  it("migrates old plaintext credentials into the credential manager and strips the copy", async () => {
+    const store = new Map<string, string>();
+    const invoke = async <T>(cmd: string, args: Record<string, unknown> = {}): Promise<T | null> => {
+      const name = String(args["name"] ?? "");
+      if (cmd === "secure_store_set") {
+        store.set(name, String(args["value"] ?? ""));
+        return null;
+      }
+      if (cmd === "secure_store_get") return (store.get(name) ?? null) as T | null;
+      if (cmd === "secure_store_delete") {
+        store.delete(name);
+        return null;
+      }
+      return null;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+      assistantBaseURL: "https://openrouter.ai/api/v1",
+      openRouterApiKey: "sk-live",
+      haToken: "ha-token",
+      miSession: {
+        userId: "1000000000",
+        cUserId: "abc",
+        ssecurity: "ssecurity-value",
+        serviceToken: "service-token-value",
+        passToken: "account-level-pass-token",
+        region: "cn",
+      },
+    }));
+
+    new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+    await setImmediate();
+
+    const saved = JSON.parse(localStorage.getItem("menumijia.windows.settings.v2") ?? "{}") as Record<string, unknown>;
+    assert.equal("miSession" in saved, false);
+    assert.equal("haToken" in saved, false);
+    assert.equal("openRouterApiKey" in saved, false);
+    assert.deepEqual([...store.keys()].sort(), ["assistant_api_key", "ha_token", "mi_session"]);
+    assert.equal(store.get("mi_session")?.includes("passToken"), false);
+    assert.equal(store.get("mi_session")?.includes("account-level-pass-token"), false);
+
+    // A later launch reads only the credential manager, so the upgrade needs no new QR login.
+    document.body.innerHTML = '<div id="app"></div>';
+    new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+    await setImmediate();
+    await click("#btn-settings");
+    assert.match(document.body.textContent ?? "", /已登录 10\*\*\*\*00/);
+  });
+});
+
 describe("AI key stays with the server it was saved for (#19)", () => {
   function keyField(): HTMLInputElement {
     return element("#settings-api-key") as HTMLInputElement;

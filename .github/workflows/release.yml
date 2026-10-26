@@ -1,0 +1,172 @@
+name: Release
+
+# 发布 macOS 版本：正式签名 → 打 DMG → 用离线 Ed25519 私钥签名更新包 → 上传 release 附件。
+# 普通推送与 PR 只跑 ci.yml（只读），不会走到这里。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（例如 v1.0.7，必须与 VERSION 一致）"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos-release:
+    # 签名依赖 macOS 工具链。本工作流只做固定证书签名与 Ed25519 更新签名；Apple 公证需要额外凭据，
+    # 未包含在此流程中（需要公证时在本地按 scripts/release.sh 的说明执行）。
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Toolchain info
+        run: xcodebuild -version && swift --version
+
+      - name: Install ripgrep
+        run: command -v rg >/dev/null || brew install ripgrep
+
+      - name: Import macOS signing certificate
+        id: signing
+        env:
+          MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MACOS_SIGNING_P12:-}" ] || [ -z "${MACOS_SIGNING_P12_PASSWORD:-}" ]; then
+            echo "identity=" >> "$GITHUB_OUTPUT"
+            {
+              echo "### ⚠️ 本次发布使用 ad-hoc 签名"
+              echo "未配置 MACOS_SIGNING_P12 / MACOS_SIGNING_P12_PASSWORD，更新校验会退回 Bundle ID（Ed25519 仍兜底）。"
+              echo "发布正式版本前请配置固定代码签名证书。"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::未配置 MACOS_SIGNING_P12 / MACOS_SIGNING_P12_PASSWORD，降级为 ad-hoc 签名。"
+            exit 0
+          fi
+
+          keychain="$RUNNER_TEMP/menubarmijia-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          umask 077
+          printf '%s' "$MACOS_SIGNING_P12" | tr -d '[:space:]' | base64 -D > "$RUNNER_TEMP/signing.p12"
+          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -P "$MACOS_SIGNING_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
+
+          identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(.*\)".*/\1/p' | head -n 1 || true)"
+          if [ -z "$identity" ]; then
+            # 自签名证书在建立信任前可能不出现在 find-identity 里，退回到证书 CN。
+            identity="$(security find-certificate -a -p "$keychain" \
+              | openssl x509 -noout -subject -nameopt multiline 2>/dev/null \
+              | awk -F' = ' '/commonName/ { print $2; exit }' || true)"
+          fi
+          if [ -z "$identity" ]; then
+            echo "❌ 导入 p12 后没有找到可用的 codesigning 身份" >&2
+            exit 1
+          fi
+          security find-certificate -c "$identity" -p "$keychain" > "$RUNNER_TEMP/signing.pem"
+          if ! openssl x509 -in "$RUNNER_TEMP/signing.pem" -noout -issuer | grep -q "Apple"; then
+            # 自签名证书通常需要显式信任才能构建签名链；失败不阻断，后续 codesign 会给出明确错误。
+            if ! sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$RUNNER_TEMP/signing.pem"; then
+              echo "::warning::无法把自签名证书加入系统信任；如果 codesign 失败，请改用已受信任的证书。"
+            fi
+          fi
+          sha1="$(security find-identity -v -p codesigning "$keychain" | awk -v id="$identity" 'index($0, id) { print $2; exit }' | tr 'A-F' 'a-f' || true)"
+          if ! printf '%s' "$sha1" | grep -Eq '^[0-9a-f]{40}$'; then
+            sha1="$(security find-certificate -c "$identity" -p "$keychain" \
+              | openssl x509 -noout -fingerprint -sha1 2>/dev/null \
+              | sed 's/^.*=//' \
+              | tr -d ':' \
+              | tr 'A-F' 'a-f' || true)"
+          fi
+          if ! printf '%s' "$sha1" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "❌ 无法读取签名证书 SHA-1" >&2
+            exit 1
+          fi
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "sha1=$sha1" >> "$GITHUB_OUTPUT"
+          echo "MACOS_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+          echo "MACOS_CERT_SHA1=$sha1" >> "$GITHUB_ENV"
+          echo "✅ 已导入签名身份：$identity ($sha1)"
+
+      - name: Lint, test, sign, and build DMG
+        env:
+          DEVELOPER_ID: ${{ steps.signing.outputs.identity }}
+          SKIP_NOTARIZE: "1"
+        run: bash scripts/release.sh
+
+      - name: Sign DMG with the offline Ed25519 key
+        env:
+          MENUBARMIJIA_UPDATE_SIGNING_KEY: ${{ secrets.MENUBARMIJIA_UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          dmg="dist/MenuBarMijia-${version}.dmg"
+          if [ ! -f "$dmg" ]; then
+            echo "❌ 未找到预期的 DMG：$dmg" >&2
+            exit 1
+          fi
+          if [ -z "${MENUBARMIJIA_UPDATE_SIGNING_KEY:-}" ]; then
+            {
+              echo "### ❌ 缺少 MENUBARMIJIA_UPDATE_SIGNING_KEY，已拒绝发布"
+              echo "未签名的更新包会破坏应用内更新的信任链（issue #17）。请在可信机器上离线执行："
+              echo '```bash'
+              echo "MENUBARMIJIA_UPDATE_SIGNING_KEY=\"<32 字节 seed 的 base64>\" swift scripts/sign_update.swift \"$dmg\""
+              echo '```'
+              echo "然后把 DMG、.sha256 和 .ed25519.sig 一起作为 release 附件手动上传；在此之前不要发布。"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "❌ 缺少 MENUBARMIJIA_UPDATE_SIGNING_KEY：用 scripts/sign_update.swift 离线签名后手动上传，宁可不发布也不发未签名更新。" >&2
+            exit 1
+          fi
+          swift scripts/sign_update.swift "$dmg"
+          test -f "$dmg.ed25519.sig"
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          tag="v${version}"
+          if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "❌ 标签 $tag 不存在；请先创建并推送 tag，再发布" >&2
+            exit 1
+          fi
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse "refs/tags/${tag}^{commit}")" ]; then
+            echo "❌ 当前提交不是标签 $tag 指向的提交" >&2
+            exit 1
+          fi
+
+          files=()
+          for file in \
+            "dist/MenuBarMijia-${version}.dmg" \
+            "dist/MenuBarMijia-${version}.dmg.sha256" \
+            "dist/MenuBarMijia-${version}.dmg.ed25519.sig"
+          do
+            if [ ! -f "$file" ]; then
+              echo "❌ 缺少发布附件：$file" >&2
+              exit 1
+            fi
+            files+=("$file")
+          done
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            gh release create "$tag" "${files[@]}" --title "MenuBarMijia ${version}" --generate-notes
+          fi

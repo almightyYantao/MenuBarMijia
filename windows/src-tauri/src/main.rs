@@ -2,9 +2,10 @@
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{LazyLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -15,6 +16,107 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 
 static LAST_FOCUS_LOSS_MS: AtomicU64 = AtomicU64::new(0);
 static PIN_POPOVER: AtomicBool = AtomicBool::new(false);
+
+/// Hosts the frontend configured (AI endpoint, Home Assistant, LG TV). Xiaomi's own
+/// API hosts are compiled in below; everything else must be added through
+/// `set_allowed_hosts` before `native_http` will talk to it (#29).
+static EXTRA_ALLOWED_HOSTS: LazyLock<RwLock<HashSet<String>>> =
+    LazyLock::new(|| RwLock::new(HashSet::new()));
+
+const BUILT_IN_HOST_SUFFIXES: &[&str] = &["account.xiaomi.com", "api.io.mi.com", "miot-spec.org"];
+
+fn normalize_host(raw: &str) -> String {
+    raw.trim()
+        .trim_end_matches('.')
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase()
+}
+
+fn normalize_extra_host(raw: &str) -> Option<String> {
+    let host = normalize_host(raw);
+    if host.is_empty() || host.len() > 253 {
+        return None;
+    }
+    if host.contains('/')
+        || host.contains('@')
+        || host.contains('?')
+        || host.contains('#')
+        || host.contains(' ')
+    {
+        return None;
+    }
+    if host
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_'))
+    {
+        Some(host)
+    } else {
+        None
+    }
+}
+
+fn host_allowed(host: &str, extra: &HashSet<String>) -> bool {
+    let host = normalize_host(host);
+    if host.is_empty() {
+        return false;
+    }
+    if extra.contains(&host) {
+        return true;
+    }
+    BUILT_IN_HOST_SUFFIXES
+        .iter()
+        .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")))
+}
+
+fn check_url_allowed(url: &reqwest::Url, extra: &HashSet<String>) -> Result<(), String> {
+    match url.scheme() {
+        "http" | "https" => {}
+        scheme => return Err(format!("native_http 只允许 http/https 地址：{scheme}")),
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "native_http 地址缺少主机名".to_string())?;
+    if host_allowed(host, extra) {
+        Ok(())
+    } else {
+        Err(format!("native_http 拒绝访问未授权主机：{host}"))
+    }
+}
+
+fn allowed_hosts_snapshot() -> Result<HashSet<String>, String> {
+    EXTRA_ALLOWED_HOSTS
+        .read()
+        .map(|hosts| hosts.clone())
+        .map_err(|_| "host allowlist unavailable".to_string())
+}
+
+const CREDENTIAL_SERVICE: &str = "com.jryang.menubarmijia";
+const CREDENTIAL_NAMES: &[&str] = &["mi_session", "ha_token", "assistant_api_key"];
+
+/// Fixed credential names only: this must not become a generic key/value store (#28).
+fn allowed_credential_name(name: &str) -> Result<&str, String> {
+    if CREDENTIAL_NAMES.contains(&name) {
+        return Ok(name);
+    }
+    if let Some(suffix) = name.strip_prefix("assistant_api_key_") {
+        if !suffix.is_empty()
+            && suffix.len() <= 48
+            && suffix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Ok(name);
+        }
+    }
+    Err(format!("不允许的凭据名称：{name}"))
+}
+
+fn credential_entry(name: &str) -> Result<keyring::Entry, String> {
+    let name = allowed_credential_name(name)?;
+    keyring::Entry::new(CREDENTIAL_SERVICE, name)
+        .map_err(|error| format!("无法打开 Windows 凭据管理器：{error}"))
+}
 
 fn now_epoch_ms() -> u64 {
     SystemTime::now()
@@ -39,8 +141,37 @@ async fn native_http(
     follow_redirects: Option<bool>,
     timeout_ms: Option<u64>,
 ) -> Result<NativeHttpResponse, String> {
-    let policy = if follow_redirects.unwrap_or(true) {
-        reqwest::redirect::Policy::limited(5)
+    // Every request, including frontend-provided URLs, must hit an allowed host (#29).
+    let allowed_hosts = allowed_hosts_snapshot()?;
+    let parsed_url = reqwest::Url::parse(&url).map_err(|e| format!("native_http 地址无效：{e}"))?;
+    check_url_allowed(&parsed_url, &allowed_hosts)?;
+
+    let follow = follow_redirects.unwrap_or(true);
+    let policy = if follow {
+        let redirect_hosts = allowed_hosts.clone();
+        let original_host = parsed_url
+            .host_str()
+            .map(normalize_host)
+            .unwrap_or_default();
+        reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 5 {
+                return attempt.stop();
+            }
+            let next_host = attempt
+                .url()
+                .host_str()
+                .map(normalize_host)
+                .unwrap_or_default();
+            // No cross-host redirects: a redirect must not turn an allowlisted URL
+            // into a request to a different server (and must still be allowlisted).
+            if next_host == original_host
+                && check_url_allowed(attempt.url(), &redirect_hosts).is_ok()
+            {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        })
     } else {
         reqwest::redirect::Policy::none()
     };
@@ -53,15 +184,25 @@ async fn native_http(
 
     let verb = method.unwrap_or_else(|| "GET".to_string()).to_uppercase();
     let mut req = match verb.as_str() {
+        "GET" => client.get(&url),
         "POST" => client.post(&url),
         "PUT" => client.put(&url),
+        "PATCH" => client.patch(&url),
         "DELETE" => client.delete(&url),
-        _ => client.get(&url),
+        other => return Err(format!("native_http 不支持的方法：{other}")),
     };
 
     if let Some(hdrs) = headers {
         let mut map = HeaderMap::new();
         for (k, v) in hdrs {
+            // Request framing is owned by reqwest; letting the frontend set these
+            // could smuggle a second request past the URL allowlist.
+            if matches!(
+                k.to_ascii_lowercase().as_str(),
+                "host" | "content-length" | "transfer-encoding" | "connection" | "upgrade"
+            ) {
+                continue;
+            }
             if let (Ok(name), Ok(val)) = (HeaderName::from_str(&k), HeaderValue::from_str(&v)) {
                 map.insert(name, val);
             }
@@ -75,6 +216,11 @@ async fn native_http(
 
     let resp = req.send().await.map_err(|e| e.to_string())?;
     let status = resp.status().as_u16();
+    // A stopped redirect comes back as a 3xx here; surfacing it as an error is
+    // clearer than handing the frontend a response from a host it may not use.
+    if follow && resp.status().is_redirection() && status != 304 {
+        return Err("native_http 拒绝跨主机或未授权重定向".to_string());
+    }
 
     let mut out_headers: HashMap<String, String> = HashMap::new();
     for (name, val) in resp.headers().iter() {
@@ -96,6 +242,54 @@ async fn native_http(
         headers: out_headers,
         body: text,
     })
+}
+
+/// Replaces the user-configured host allowlist. Called with the AI endpoint and HA
+/// address from the frontend whenever settings change (#29).
+#[tauri::command]
+fn set_allowed_hosts(hosts: Vec<String>) -> Result<(), String> {
+    if hosts.len() > 64 {
+        return Err("host allowlist too long".to_string());
+    }
+    let normalized: HashSet<String> = hosts
+        .iter()
+        .filter_map(|host| normalize_extra_host(host))
+        .collect();
+    let mut guard = EXTRA_ALLOWED_HOSTS
+        .write()
+        .map_err(|_| "host allowlist unavailable".to_string())?;
+    *guard = normalized;
+    Ok(())
+}
+
+#[tauri::command]
+fn secure_store_get(name: String) -> Result<Option<String>, String> {
+    let entry = credential_entry(&name)?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("读取 Windows 凭据失败：{error}")),
+    }
+}
+
+#[tauri::command]
+fn secure_store_set(name: String, value: String) -> Result<(), String> {
+    if value.is_empty() {
+        return secure_store_delete(name);
+    }
+    let entry = credential_entry(&name)?;
+    entry
+        .set_password(&value)
+        .map_err(|error| format!("写入 Windows 凭据失败：{error}"))
+}
+
+#[tauri::command]
+fn secure_store_delete(name: String) -> Result<(), String> {
+    let entry = credential_entry(&name)?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("删除 Windows 凭据失败：{error}")),
+    }
 }
 
 #[tauri::command]
@@ -212,6 +406,10 @@ fn main() {
         )
         .invoke_handler(tauri::generate_handler![
             native_http,
+            set_allowed_hosts,
+            secure_store_get,
+            secure_store_set,
+            secure_store_delete,
             hide_panel,
             quit_app,
             set_panel_height,
@@ -268,4 +466,78 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running MenuBarMijia Windows application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn extra(hosts: &[&str]) -> HashSet<String> {
+        hosts
+            .iter()
+            .filter_map(|host| normalize_extra_host(host))
+            .collect()
+    }
+
+    fn allows(url: &str, hosts: &[&str]) -> bool {
+        let parsed = reqwest::Url::parse(url).expect("test URL");
+        check_url_allowed(&parsed, &extra(hosts)).is_ok()
+    }
+
+    #[test]
+    fn allows_only_xiaomi_api_and_configured_hosts() {
+        assert!(allows("https://api.io.mi.com/app/home/device_list", &[]));
+        assert!(allows("https://de.api.io.mi.com/app/home/device_list", &[]));
+        assert!(allows(
+            "https://account.xiaomi.com/longPolling/loginUrl",
+            &[]
+        ));
+        assert!(allows("https://lp.account.xiaomi.com/lp/s?d=x", &[]));
+        assert!(allows("https://miot-spec.org/miot-spec-v2/instance", &[]));
+        assert!(allows(
+            "https://api.deepseek.com/v1/chat/completions",
+            &["api.deepseek.com"]
+        ));
+        assert!(allows("http://192.168.1.8:8123/api/", &["192.168.1.8"]));
+
+        assert!(!allows("https://evil.example/steal", &[]));
+        assert!(!allows("https://api.io.mi.com.evil.example/app", &[]));
+        assert!(!allows(
+            "https://api.deepseek.com.evil.example/v1",
+            &["api.deepseek.com"]
+        ));
+        assert!(!allows("file:///C:/Windows/win.ini", &[]));
+    }
+
+    #[test]
+    fn normalizes_configured_hosts_and_rejects_urls() {
+        assert_eq!(
+            normalize_extra_host(" API.DeepSeek.com. "),
+            Some("api.deepseek.com".to_string())
+        );
+        assert_eq!(normalize_extra_host("[::1]"), Some("::1".to_string()));
+        assert_eq!(normalize_extra_host("https://evil.example/path"), None);
+        assert_eq!(normalize_extra_host("evil.example/path"), None);
+        assert_eq!(normalize_extra_host(""), None);
+    }
+
+    #[test]
+    fn credential_names_are_limited_to_known_entries() {
+        assert_eq!(
+            allowed_credential_name("mi_session").ok(),
+            Some("mi_session")
+        );
+        assert_eq!(allowed_credential_name("ha_token").ok(), Some("ha_token"));
+        assert_eq!(
+            allowed_credential_name("assistant_api_key").ok(),
+            Some("assistant_api_key")
+        );
+        assert_eq!(
+            allowed_credential_name("assistant_api_key_openrouter").ok(),
+            Some("assistant_api_key_openrouter")
+        );
+        assert!(allowed_credential_name("arbitrary_key").is_err());
+        assert!(allowed_credential_name("assistant_api_key_").is_err());
+        assert!(allowed_credential_name("assistant_api_key_a/b").is_err());
+    }
 }

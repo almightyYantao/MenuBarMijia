@@ -247,8 +247,13 @@ public final class HomeStore {
     ) {
         let ud = defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.userDefaults = ud
-        self.isTestEnvironment = (provider != nil || defaultsSuiteName != nil)
+        let isTestEnvironment = (provider != nil || defaultsSuiteName != nil)
+        self.isTestEnvironment = isTestEnvironment
         self.updater = updater ?? AppUpdater()
+        // ≤1.0.6 mirrored credentials into plain `UserDefaults`; move them into the Keychain before any read (#16).
+        if !isTestEnvironment && ud === UserDefaults.standard {
+            KeychainHelper.migratePlaintextCredentialsToKeychain(defaults: ud)
+        }
         let boolOrDefaultTrue = { (key: String) -> Bool in
             ud.object(forKey: key) == nil ? true : ud.bool(forKey: key)
         }
@@ -306,10 +311,6 @@ public final class HomeStore {
             self.hiddenDeviceIds = []
         }
         self.allOffOverrides = ud.dictionary(forKey: "all_off_overrides") as? [String: Bool] ?? [:]
-
-        if !self.isTestEnvironment && ud === UserDefaults.standard {
-            KeychainHelper.synchronizeFallbackCredentialsBeforeUpdate(defaults: ud)
-        }
 
         let initialHAToken = (provider == nil && initialBackend == .homeAssistant) ? KeychainHelper.loadToken() : ""
         if let provider {

@@ -159,7 +159,9 @@ extension HomeStore {
     public func confirmRelaunchForUpdate() {
         guard case .readyToRelaunch(let staged) = updateState else { return }
         updateState = .installing(staged.release)
-        KeychainHelper.synchronizeFallbackCredentialsBeforeUpdate(defaults: userDefaults)
+        // Nothing is mirrored into `UserDefaults` any more, so there is no snapshot to take before the binary is
+        // replaced; the plaintext migration is idempotent and gets one last chance to run (#16).
+        KeychainHelper.migratePlaintextCredentialsToKeychain(defaults: userDefaults)
         do {
             try updater.installStagedUpdateAndRelaunch(staged)
             onTerminateForUpdate?()

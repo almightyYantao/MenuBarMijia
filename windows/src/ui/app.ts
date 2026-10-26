@@ -9,6 +9,7 @@ import {
   inferAssistantPreset,
   assistantEndpointIdentity,
   endpointAllowsSendingSecrets,
+  parseAssistantEndpoint,
   isLocalAssistantEndpoint,
   INSECURE_ENDPOINT_MESSAGE,
   ModelActionPolicy,
@@ -28,6 +29,14 @@ import {
   type QRLoginTicket,
   maskedMiUserId,
 } from "../core/miCloudClient.js";
+import {
+  CredentialVault,
+  credentialsFromSettings,
+  hasCredentials,
+  parseMiSession,
+  sanitizeSettingsForStorage,
+  sessionWithoutPassToken,
+} from "../core/secureStore.js";
 import {
   type AssistantSuggestion,
   type DeviceCommand,
@@ -368,95 +377,130 @@ function invokeTauriVoid(cmd: string, args?: Record<string, unknown>): void {
   }
 }
 
-function loadSettings(): PersistedSettings {
+interface LoadedSettings {
+  readonly settings: PersistedSettings;
+  /** An old localStorage copy still contains secrets that must move to the credential manager (#28). */
+  readonly hasLegacyCredentials: boolean;
+}
+
+function loadSettings(): LoadedSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as Partial<PersistedSettings>;
-      const miSession = parsed.miSession ?? null;
+      const parsed = JSON.parse(raw) as Partial<PersistedSettings> & Record<string, unknown>;
+      const rawHaToken = typeof parsed.haToken === "string" ? parsed.haToken : "";
+      const rawApiKey = typeof parsed.openRouterApiKey === "string" ? parsed.openRouterApiKey : "";
+      const hasLegacyCredentials =
+        (parsed.miSession !== undefined && parsed.miSession !== null) || rawHaToken !== "" || rawApiKey !== "";
+      const miSession = parseMiSession(parsed.miSession);
       const mode: ConnectionMode = parsed.connectionMode === "demo" || parsed.connectionMode === "xiaomiCloud"
         ? parsed.connectionMode
         : miSession ? "xiaomiCloud" : "demo";
       return {
-        connectionMode: mode,
-        miSession,
-        haBaseURL: parsed.haBaseURL ?? "",
-        haToken: parsed.haToken ?? "",
-        assistantBaseURL: parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1",
-        openRouterApiKey: parsed.openRouterApiKey ?? "",
-        // Keys saved before binding existed belong to the URL saved alongside them.
-        assistantKeyEndpoint:
-          parsed.assistantKeyEndpoint !== undefined
-            ? parsed.assistantKeyEndpoint
-            : parsed.openRouterApiKey
-              ? assistantEndpointIdentity(parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1")
-              : null,
-        cloudConsentEndpoints: Array.isArray(parsed.cloudConsentEndpoints)
-          ? parsed.cloudConsentEndpoints.filter((e): e is string => typeof e === "string")
-          : [],
-        allOffOverrides:
-          parsed.allOffOverrides && typeof parsed.allOffOverrides === "object"
-            ? Object.fromEntries(
-                Object.entries(parsed.allOffOverrides).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"),
-              )
-            : {},
-        assistantModel: parsed.assistantModel ?? "~typesafe/jev-latest",
-        habitLearningEnabled: parsed.habitLearningEnabled ?? true,
-        learnedShortcuts: parsed.learnedShortcuts ?? [],
-        hasCompletedOnboarding: parsed.hasCompletedOnboarding ?? Boolean(miSession),
-        isCompactGridMode: parsed.isCompactGridMode ?? true,
-        cachedXiaomiDevices: Array.isArray(parsed.cachedXiaomiDevices)
-          ? parsed.cachedXiaomiDevices
-          : [],
-        cachedModelTypes:
-          parsed.cachedModelTypes && typeof parsed.cachedModelTypes === "object"
-            ? parsed.cachedModelTypes
-            : {},
-        skin: SKINS.some((k) => k.id === parsed.skin) ? (parsed.skin as AppSkin) : "classic",
-        panelHeight: PANEL_HEIGHTS.some((h) => h.id === parsed.panelHeight) ? (parsed.panelHeight as PanelHeight) : "standard",
-        climatePanel: parsed.climatePanel ?? true,
-        layout: { ...emptyLayoutPrefs(), ...(parsed.layout ?? {}) },
-        selectedHomeId: parsed.selectedHomeId ?? null,
+        settings: {
+          connectionMode: mode,
+          miSession,
+          haBaseURL: parsed.haBaseURL ?? "",
+          haToken: rawHaToken,
+          assistantBaseURL: parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1",
+          openRouterApiKey: rawApiKey,
+          // Keys saved before binding existed belong to the URL saved alongside them.
+          assistantKeyEndpoint:
+            parsed.assistantKeyEndpoint !== undefined
+              ? parsed.assistantKeyEndpoint
+              : parsed.openRouterApiKey
+                ? assistantEndpointIdentity(parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1")
+                : null,
+          cloudConsentEndpoints: Array.isArray(parsed.cloudConsentEndpoints)
+            ? parsed.cloudConsentEndpoints.filter((e): e is string => typeof e === "string")
+            : [],
+          allOffOverrides:
+            parsed.allOffOverrides && typeof parsed.allOffOverrides === "object"
+              ? Object.fromEntries(
+                  Object.entries(parsed.allOffOverrides).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"),
+                )
+              : {},
+          assistantModel: parsed.assistantModel ?? "~typesafe/jev-latest",
+          habitLearningEnabled: parsed.habitLearningEnabled ?? true,
+          learnedShortcuts: parsed.learnedShortcuts ?? [],
+          hasCompletedOnboarding: parsed.hasCompletedOnboarding ?? Boolean(miSession),
+          isCompactGridMode: parsed.isCompactGridMode ?? true,
+          cachedXiaomiDevices: Array.isArray(parsed.cachedXiaomiDevices)
+            ? parsed.cachedXiaomiDevices
+            : [],
+          cachedModelTypes:
+            parsed.cachedModelTypes && typeof parsed.cachedModelTypes === "object"
+              ? parsed.cachedModelTypes
+              : {},
+          skin: SKINS.some((k) => k.id === parsed.skin) ? (parsed.skin as AppSkin) : "classic",
+          panelHeight: PANEL_HEIGHTS.some((h) => h.id === parsed.panelHeight) ? (parsed.panelHeight as PanelHeight) : "standard",
+          climatePanel: parsed.climatePanel ?? true,
+          layout: { ...emptyLayoutPrefs(), ...(parsed.layout ?? {}) },
+          selectedHomeId: parsed.selectedHomeId ?? null,
+        },
+        hasLegacyCredentials,
       };
     }
   } catch {
     // ignore corrupt localStorage
   }
   return {
-    connectionMode: "demo",
-    miSession: null,
-    haBaseURL: "",
-    haToken: "",
-    assistantBaseURL: "https://openrouter.ai/api/v1",
-    openRouterApiKey: "",
-    assistantKeyEndpoint: null,
-    cloudConsentEndpoints: [],
-    allOffOverrides: {},
-    assistantModel: "~typesafe/jev-latest",
-    habitLearningEnabled: true,
-    learnedShortcuts: [],
-    hasCompletedOnboarding: false,
-    isCompactGridMode: true,
-    cachedXiaomiDevices: [],
-    cachedModelTypes: {},
-    skin: "classic",
-    panelHeight: "standard",
-    climatePanel: true,
-    layout: emptyLayoutPrefs(),
-    selectedHomeId: null,
+    settings: {
+      connectionMode: "demo",
+      miSession: null,
+      haBaseURL: "",
+      haToken: "",
+      assistantBaseURL: "https://openrouter.ai/api/v1",
+      openRouterApiKey: "",
+      assistantKeyEndpoint: null,
+      cloudConsentEndpoints: [],
+      allOffOverrides: {},
+      assistantModel: "~typesafe/jev-latest",
+      habitLearningEnabled: true,
+      learnedShortcuts: [],
+      hasCompletedOnboarding: false,
+      isCompactGridMode: true,
+      cachedXiaomiDevices: [],
+      cachedModelTypes: {},
+      skin: "classic",
+      panelHeight: "standard",
+      climatePanel: true,
+      layout: emptyLayoutPrefs(),
+      selectedHomeId: null,
+    },
+    hasLegacyCredentials: false,
   };
 }
 
-function saveSettings(settings: PersistedSettings): void {
+/** Writes settings without credentials; secrets belong to the Windows Credential Manager (#28). */
+function writeSettingsForStorage(settings: PersistedSettings): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitizeSettingsForStorage(settings)));
   } catch {
     // ignore storage quota errors
   }
 }
 
+/** Removes secrets from every settings copy, including the pre-1.0 legacy key. */
+function stripCredentialFieldsFromStoredCopies(): void {
+  for (const key of [STORAGE_KEY, LEGACY_STORAGE_KEY]) {
+    const raw = localStorage.getItem(key);
+    if (!raw) continue;
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      localStorage.setItem(key, JSON.stringify(sanitizeSettingsForStorage(parsed)));
+    } catch {
+      // ignore corrupt copies
+    }
+  }
+}
+
 export class MenuMijiaWindowsApp {
-  private settings: PersistedSettings = loadSettings();
+  private readonly loadedSettings: LoadedSettings = loadSettings();
+  private settings: PersistedSettings = this.loadedSettings.settings;
+  private readonly credentialVault = new CredentialVault();
+  /** Serialized host list last sent to Rust; avoids re-sending it on every periodic settings save. */
+  private lastAllowedHosts: string | null = null;
   private devices: SmartDevice[] =
     this.settings.connectionMode === "xiaomiCloud"
       ? structuredClone(this.settings.cachedXiaomiDevices)
@@ -511,6 +555,9 @@ export class MenuMijiaWindowsApp {
       this.settings.cachedModelTypes,
     );
 
+    this.initializeCredentials();
+    this.syncAllowedHosts();
+
     if (!this.settings.hasCompletedOnboarding && !this.settings.miSession) {
       this.activeSheet = "onboarding";
     }
@@ -525,6 +572,85 @@ export class MenuMijiaWindowsApp {
     if (this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession) {
       void this.refreshXiaomiDevices();
     }
+  }
+
+  /**
+   * First run after this version: move the plaintext copy into the Windows Credential
+   * Manager, then rewrite localStorage without secrets (#28). Later runs read only the
+   * credential store, so an upgrade needs no QR login again.
+   */
+  private initializeCredentials(): void {
+    if (this.loadedSettings.hasLegacyCredentials) {
+      // Rewrite the plaintext copy first so a credential-manager failure can never
+      // leave tokens in localStorage. The in-memory settings keep the login alive.
+      writeSettingsForStorage(this.settings);
+      stripCredentialFieldsFromStoredCopies();
+      void this.persistCredentials();
+      return;
+    }
+    // A stale pre-1.0 copy can still hold secrets even when the v2 copy is clean (#28).
+    stripCredentialFieldsFromStoredCopies();
+    void this.hydrateCredentials();
+  }
+
+  private async hydrateCredentials(): Promise<void> {
+    try {
+      const credentials = await this.credentialVault.load();
+      if (!hasCredentials(credentials)) return;
+      const current = credentialsFromSettings(this.settings);
+      if (!current.miSession && credentials.miSession) this.settings.miSession = credentials.miSession;
+      if (current.haToken === "" && credentials.haToken !== "") this.settings.haToken = credentials.haToken;
+      if (current.assistantApiKey === "" && credentials.assistantApiKey !== "") {
+        this.settings.openRouterApiKey = credentials.assistantApiKey;
+        this.settings.assistantKeyEndpoint ??= assistantEndpointIdentity(this.settings.assistantBaseURL);
+      }
+      if (this.settings.miSession) {
+        this.settings.hasCompletedOnboarding = true;
+        if (this.activeSheet === "onboarding") this.activeSheet = "none";
+      }
+      this.syncAllowedHosts();
+      writeSettingsForStorage(this.settings);
+      if (this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession) {
+        void this.refreshXiaomiDevices(true);
+      }
+      this.render();
+    } catch {
+      // A locked or unavailable credential store must not stop demo mode.
+    }
+  }
+
+  private async persistCredentials(): Promise<void> {
+    try {
+      await this.credentialVault.persist(credentialsFromSettings(this.settings));
+    } catch {
+      // The credential manager refused the write; never fall back to plaintext storage.
+    }
+  }
+
+  private saveSettings(): void {
+    writeSettingsForStorage(this.settings);
+    this.syncAllowedHosts();
+    void this.persistCredentials();
+  }
+
+  /**
+   * Tells Rust which user-configured hosts `native_http` may reach. Xiaomi's own API
+   * hosts are built into the Rust whitelist; this list adds the assistant endpoint and
+   * Home Assistant. Residual risk: injected frontend code could extend the list, but
+   * the CSP blocks injection and credentials are no longer read from persistent
+   * WebView storage (only held in memory while the app runs).
+   */
+  private syncAllowedHosts(): void {
+    const hosts: string[] = [];
+    for (const url of [this.settings.assistantBaseURL, this.settings.haBaseURL]) {
+      const endpoint = parseAssistantEndpoint(url);
+      if (endpoint) hosts.push(endpoint.host);
+    }
+    hosts.sort();
+    const serialized = hosts.join("\n");
+    if (serialized === this.lastAllowedHosts) return;
+    this.lastAllowedHosts = serialized;
+    invokeTauriVoid("set_allowed_hosts", { hosts });
   }
 
   private bindGlobalKeys(): void {
@@ -694,7 +820,7 @@ export class MenuMijiaWindowsApp {
       this.settings.cachedModelTypes = this.specResolver.exportKnownModelTypes(
         rawDevices.map((d) => d.model),
       );
-      saveSettings(this.settings);
+      this.saveSettings();
 
       if (!silent) {
         this.replyBanner = {
@@ -739,7 +865,7 @@ export class MenuMijiaWindowsApp {
     this.settings.selectedHomeId = id;
     this.isHomeMenuOpen = false;
     this.selectedRoom = "全部";
-    saveSettings(this.settings);
+    this.saveSettings();
     this.render();
     void this.refreshXiaomiDevices(false);
   }
@@ -916,7 +1042,7 @@ export class MenuMijiaWindowsApp {
     if (this.settings.learnedShortcuts.length > 25) {
       this.settings.learnedShortcuts.length = 25;
     }
-    saveSettings(this.settings);
+    this.saveSettings();
   }
 
   private buildInverseCommand(dev: SmartDevice, command: DeviceCommand): DeviceCommand[] {
@@ -1272,7 +1398,8 @@ export class MenuMijiaWindowsApp {
       this.render();
 
       const session = await login.waitForScan(ticket);
-      this.settings.miSession = session;
+      // The account-level passToken is never persisted (#27).
+      this.settings.miSession = sessionWithoutPassToken(session);
       this.settings.connectionMode = "xiaomiCloud";
       this.settings.hasCompletedOnboarding = true;
       // Clear fake demo devices immediately upon real Xiaomi login
@@ -1281,7 +1408,7 @@ export class MenuMijiaWindowsApp {
       this.selectedRoom = "全部";
       this.activeSheet = "none";
       this.qrTicket = null;
-      saveSettings(this.settings);
+      this.saveSettings();
 
       this.qrStatusText = `已连接小米账号 ${maskedMiUserId(session.userId)}`;
       this.replyBanner = {
@@ -1342,7 +1469,7 @@ export class MenuMijiaWindowsApp {
   }
 
   private saveLayout(): void {
-    saveSettings(this.settings);
+    this.saveSettings();
   }
 
   /**
@@ -2560,21 +2687,21 @@ export class MenuMijiaWindowsApp {
     this.root.querySelectorAll<HTMLElement>("[data-skin]").forEach((btn) => {
       btn.addEventListener("click", () => {
         this.settings.skin = btn.dataset.skin as AppSkin;
-        saveSettings(this.settings);
+        this.saveSettings();
         this.render();
       });
     });
     this.root.querySelectorAll<HTMLElement>("[data-panel-height]").forEach((btn) => {
       btn.addEventListener("click", () => {
         this.settings.panelHeight = btn.dataset.panelHeight as PanelHeight;
-        saveSettings(this.settings);
+        this.saveSettings();
         this.applyPanelHeight();
         this.render();
       });
     });
     this.root.querySelector<HTMLInputElement>("#settings-climate-panel")?.addEventListener("change", (e) => {
       this.settings.climatePanel = (e.target as HTMLInputElement).checked;
-      saveSettings(this.settings);
+      this.saveSettings();
       this.render();
     });
 
@@ -2593,7 +2720,7 @@ export class MenuMijiaWindowsApp {
 
     this.root.querySelector("#btn-toggle-grid")?.addEventListener("click", () => {
       this.settings.isCompactGridMode = !this.settings.isCompactGridMode;
-      saveSettings(this.settings);
+      this.saveSettings();
       this.render();
     });
 
@@ -2844,7 +2971,7 @@ export class MenuMijiaWindowsApp {
       this.pendingCloudConsent = null;
       if (!this.settings.cloudConsentEndpoints.includes(pending.endpoint)) {
         this.settings.cloudConsentEndpoints.push(pending.endpoint);
-        saveSettings(this.settings);
+        this.saveSettings();
       }
       void this.handleNaturalCommand(pending.utterance, true);
     });
@@ -2865,14 +2992,14 @@ export class MenuMijiaWindowsApp {
         } else {
           this.settings.allOffOverrides[id] = box.checked;
         }
-        saveSettings(this.settings);
+        this.saveSettings();
         this.render();
       });
     });
 
     this.root.querySelector("#btn-revoke-cloud")?.addEventListener("click", () => {
       this.settings.cloudConsentEndpoints = [];
-      saveSettings(this.settings);
+      this.saveSettings();
       this.render();
     });
 
@@ -2887,7 +3014,7 @@ export class MenuMijiaWindowsApp {
         this.settings.assistantKeyEndpoint = assistantEndpointIdentity(this.settings.assistantBaseURL);
       }
       this.settings.hasCompletedOnboarding = true;
-      saveSettings(this.settings);
+      this.saveSettings();
       this.activeSheet = "none";
       invokeTauriVoid("set_pin_popover", { pin: false });
       this.render();
@@ -2919,7 +3046,7 @@ export class MenuMijiaWindowsApp {
             void this.refreshXiaomiDevices(false);
           }
         }
-        saveSettings(this.settings);
+        this.saveSettings();
         this.render();
       });
     });
@@ -2929,7 +3056,7 @@ export class MenuMijiaWindowsApp {
         const idx = Number(btn.dataset.delHabit);
         if (!Number.isNaN(idx)) {
           this.settings.learnedShortcuts.splice(idx, 1);
-          saveSettings(this.settings);
+          this.saveSettings();
           this.render();
         }
       });
@@ -2975,7 +3102,7 @@ export class MenuMijiaWindowsApp {
       const fallbackModel = inferredPreset.defaultModel || "gpt-4o-mini";
       if (modelEl) this.settings.assistantModel = modelEl.value.trim() || fallbackModel;
       if (habitEl) this.settings.habitLearningEnabled = habitEl.checked;
-      saveSettings(this.settings);
+      this.saveSettings();
       this.activeSheet = "none";
       invokeTauriVoid("set_pin_popover", { pin: false });
       this.render();

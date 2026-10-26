@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 // MARK: - AI Provider Presets
 
@@ -309,8 +308,7 @@ public struct AssistantConfig: Equatable, Sendable {
         }
         defaults.set(trimmedBase, forKey: Self.baseURLKey)
         defaults.set(trimmedModel, forKey: Self.modelKey)
-        let providerAccount = KeychainHelper.assistantProviderAPIKeyAccount(for: inferred)
-        KeychainHelper.saveSecret(trimmedKey, account: providerAccount, defaults: defaults)
+        Self.saveSecret(trimmedKey, for: inferred, defaults: defaults)
         if inferred == .custom {
             if trimmedKey.isEmpty {
                 defaults.removeObject(forKey: Self.customKeyEndpointKey)
@@ -318,9 +316,23 @@ public struct AssistantConfig: Equatable, Sendable {
                 defaults.set(AssistantEndpoint(trimmedBase)?.identity, forKey: Self.customKeyEndpointKey)
             }
         }
-        if inferred == .openRouterJev {
-            KeychainHelper.saveSecret(trimmedKey, account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults)
+    }
+
+    /// Writes (or, with an empty key, deletes) the saved key for `preset`. The bundled OpenRouter/Jev preset also
+    /// keeps the legacy `assistant_api_key` slot in sync because pre-v1.0.4 builds read the key from there.
+    private static func saveSecret(_ key: String, for preset: AssistantProviderPreset, defaults: UserDefaults) {
+        KeychainHelper.saveSecret(
+            key,
+            account: KeychainHelper.assistantProviderAPIKeyAccount(for: preset),
+            defaults: defaults
+        )
+        if preset == .openRouterJev {
+            KeychainHelper.saveSecret(key, account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults)
         }
+    }
+
+    private static func clearSecret(for preset: AssistantProviderPreset, defaults: UserDefaults) {
+        saveSecret("", for: preset, defaults: defaults)
     }
 
     /// Returns only the user's explicitly saved Keychain API key for the given endpoint (excluding ambient CodexBar/env keys).
@@ -376,10 +388,7 @@ public struct AssistantConfig: Equatable, Sendable {
               let key = loadAmbientAPIKey(forBaseURL: baseURL, configURL: configURL) else {
             return nil
         }
-        KeychainHelper.saveSecret(key, account: KeychainHelper.assistantProviderAPIKeyAccount(for: preset), defaults: defaults)
-        if preset == .openRouterJev {
-            KeychainHelper.saveSecret(key, account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults)
-        }
+        saveSecret(key, for: preset, defaults: defaults)
         defaults.set(label, forKey: importedKeySourceKey(for: preset))
         return label
     }
@@ -394,10 +403,7 @@ public struct AssistantConfig: Equatable, Sendable {
     /// Forgets the saved key for `baseURL`'s provider (the "撤销" button next to an imported key).
     public static func removeStoredAPIKey(forBaseURL baseURL: String, defaults: UserDefaults = .standard) {
         let preset = AssistantProviderPreset.infer(baseURL: baseURL)
-        KeychainHelper.saveSecret("", account: KeychainHelper.assistantProviderAPIKeyAccount(for: preset), defaults: defaults)
-        if preset == .openRouterJev {
-            KeychainHelper.saveSecret("", account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults)
-        }
+        clearSecret(for: preset, defaults: defaults)
         if preset == .custom {
             defaults.removeObject(forKey: customKeyEndpointKey)
         }
@@ -475,60 +481,42 @@ extension KeychainHelper {
         "assistant_api_key_\(preset.rawValue)"
     }
 
+    /// Every account that may hold a saved assistant key: the per-provider slots plus the pre-v1.0.4 OpenRouter
+    /// slot. Used by the plain-text migration (#16).
+    static var assistantSecretAccounts: [String] {
+        AssistantProviderPreset.allCases.map { assistantProviderAPIKeyAccount(for: $0) } + [assistantAPIKeyAccount]
+    }
+
+    /// `UserDefaults` key of the plain-text copy that ≤1.0.6 wrote (#16). Nothing writes it any more for
+    /// `.standard`; a custom suite uses it as a test-only store so unit tests never touch the real Keychain.
     public static func secretFallbackKey(for account: String) -> String {
         "keychain_fallback_\(account)"
     }
 
     public static func loadSecret(account: String, defaults: UserDefaults = .standard) -> String {
-        let fallbackKey = secretFallbackKey(for: account)
-        if let fallback = defaults.string(forKey: fallbackKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !fallback.isEmpty {
-            return fallback
-        }
         guard defaults === UserDefaults.standard else {
-            return ""
+            return defaults.string(forKey: secretFallbackKey(for: account))?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip
-        ]
-        var item: CFTypeRef?
-        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-           let data = item as? Data,
-           let str = String(data: data, encoding: .utf8) {
-            let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                defaults.set(trimmed, forKey: fallbackKey)
-                return trimmed
-            }
-        }
-        return ""
+        return readKeychainSecret(account: account) ?? ""
     }
 
     /// Saving an empty value deletes the item.
-    public static func saveSecret(_ value: String, account: String, defaults: UserDefaults = .standard) {
-        let fallbackKey = secretFallbackKey(for: account)
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            defaults.removeObject(forKey: fallbackKey)
-        } else {
-            defaults.set(trimmed, forKey: fallbackKey)
+    @discardableResult
+    public static func saveSecret(_ value: String, account: String, defaults: UserDefaults = .standard) -> Bool {
+        guard defaults === UserDefaults.standard else {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                defaults.removeObject(forKey: secretFallbackKey(for: account))
+            } else {
+                defaults.set(trimmed, forKey: secretFallbackKey(for: account))
+            }
+            return true
         }
-        guard defaults === UserDefaults.standard else { return }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        SecItemDelete(query as CFDictionary)
-        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return }
-        var addQuery = query
-        addQuery[kSecValueData as String] = data
-        SecItemAdd(addQuery as CFDictionary, nil)
+        // Credentials live only in the Keychain (#16); drop any plain-text copy left behind by ≤1.0.6 once the
+        // Keychain accepted the new value, so a failed write never loses the old secret.
+        guard writeKeychainSecret(value, account: account) else { return false }
+        defaults.removeObject(forKey: secretFallbackKey(for: account))
+        return true
     }
 }

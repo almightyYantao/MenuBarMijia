@@ -104,7 +104,7 @@ struct MiAccountLoginTests {
         #expect(scan.ssecurity == "c3NlYw==")
         #expect(scan.cUserId == "cu-1")
         #expect(scan.location.absoluteString == "https://sts.api.io.mi.com/sts?d=1")
-        #expect(MiSession(userId: scan.userId, cUserId: "", ssecurity: "", serviceToken: "", passToken: "").maskedUserId == "12****90")
+        #expect(MiSession(userId: scan.userId, cUserId: "", ssecurity: "", serviceToken: "").maskedUserId == "12****90")
     }
 
     @Test("Full scan flow: long-poll timeout retried, then serviceToken read from Set-Cookie")
@@ -129,7 +129,7 @@ struct MiAccountLoginTests {
             timeout: 30
         )
         let session = try await login.waitForScan(ticket)
-        #expect(session == MiSession(userId: "42", cUserId: "c", ssecurity: "c3M=", serviceToken: "tok123", passToken: "p", region: "cn"))
+        #expect(session == MiSession(userId: "42", cUserId: "c", ssecurity: "c3M=", serviceToken: "tok123", region: "cn"))
     }
 
     @Test(
@@ -525,7 +525,7 @@ private func consume(_ provider: some HomeProvider) -> (EventLog, Task<Void, Nev
     return (log, task)
 }
 
-private let fakeSession = MiSession(userId: "42", cUserId: "c", ssecurity: Vectors.ssecurity, serviceToken: "tok", passToken: "p")
+private let fakeSession = MiSession(userId: "42", cUserId: "c", ssecurity: Vectors.ssecurity, serviceToken: "tok")
 
 struct MiCloudProviderTests {
     @Test("Device list + props produce one snapshot with the synthesized light; execute writes and re-polls")
@@ -651,8 +651,7 @@ struct MiCloudProviderTests {
             userId: "1234567890",
             cUserId: "cu",
             ssecurity: Vectors.ssecurity,
-            serviceToken: "tok",
-            passToken: "pt"
+            serviceToken: "tok"
         )
         store.completeMiLogin(session)
         #expect(store.homeBackend == .xiaomiCloud)

@@ -41,6 +41,11 @@ public struct LGWebOSConfig: Equatable, Sendable {
     public var roomName: String
     public var clientKey: String
 
+    /// Keychain account for the pairing key. ≤1.0.6 kept it in plain `UserDefaults` under the same key name
+    /// (`clientKeyDefaultsKey`), which is migrated into the Keychain the first time it is needed (#16).
+    static let clientKeyAccount = "lg_webos_client_key"
+    static let clientKeyDefaultsKey = "lg_webos_client_key"
+
     public static let defaultHost = ""
     public static let defaultMAC = ""
     public static let defaultName = "LG C2 电视"
@@ -74,7 +79,7 @@ public struct LGWebOSConfig: Equatable, Sendable {
         let mac = defaults.string(forKey: "lg_webos_mac")?.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = defaults.string(forKey: "lg_webos_name")?.trimmingCharacters(in: .whitespacesAndNewlines)
         let room = defaults.string(forKey: "lg_webos_room")?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = defaults.string(forKey: "lg_webos_client_key")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let key = Self.loadClientKey(from: defaults)
 
         return LGWebOSConfig(
             isEnabled: enabled,
@@ -92,7 +97,40 @@ public struct LGWebOSConfig: Equatable, Sendable {
         defaults.set(macAddress, forKey: "lg_webos_mac")
         defaults.set(name, forKey: "lg_webos_name")
         defaults.set(roomName, forKey: "lg_webos_room")
-        defaults.set(clientKey, forKey: "lg_webos_client_key")
+        Self.saveClientKey(clientKey, to: defaults)
+    }
+
+    /// The pairing key is a credential, so `.standard` keeps it only in the Keychain (#16). Other suites (tests)
+    /// keep it inside the suite.
+    private static func loadClientKey(from defaults: UserDefaults) -> String {
+        guard defaults === UserDefaults.standard else {
+            return defaults.string(forKey: clientKeyDefaultsKey)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        if let key = KeychainHelper.readKeychainSecret(account: clientKeyAccount) {
+            return key
+        }
+        // Migrate a ≤1.0.6 plain-text pairing key the first time it is needed; a no-op when there is none.
+        KeychainHelper.migratePlaintextSecret(
+            defaults: defaults,
+            plaintextKey: clientKeyDefaultsKey,
+            account: clientKeyAccount
+        )
+        return KeychainHelper.readKeychainSecret(account: clientKeyAccount) ?? ""
+    }
+
+    private static func saveClientKey(_ key: String, to defaults: UserDefaults) {
+        guard defaults === UserDefaults.standard else {
+            let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                defaults.removeObject(forKey: clientKeyDefaultsKey)
+            } else {
+                defaults.set(trimmed, forKey: clientKeyDefaultsKey)
+            }
+            return
+        }
+        guard KeychainHelper.saveSecret(key, account: clientKeyAccount) else { return }
+        defaults.removeObject(forKey: clientKeyDefaultsKey)
     }
 }
 

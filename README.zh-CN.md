@@ -96,7 +96,7 @@
 ### 模式一：米家云端直连（推荐新用户，0 门槛）
 - **手机扫码即用**：打开设置切换到「米家云端直连」，用手机「米家」App 扫一下屏幕上的二维码即可完成绑定。
 - **原生 Miot-Spec 协议与 RC4 端到端加密**：内置 `MiCloudClient` 与 `MiotSynthesizer`，自动拉取你米家账号下的家庭、房间与设备列表，动态解析 `miot-spec-v2` 规格书（含吸顶灯 `mode` 日光/月光枚举、空调温控、插座功率、温湿度计、扫地机、冰箱等）。
-- **隐私安全**：登录凭证（`serviceToken` / `ssecurity`）严格保存在你本机的 **macOS 系统钥匙串（Keychain）** 中，只与小米 `api.io.mi.com` 加密通信。
+- **隐私安全**：登录凭证（`serviceToken` / `ssecurity`）只保存在你本机的 **macOS 系统钥匙串（Keychain）** 中，不再写一份明文配置；米家账号级的长期 `passToken` 也不再保存。只与小米 `api.io.mi.com` 加密通信。
 - **账号风控提示**：`api.io.mi.com` 属于逆向的非公开客户端接口，小米历史上曾限制或要求重新登录使用非官方客户端的账号。若介意账号风控，请改用下方基于小米官方开源集成的 Home Assistant 模式。
 
 ### 模式二：Home Assistant 局域网实时连接（适合已有 HA / 跨生态玩家）
@@ -195,7 +195,7 @@
 
 ## 隐私
 
-- **默认留在本机**：习惯记忆、口头禅与待执行定时保存在你 Mac 本机的 `UserDefaults` 明文配置中（`~/Library/Preferences/`，键名 `assistant_user_habit_memory_v1` 与 `assistant_scheduled_commands_v1`）；米家登录信息和 API 密钥保存在系统钥匙串（Keychain）里。
+- **默认留在本机**：习惯记忆、口头禅与待执行定时保存在你 Mac 本机的 `UserDefaults` 明文配置中（`~/Library/Preferences/`，键名 `assistant_user_habit_memory_v1` 与 `assistant_scheduled_commands_v1`）；米家登录信息、HA 长期访问令牌、AI API 密钥和 LG 电视配对密钥只保存在系统钥匙串（Keychain）里，`UserDefaults` 里不再有这些凭证的明文副本；米家会话也不再保存账号级的长期 `passToken`。从旧版本升级时，首次启动会把旧的明文凭证迁入钥匙串并删除原键。由于 App 使用 ad-hoc 自签名构建，升级后系统可能询问一次钥匙串访问权限；如果拒绝授权，需要重新扫码登录（或重新配对电视）一次。Windows 版把米家会话、HA 令牌和 AI Key 放在 Windows 凭据管理器（Credential Manager），WebView 的 `localStorage` 只保留界面设置；从旧版本升级时，明文凭证会自动迁移到凭据管理器并从 `localStorage` 删除。Windows 版同时启用严格 CSP，网络请求只允许发往小米云、你配置的 AI 接口和 HA 地址。
 - **发给 AI 的内容**：只有本地听不懂的话才会发给你配置的模型接口，内容是这句话、设备名称/房间/状态、时间段、室温，以及（如果开着）习惯摘要。API Key 和米家登录信息不会发送。设置页里写得很清楚。
 - **可以关**：设置里能关掉「学习我的使用习惯」（关掉后不再记录，也不会发给 AI），也能逐条删除已记住的习惯。
 - **语音可以只在本机识别**：打开「语音只在本机识别」后，声音不会发给苹果（需要系统支持该语言的离线识别）。
@@ -275,6 +275,15 @@ bash scripts/release.sh         # 签名 → 打 DMG → 苹果公证 → 盖章
 ```
 
 版本号写在 `VERSION` 文件里，构建号自动取 git 提交数。需要苹果开发者账号；公证凭据先用 `xcrun notarytool store-credentials menubarmijia-notary` 存好（脚本开头有完整步骤）。只想本地打包、不公证：加 `SKIP_NOTARIZE=1`。把 DMG 上传到 GitHub Releases 后，用户在设置页点「检查更新」就能看到。
+
+应用内更新还要求 DMG 带 Ed25519 分离签名。发布前用离线私钥生成 `.ed25519.sig`，和 DMG、`.sha256` 一起上传：
+
+```bash
+MENUBARMIJIA_UPDATE_SIGNING_KEY="<32 字节私钥 seed 的 base64>" \
+  swift scripts/sign_update.swift dist/MenuBarMijia-<版本>.dmg
+```
+
+缺少签名文件或签名不匹配时应用会拒绝安装。推送 `v*` 标签会触发 `.github/workflows/release.yml`：有 `MACOS_SIGNING_P12` 时自动用固定证书签名；没有 `MENUBARMIJIA_UPDATE_SIGNING_KEY` 时发布 job 会失败，需要按上面的命令离线签名后手动上传。构建时设置 `MACOS_SIGNING_IDENTITY` 与 `MACOS_CERT_SHA1` 可把证书 SHA-1 写进 `Info.plist`，更新校验会钉住该证书；不设置则退回 ad-hoc。细节见 [`docs/adr/0005-update-signing-trust-chain.md`](docs/adr/0005-update-signing-trust-chain.md)。
 
 提交前请先阅读 [`CODING_STANDARDS.md`](CODING_STANDARDS.md)。领域术语见 [`GLOSSARY.md`](GLOSSARY.md)，架构决策记录在 [`docs/adr/`](docs/adr/)。
 

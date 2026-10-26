@@ -5,7 +5,7 @@ import Testing
 /// Mi cloud polls every 6 s only while the panel is open, once a minute otherwise, and not at all
 /// while the Mac sleeps or is locked (#26).
 struct MiCloudPollingTests {
-    private static let session = MiSession(userId: "42", cUserId: "c", ssecurity: "c2VjcmV0", serviceToken: "tok", passToken: "p")
+    private static let session = MiSession(userId: "42", cUserId: "c", ssecurity: "c2VjcmV0", serviceToken: "tok")
 
     private func start(_ provider: MiCloudProvider) -> (EventLog, Task<Void, Never>) {
         let log = EventLog()
