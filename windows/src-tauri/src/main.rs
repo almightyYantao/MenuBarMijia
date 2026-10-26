@@ -115,6 +115,27 @@ fn set_pin_popover(pin: bool) {
     PIN_POPOVER.store(pin, Ordering::SeqCst);
 }
 
+/// Resizes the popover to the chosen panel height (0 = fill the screen above the taskbar),
+/// keeping its bottom edge where it was so it stays anchored to the tray.
+#[tauri::command]
+fn set_panel_height(app: AppHandle, height: f64) {
+    let Some(window) = app.get_webview_window("main") else { return };
+    let monitor = window.current_monitor().ok().flatten().or_else(|| window.primary_monitor().ok().flatten());
+    let scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
+    let screen_h = monitor.as_ref().map(|m| m.size().height as f64 / scale).unwrap_or(900.0);
+    let max_h = (screen_h - 54.0 - 24.0).max(480.0);
+    let target = if height <= 0.0 { max_h } else { height.min(max_h) };
+
+    let old_pos = window.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
+    let old_size = window.outer_size().unwrap_or(PhysicalSize::new(360, 520));
+    let width = old_size.width as f64 / scale;
+    let _ = window.set_size(tauri::LogicalSize::new(width, target));
+    let new_h = (target * scale) as i32;
+    let top = monitor.as_ref().map(|m| m.position().y).unwrap_or(0) + (12.0 * scale) as i32;
+    let y = (old_pos.y + old_size.height as i32 - new_h).max(top);
+    let _ = window.set_position(PhysicalPosition::new(old_pos.x, y));
+}
+
 fn position_popover(window: &WebviewWindow, anchor: Option<PhysicalPosition<f64>>) {
     let win_size = window.outer_size().unwrap_or(PhysicalSize::new(360, 520));
     let win_w = win_size.width as i32;
@@ -193,6 +214,7 @@ fn main() {
             native_http,
             hide_panel,
             quit_app,
+            set_panel_height,
             set_pin_popover
         ])
         .setup(move |app| {

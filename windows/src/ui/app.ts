@@ -34,6 +34,30 @@ import {
   deviceStatusSummary,
   isDeviceActiveOn,
 } from "../core/models.js";
+import {
+  type AppSkin,
+  type LayoutPrefs,
+  type PanelHeight,
+  type TileSize,
+  PANEL_HEIGHTS,
+  SKINS,
+  TILE_SIZES,
+  applyOrder,
+  chosenSize,
+  comfort,
+  emptyLayoutPrefs,
+  homeOptions,
+  localizeEffect,
+  localizeFanMode,
+  moveInOrder,
+  nextSize,
+  pageSections,
+  resolvedSize,
+  scopedKey,
+  spans,
+  withAliases,
+  type HomeOption,
+} from "./panelPrefs.js";
 
 declare global {
   interface Window {
@@ -92,6 +116,12 @@ interface PersistedSettings {
   isCompactGridMode: boolean;
   cachedXiaomiDevices: SmartDevice[];
   cachedModelTypes: Record<string, string>;
+  skin: AppSkin;
+  panelHeight: PanelHeight;
+  climatePanel: boolean;
+  layout: LayoutPrefs;
+  /** Selected Mi Home id; null shows every home. */
+  selectedHomeId: string | null;
 }
 
 interface UndoStep {
@@ -349,6 +379,11 @@ function loadSettings(): PersistedSettings {
           parsed.cachedModelTypes && typeof parsed.cachedModelTypes === "object"
             ? parsed.cachedModelTypes
             : {},
+        skin: SKINS.some((k) => k.id === parsed.skin) ? (parsed.skin as AppSkin) : "classic",
+        panelHeight: PANEL_HEIGHTS.some((h) => h.id === parsed.panelHeight) ? (parsed.panelHeight as PanelHeight) : "standard",
+        climatePanel: parsed.climatePanel ?? true,
+        layout: { ...emptyLayoutPrefs(), ...(parsed.layout ?? {}) },
+        selectedHomeId: parsed.selectedHomeId ?? null,
       };
     }
   } catch {
@@ -368,6 +403,11 @@ function loadSettings(): PersistedSettings {
     isCompactGridMode: true,
     cachedXiaomiDevices: [],
     cachedModelTypes: {},
+    skin: "classic",
+    panelHeight: "standard",
+    climatePanel: true,
+    layout: emptyLayoutPrefs(),
+    selectedHomeId: null,
   };
 }
 
@@ -406,6 +446,20 @@ export class MenuMijiaWindowsApp {
   private readonly specResolver: MiotSpecResolver;
   private speechRecognition: SpeechRecognitionInstance | null = null;
 
+  // Personalisation / layout editing state (see panelPrefs.ts).
+  private homes: HomeOption[] = [];
+  private isHomeMenuOpen = false;
+  private isEditingLayout = false;
+  private draggingId: string | null = null;
+  private dragPointer: { x: number; y: number; grabX: number; grabY: number } | null = null;
+  private lastSwap: { slot: string; at: number } | null = null;
+  private ctxMenu: { x: number; y: number; deviceId?: string; groupId?: string } | null = null;
+  private prompt: { kind: "newGroup"; deviceId: string } | { kind: "renameGroup"; groupId: string } | { kind: "renameDevice"; deviceId: string } | null = null;
+  private animateEntrance = false;
+  private poppedDeviceId: string | null = null;
+  private dimPreview: { id: string; percent: number } | null = null;
+  private suppressNextClick = false;
+
   constructor(private readonly root: HTMLElement) {
     this.specResolver = new MiotSpecResolver(
       this.transport,
@@ -418,6 +472,9 @@ export class MenuMijiaWindowsApp {
     }
 
     this.bindGlobalKeys();
+    this.bindLayoutGestures();
+    this.bindOpenAnimation();
+    this.applyPanelHeight();
     this.startTimerLoop();
     this.render();
 
@@ -550,10 +607,12 @@ export class MenuMijiaWindowsApp {
 
     try {
       const client = new MiCloudClient(session, this.transport);
-      const [rawDevices, rooms] = await Promise.all([
+      const [allDevices, allRooms] = await Promise.all([
         client.deviceList(),
         client.homeRooms().catch(() => []),
       ]);
+      this.homes = homeOptions(allRooms);
+      const { devices: rawDevices, rooms } = this.filterBySelectedHome(allDevices, allRooms);
       if (this.settings.connectionMode !== "xiaomiCloud" || this.settings.miSession !== session) return;
 
       // Stage 1: Instant synthesis with cached/fallback specs so user sees their real devices immediately
@@ -617,6 +676,35 @@ export class MenuMijiaWindowsApp {
       this.isSyncingCloud = false;
       this.render();
     }
+  }
+
+  /** Narrows cloud records and rooms to the selected Mi Home; split keys bring their parent panel along. */
+  private filterBySelectedHome<D extends { readonly did: string; readonly splitParentDid?: string | null }, R extends { readonly homeId?: string; readonly dids: readonly string[] }>(
+    devices: readonly D[],
+    rooms: readonly R[],
+  ): { devices: D[]; rooms: R[] } {
+    const selected = this.settings.selectedHomeId;
+    if (!selected || !this.homes.some((h) => h.id === selected)) return { devices: [...devices], rooms: [...rooms] };
+    const homeRooms = rooms.filter((r) => r.homeId === selected);
+    const dids = new Set(homeRooms.flatMap((r) => r.dids));
+    const kept = devices.filter((d) => dids.has(d.did) || (d.splitParentDid ? dids.has(d.splitParentDid) : false));
+    const parents = new Set(kept.map((d) => d.splitParentDid).filter((x): x is string => !!x));
+    const withParents = devices.filter((d) => kept.includes(d) || parents.has(d.did));
+    return { devices: withParents, rooms: homeRooms };
+  }
+
+  private selectHome(id: string | null): void {
+    this.settings.selectedHomeId = id;
+    this.isHomeMenuOpen = false;
+    this.selectedRoom = "全部";
+    saveSettings(this.settings);
+    this.render();
+    void this.refreshXiaomiDevices(false);
+  }
+
+  private get homeTitle(): string {
+    const h = this.homes.find((x) => x.id === this.settings.selectedHomeId);
+    return h ? h.name : this.homes.length > 1 ? "全部家庭" : "我的米家";
   }
 
   private async turnAllOff(): Promise<void> {
@@ -1162,7 +1250,66 @@ export class MenuMijiaWindowsApp {
     return `演示预览 · 点击下方「扫码直连」同步你的真机`;
   }
 
+  private get skin(): AppSkin {
+    return this.settings.skin;
+  }
+
+  private get layout(): LayoutPrefs {
+    return this.settings.layout;
+  }
+
+  /** Card sizes are per page: "all" or a room name. */
+  private get pageKey(): string {
+    return this.selectedRoom === "全部" ? "all" : this.selectedRoom;
+  }
+
+  private tileSize(dev: SmartDevice): Exclude<TileSize, "auto"> {
+    return resolvedSize(chosenSize(this.layout, this.pageKey, dev.id), dev, this.settings.isCompactGridMode, this.settings.climatePanel);
+  }
+
+  private saveLayout(): void {
+    saveSettings(this.settings);
+  }
+
+  /**
+   * Re-renders while keeping scroll offsets, and slides every card from its old position to its
+   * new one (FLIP), so reorders, resizes and group moves animate instead of jumping.
+   */
   private render(): void {
+    const tiles = Array.from(this.root.querySelectorAll<HTMLElement>("[data-tile-id]"));
+    const before = new Map(tiles.map((el) => [el.dataset.tileId as string, el.getBoundingClientRect()]));
+    const scrollTop = this.root.querySelector(".cc-scroll-area")?.scrollTop ?? 0;
+    const roomLeft = this.root.querySelector(".cc-room-scroll")?.scrollLeft ?? 0;
+
+    this.renderNow();
+
+    const area = this.root.querySelector(".cc-scroll-area");
+    if (area) area.scrollTop = scrollTop;
+    const strip = this.root.querySelector<HTMLElement>(".cc-room-scroll");
+    if (strip) strip.scrollLeft = roomLeft;
+
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!reduce && before.size > 0) {
+      this.root.querySelectorAll<HTMLElement>("[data-tile-id]").forEach((el) => {
+        const id = el.dataset.tileId as string;
+        const old = before.get(id);
+        if (!old || id === this.draggingId) return;
+        const now = el.getBoundingClientRect();
+        const dx = old.left - now.left;
+        const dy = old.top - now.top;
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+        el.animate(
+          [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }],
+          { duration: 340, easing: "cubic-bezier(0.2, 0.9, 0.3, 1.15)" },
+        );
+      });
+    }
+    this.applyDragOffset();
+    this.animateEntrance = false;
+    this.poppedDeviceId = null;
+  }
+
+  private renderNow(): void {
     const isDemo = this.settings.connectionMode === "demo";
     const activeUndo =
       this.lastUndoAction && this.lastUndoAction.expiresAtMs > Date.now()
@@ -1172,7 +1319,7 @@ export class MenuMijiaWindowsApp {
     const watts = this.totalPowerWatts;
 
     this.root.innerHTML = `
-      <div class="cc-popover">
+      <div class="cc-popover skin-${this.skin} ${this.skin === "classic" ? "" : "is-skinned"} ${this.isEditingLayout ? "is-editing" : ""}">
         <header class="cc-header">
           <div class="cc-header-top">
             <div class="cc-title-group">
@@ -1181,12 +1328,19 @@ export class MenuMijiaWindowsApp {
               </div>
               <div class="cc-title-stack">
                 <div class="cc-title-row">
-                  <span class="cc-home-title">我的米家</span>
+                  ${
+                    this.homes.length > 1
+                      ? `<button class="cc-home-switch" id="btn-home-menu" aria-expanded="${this.isHomeMenuOpen}">
+                          <span class="cc-home-title">${this.escapeHtml(this.homeTitle)}</span>
+                          <span class="cc-home-caret ${this.isHomeMenuOpen ? "is-open" : ""}">${SF_ICONS.chevronDown}</span>
+                        </button>`
+                      : `<span class="cc-home-title">${this.escapeHtml(this.homeTitle)}</span>`
+                  }
                   <span class="cc-mode-pill ${isDemo ? "is-demo" : "is-cloud"}">
                     ${isDemo ? "演示预览" : "Miot 直连"}
                   </span>
                 </div>
-                <div class="cc-subtitle">${this.escapeHtml(this.statusSummaryText)}</div>
+                <div class="cc-subtitle">${this.escapeHtml(this.isEditingLayout ? "拖动卡片排序 · 点角标改大小" : this.statusSummaryText)}</div>
               </div>
             </div>
 
@@ -1206,8 +1360,11 @@ export class MenuMijiaWindowsApp {
                 ${SF_ICONS.sparkles}
               </button>
               ${
-                this.activeDeviceCount > 0
-                  ? `<button class="cc-all-off-pill" id="btn-all-off" title="一键关闭所有开启中的设备">
+                this.isEditingLayout
+                  ? `<button class="cc-all-off-pill is-done" id="btn-done-editing">完成</button>`
+                  : this.activeDeviceCount > 0
+                  ? `<button class="cc-all-off-pill ${this.skin === "classic" ? "" : "is-hold"}" id="btn-all-off" title="${this.skin === "classic" ? "一键关闭所有开启中的设备" : "按住 0.6 秒全部关闭"}">
+                      <span class="cc-hold-fill"></span>
                       ${SF_ICONS.power}
                       <span>全关 (${this.activeDeviceCount})</span>
                     </button>`
@@ -1336,6 +1493,7 @@ export class MenuMijiaWindowsApp {
         </section>
 
         <div class="cc-room-bar">
+          <div class="cc-room-track">
           <div class="cc-room-scroll">
             ${this.rooms
               .map(
@@ -1349,6 +1507,7 @@ export class MenuMijiaWindowsApp {
             `,
               )
               .join("")}
+          </div>
           </div>
           <button
             class="cc-circle-btn is-small"
@@ -1415,6 +1574,9 @@ export class MenuMijiaWindowsApp {
 
         ${this.activeSheet === "onboarding" ? this.renderOnboardingModal() : ""}
         ${this.activeSheet === "settings" ? this.renderSettingsModal() : ""}
+        ${this.renderHomeMenu()}
+        ${this.renderContextMenu()}
+        ${this.renderPrompt()}
       </div>
     `;
 
@@ -1445,13 +1607,32 @@ export class MenuMijiaWindowsApp {
       `;
     }
 
-    const list = this.filteredDevices;
-    const gridClass = this.settings.isCompactGridMode ? "cc-devices-grid is-compact" : "cc-devices-grid is-single";
-    return `
-      <div class="${gridClass}">
-        ${list.map((dev) => this.renderDeviceTile(dev)).join("")}
-      </div>
-    `;
+    const isAll = this.selectedRoom === "全部";
+    const ordered = withAliases(this.layout, applyOrder(this.layout.order, this.filteredDevices));
+    const sections = pageSections(this.layout, ordered, isAll);
+    const bento = this.skin === "bento" && this.settings.isCompactGridMode;
+    let index = 0;
+    return sections
+      .map((section) => {
+        const collapsed = this.layout.collapsed.includes(scopedKey(this.pageKey, section.id));
+        const spanMap = spans(section.devices, (d) => (this.expandedDeviceId === d.id ? "full" : this.tileSize(d)), bento);
+        const header =
+          section.title === null
+            ? ""
+            : `<button class="cc-group-header ${collapsed ? "is-collapsed" : ""}" data-collapse="${this.escapeHtml(section.id)}" ${section.groupId ? `data-group-id="${this.escapeHtml(section.groupId)}"` : ""}>
+                <span class="cc-group-caret">${SF_ICONS.chevronDown}</span>
+                <span class="cc-group-title">${this.escapeHtml(section.title)}</span>
+                <span class="cc-group-count">${section.devices.length}</span>
+                <span class="cc-group-rule"></span>
+              </button>`;
+        const body = collapsed
+          ? ""
+          : `<div class="cc-devices-grid is-flow ${bento ? "is-bento" : ""}">
+              ${section.devices.map((dev) => this.renderDeviceTile(dev, spanMap.get(dev.id) ?? 6, index++)).join("")}
+            </div>`;
+        return `<section class="cc-group">${header}${body}</section>`;
+      })
+      .join("");
   }
 
   private devicePaletteClass(dev: SmartDevice): string {
@@ -1488,8 +1669,20 @@ export class MenuMijiaWindowsApp {
     }
   }
 
-  private renderDeviceTile(dev: SmartDevice): string {
-    const isExpanded = this.expandedDeviceId === dev.id;
+  private renderDeviceTile(dev: SmartDevice, span: number, index: number): string {
+    const size = this.tileSize(dev);
+    const attrs = `data-tile-id="${this.escapeHtml(dev.id)}" style="grid-column: span ${span}; --i: ${Math.min(index, 12)}; --jd: -${Math.round((performance.now() + (index * 137) % 560) % 560)}ms"`;
+    const motion = `${this.animateEntrance && this.skin !== "classic" ? "is-entering" : ""} ${this.poppedDeviceId === dev.id ? "is-popped" : ""} ${this.draggingId === dev.id ? "is-dragging" : ""}`;
+    const badge = this.isEditingLayout
+      ? `<button class="cc-size-badge" data-cycle-size="${this.escapeHtml(dev.id)}" title="切换卡片大小">${TILE_SIZES.find((t) => t.id === size)?.title ?? ""}</button>`
+      : "";
+    if (dev.kind.kind === "sensor" && !(this.skin === "bento" && span < 6)) {
+      return this.renderSensorCard(dev, dev.kind, span < 6, attrs, motion, badge);
+    }
+    if (dev.kind.kind === "climate" && size !== "half") {
+      return this.renderClimateStrip(dev, dev.kind, size === "panel", attrs, motion, badge);
+    }
+    const isExpanded = this.expandedDeviceId === dev.id || size === "panel";
     const isOn = isDeviceActiveOn(dev);
     const kind = dev.kind.kind;
     const palette = this.devicePaletteClass(dev);
@@ -1500,8 +1693,15 @@ export class MenuMijiaWindowsApp {
         ? `${dev.roomName} · ${deviceStatusSummary(dev)}`
         : deviceStatusSummary(dev);
 
+    const dim = this.dimPreview?.id === dev.id ? this.dimPreview.percent : null;
+    const fill = kind === "light" && this.skin !== "classic"
+      ? dim ?? (isOn && dev.kind.kind === "light" ? dev.kind.brightnessPercent ?? 100 : 0)
+      : 0;
+    const shownSubtitle = dim !== null ? `亮度 ${dim}%` : subtitle;
     return `
-      <div class="cc-tile ${palette} ${isOn ? "is-active" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"}">
+      <div class="cc-tile ${palette} ${isOn ? "is-active" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${kind === "light" ? "is-light" : ""} ${this.skin === "bento" && span < 6 ? "is-bento-tile" : ""} ${motion}" ${attrs}>
+        ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%"></span>` : ""}
+        ${badge}
         <div class="cc-tile-header">
           <button
             class="cc-tile-orb"
@@ -1517,11 +1717,11 @@ export class MenuMijiaWindowsApp {
             title="${hasDrawer ? "点击展开精细调节" : "点击切换开关"}"
           >
             <div class="cc-tile-name">${this.escapeHtml(dev.name)}</div>
-            <div class="cc-tile-status">${this.escapeHtml(subtitle)}</div>
+            <div class="cc-tile-status">${this.escapeHtml(shownSubtitle)}</div>
           </button>
 
           ${
-            hasDrawer
+            hasDrawer && size !== "panel" && (this.skin === "classic" || !this.settings.isCompactGridMode || isExpanded)
               ? `<button
                   class="cc-tile-chevron ${isExpanded ? "is-open" : ""}"
                   data-expand-device="${this.escapeHtml(dev.id)}"
@@ -1537,6 +1737,199 @@ export class MenuMijiaWindowsApp {
     `;
   }
 
+  private renderSensorCard(
+    dev: SmartDevice,
+    k: Extract<SmartDevice["kind"], { kind: "sensor" }>,
+    compact: boolean,
+    attrs: string,
+    motion: string,
+    badge: string,
+  ): string {
+    const c = comfort(k.temperature, k.humidity);
+    const name = dev.name.replace("米家智能温湿度计", "温湿度计") || dev.name;
+    const temp = k.temperature !== null ? k.temperature.toFixed(1) : "--";
+    const hum = k.humidity !== null ? Math.round(k.humidity) : null;
+    const room = this.selectedRoom === "全部" ? `<span class="cc-sensor-room">${this.escapeHtml(dev.roomName)}</span>` : "";
+    if (compact) {
+      return `
+        <div class="cc-tile cc-sensor is-compact ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs}>
+          ${badge}
+          <div class="cc-sensor-top">
+            <span class="cc-sensor-name">${this.escapeHtml(name)}</span>
+            <span class="cc-comfort is-${c.level}">${c.label}</span>
+          </div>
+          <div class="cc-sensor-main">
+            <span class="cc-sensor-temp">${temp}<small>°C</small></span>
+            ${hum !== null ? `<span class="cc-sensor-hum">💧 ${hum}%</span>` : ""}
+          </div>
+          <div class="cc-hum-bar"><span style="width:${hum ?? 0}%"></span></div>
+        </div>`;
+    }
+    const ring = hum !== null
+      ? `<div class="cc-hum-ring" style="--h:${hum}">
+          <svg viewBox="0 0 64 64"><circle class="track" cx="32" cy="32" r="27"/><circle class="comfy" cx="32" cy="32" r="27" pathLength="100"/><circle class="val" cx="32" cy="32" r="27" pathLength="100"/></svg>
+          <span>${hum}%</span>
+        </div>`
+      : "";
+    return `
+      <div class="cc-tile cc-sensor ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs}>
+        ${badge}
+        <div class="cc-sensor-wide">
+          <div class="cc-sensor-info">
+            <div class="cc-sensor-top"><span class="cc-sensor-name is-strong">${this.escapeHtml(name)}</span>${room}</div>
+            <span class="cc-sensor-temp is-big">${temp}<small>°C</small></span>
+            <div class="cc-sensor-meta">
+              <span class="cc-comfort is-${c.level}">${c.label}</span>
+              ${k.battery !== null ? `<span class="cc-sensor-batt ${k.battery <= 20 ? "is-low" : ""}">🔋 ${k.battery}%</span>` : ""}
+            </div>
+          </div>
+          ${ring}
+        </div>
+      </div>`;
+  }
+
+  private renderClimateStrip(
+    dev: SmartDevice,
+    k: Extract<SmartDevice["kind"], { kind: "climate" }>,
+    forceOpen: boolean,
+    attrs: string,
+    motion: string,
+    badge: string,
+  ): string {
+    const running = dev.isOnline && k.isOn && k.hvacMode !== "off";
+    const open = forceOpen || this.expandedDeviceId === dev.id;
+    const id = this.escapeHtml(dev.id);
+    const modeLabel: Record<string, string> = { cool: "制冷", heat: "制热", dry: "除湿", fan_only: "送风", auto: "自动" };
+    const status = running
+      ? [modeLabel[k.hvacMode] ?? k.hvacMode, k.currentTemperature !== null ? `室温 ${k.currentTemperature.toFixed(1)}°` : ""].filter(Boolean).join(" · ")
+      : "已关闭";
+    const subtitle = this.selectedRoom === "全部" ? `${dev.roomName} · ${status}` : status;
+    const span = Math.max(k.maxTemp - k.minTemp, 1);
+    const progress = Math.min(Math.max((k.targetTemperature - k.minTemp) / span, 0), 1) * 100;
+    const modes = (k.availableModes.length > 0 ? k.availableModes : ["cool", "heat", "dry", "fan_only"]).filter((m) => m !== "off");
+    const temp = Number.isInteger(k.targetTemperature) ? `${k.targetTemperature}` : k.targetTemperature.toFixed(1);
+    return `
+      <div class="cc-tile cc-climate ${running ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs}>
+        ${badge}
+        <div class="cc-climate-strip">
+          <button class="cc-climate-power ${running ? "is-on" : ""}" data-toggle-device="${id}" title="${running ? "关闭空调" : "打开空调"}">
+            ${k.hvacMode === "heat" ? "🔥" : SF_ICONS.snowflake}
+          </button>
+          <button class="cc-climate-name" data-expand-device="${id}">
+            <span class="cc-tile-name">${this.escapeHtml(dev.name)}</span>
+            <span class="cc-tile-status">${this.escapeHtml(subtitle)} ${forceOpen ? "" : `<i class="cc-mini-caret ${open ? "is-open" : ""}">${SF_ICONS.chevronDown}</i>`}</span>
+          </button>
+          <button class="cc-climate-step" data-acstep="${id}:-1" title="降低温度">−</button>
+          <span class="cc-climate-temp">${temp}<small>°</small></span>
+          <button class="cc-climate-step" data-acstep="${id}:1" title="升高温度">＋</button>
+        </div>
+        <div class="cc-climate-gauge"><span style="width:${progress}%"></span></div>
+        ${
+          open
+            ? `<div class="cc-climate-more">
+                <div class="cc-segmented-pills is-even">
+                  ${modes.map((m) => `<button class="cc-seg-pill ${running && k.hvacMode === m ? "is-active" : ""}" data-acmode="${id}:${m}">${modeLabel[m] ?? m}</button>`).join("")}
+                </div>
+                ${
+                  k.availableFanModes.length > 0
+                    ? `<div class="cc-segmented-pills"><span class="cc-pill-label">风速</span>${k.availableFanModes
+                        .map((f) => `<button class="cc-seg-pill ${k.fanMode === f ? "is-active" : ""}" data-acfan="${id}:${this.escapeHtml(f)}">${this.escapeHtml(localizeFanMode(f))}</button>`)
+                        .join("")}</div>`
+                    : ""
+                }
+              </div>`
+            : ""
+        }
+      </div>`;
+  }
+
+  private renderHomeMenu(): string {
+    if (!this.isHomeMenuOpen || this.homes.length < 2) return "";
+    const item = (id: string | null, label: string, count?: number) => `
+      <button class="cc-menu-item ${this.settings.selectedHomeId === id ? "is-checked" : ""}" data-home="${id ?? ""}">
+        <span>${this.escapeHtml(label)}</span>${count !== undefined ? `<small>${count}</small>` : ""}
+      </button>`;
+    return `
+      <div class="cc-menu-scrim" data-close-menus></div>
+      <div class="cc-menu cc-home-menu">
+        ${item(null, "全部家庭")}
+        <div class="cc-menu-sep"></div>
+        ${this.homes.map((h) => item(h.id, h.name, h.deviceCount)).join("")}
+      </div>`;
+  }
+
+  private renderContextMenu(): string {
+    const m = this.ctxMenu;
+    if (!m) return "";
+    const pos = `left:${Math.min(m.x, window.innerWidth - 230)}px; top:${Math.min(m.y, window.innerHeight - 260)}px`;
+    if (m.groupId) {
+      const g = this.layout.groups.find((x) => x.id === m.groupId);
+      if (!g) return "";
+      const gid = this.escapeHtml(g.id);
+      return `
+        <div class="cc-menu-scrim" data-close-menus></div>
+        <div class="cc-menu" style="${pos}">
+          <div class="cc-menu-title">${this.escapeHtml(g.name)}</div>
+          <button class="cc-menu-item" data-group-action="rename:${gid}">重命名</button>
+          <button class="cc-menu-item" data-group-action="up:${gid}">上移分组</button>
+          <button class="cc-menu-item" data-group-action="down:${gid}">下移分组</button>
+          <div class="cc-menu-sep"></div>
+          <button class="cc-menu-item is-danger" data-group-action="delete:${gid}">删除分组</button>
+        </div>`;
+    }
+    const dev = this.devices.find((d) => d.id === m.deviceId);
+    if (!dev) return "";
+    const id = this.escapeHtml(dev.id);
+    const size = chosenSize(this.layout, this.pageKey, dev.id);
+    const current = this.layout.groupMap[dev.id];
+    return `
+      <div class="cc-menu-scrim" data-close-menus></div>
+      <div class="cc-menu" style="${pos}">
+        <div class="cc-menu-title">${this.escapeHtml(this.layout.aliases[dev.id] ?? dev.name)}</div>
+        <div class="cc-menu-label">卡片大小（本页）</div>
+        <div class="cc-menu-chips">
+          ${TILE_SIZES.map((t) => `<button class="cc-menu-chip ${size === t.id ? "is-active" : ""}" data-set-size="${id}:${t.id}">${t.title}</button>`).join("")}
+        </div>
+        <div class="cc-menu-label">移到分组</div>
+        <div class="cc-menu-chips">
+          ${this.layout.groups.map((g) => `<button class="cc-menu-chip ${current === g.id ? "is-active" : ""}" data-set-group="${id}:${this.escapeHtml(g.id)}">${this.escapeHtml(g.name)}</button>`).join("")}
+          ${current ? `<button class="cc-menu-chip" data-set-group="${id}:">不分组</button>` : ""}
+          <button class="cc-menu-chip is-add" data-new-group="${id}">＋ 新建</button>
+        </div>
+        <div class="cc-menu-sep"></div>
+        <button class="cc-menu-item" data-rename-device="${id}">重命名…</button>
+        <button class="cc-menu-item" data-start-editing>编辑布局</button>
+      </div>`;
+  }
+
+  private renderPrompt(): string {
+    const p = this.prompt;
+    if (!p) return "";
+    let title = "新建分组";
+    let value = "";
+    let placeholder = "例如：灯光、电器、环境";
+    if (p.kind === "renameGroup") {
+      title = "重命名分组";
+      value = this.layout.groups.find((g) => g.id === p.groupId)?.name ?? "";
+    } else if (p.kind === "renameDevice") {
+      title = "重命名设备";
+      const dev = this.devices.find((d) => d.id === p.deviceId);
+      placeholder = dev?.name ?? "";
+      value = this.layout.aliases[p.deviceId] ?? dev?.name ?? "";
+    }
+    return `
+      <div class="cc-prompt-backdrop" data-prompt-cancel></div>
+      <div class="cc-prompt">
+        <strong>${title}</strong>
+        <input id="prompt-input" class="cc-prompt-input" type="text" value="${this.escapeHtml(value)}" placeholder="${this.escapeHtml(placeholder)}" />
+        ${p.kind === "renameDevice" ? `<small>只在本 App 显示，不会修改米家里的名字</small>` : ""}
+        <div class="cc-prompt-actions">
+          <button class="cc-btn-secondary" data-prompt-cancel>取消</button>
+          <button class="cc-btn-primary" id="btn-prompt-save">保存</button>
+        </div>
+      </div>`;
+  }
+
   private renderDeviceDrawer(dev: SmartDevice): string {
     const k = dev.kind;
     if (k.kind === "light") {
@@ -1550,7 +1943,7 @@ export class MenuMijiaWindowsApp {
                 <button class="cc-seg-pill ${k.currentEffect === effect ? "is-active" : ""}"
                   data-lighteffect="${this.escapeHtml(dev.id)}" data-effect="${this.escapeHtml(effect)}"
                   aria-pressed="${k.currentEffect === effect}">
-                  ${this.escapeHtml(effect === "Day" ? "日光" : effect === "Night" ? "月光" : effect)}
+                  ${this.escapeHtml(localizeEffect(effect))}
                 </button>
               `).join("")}
             </div>
@@ -1690,6 +2083,30 @@ export class MenuMijiaWindowsApp {
             <button class="cc-circle-btn is-small" id="btn-close-settings" title="返回控制中心">
               ${SF_ICONS.xmark}
             </button>
+          </div>
+
+          <div class="cc-field">
+            <label>面板皮肤</label>
+            <div class="cc-skin-grid">
+              ${SKINS.map((k) => `
+                <button class="cc-skin-swatch ${this.skin === k.id ? "is-active" : ""}" data-skin="${k.id}">
+                  <span class="cc-swatch-art swatch-${k.id}"><i></i><i></i></span>
+                  <span>${k.title}</span>
+                </button>`).join("")}
+            </div>
+            <p class="cc-field-hint">经典以外的皮肤带有：卡片依次入场、在灯上左右拖动调亮度、按住「全关」0.6 秒确认。长按卡片可以拖动排序，右键卡片可以改大小、分组和重命名。</p>
+          </div>
+
+          <div class="cc-field">
+            <label>面板高度</label>
+            <div class="cc-segmented-pills">
+              ${PANEL_HEIGHTS.map((h) => `<button class="cc-seg-pill ${this.settings.panelHeight === h.id ? "is-active" : ""}" data-panel-height="${h.id}">${h.title}</button>`).join("")}
+            </div>
+          </div>
+
+          <div class="cc-field cc-field-row">
+            <label for="settings-climate-panel">空调使用整行控制条</label>
+            <input id="settings-climate-panel" type="checkbox" ${this.settings.climatePanel ? "checked" : ""} />
           </div>
 
           <div class="cc-field">
@@ -1834,8 +2251,186 @@ export class MenuMijiaWindowsApp {
       }
     });
 
-    this.root.querySelector("#btn-all-off")?.addEventListener("click", () => {
-      void this.turnAllOff();
+    const allOff = this.root.querySelector<HTMLElement>("#btn-all-off");
+    if (allOff && this.skin === "classic") {
+      allOff.addEventListener("click", () => void this.turnAllOff());
+    } else if (allOff) {
+      let holdTimer: number | undefined;
+      let fired = false;
+      allOff.addEventListener("pointerdown", () => {
+        fired = false;
+        allOff.classList.add("is-holding");
+        holdTimer = window.setTimeout(() => {
+          fired = true;
+          allOff.classList.remove("is-holding");
+          void this.turnAllOff();
+        }, 600);
+      });
+      const cancel = () => {
+        window.clearTimeout(holdTimer);
+        allOff.classList.remove("is-holding");
+      };
+      allOff.addEventListener("pointerup", () => {
+        cancel();
+        if (!fired) {
+          this.replyBanner = { text: "按住 0.6 秒全部关闭", source: "提示" };
+          this.render();
+        }
+      });
+      allOff.addEventListener("pointerleave", cancel);
+    }
+
+    this.root.querySelector("#btn-done-editing")?.addEventListener("click", () => this.stopEditing());
+
+    this.root.querySelector("#btn-home-menu")?.addEventListener("click", () => {
+      this.isHomeMenuOpen = !this.isHomeMenuOpen;
+      this.render();
+    });
+    this.root.querySelectorAll<HTMLElement>("[data-home]").forEach((btn) => {
+      btn.addEventListener("click", () => this.selectHome(btn.dataset.home || null));
+    });
+    this.root.querySelectorAll<HTMLElement>("[data-close-menus]").forEach((el) => {
+      el.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        this.isHomeMenuOpen = false;
+        this.ctxMenu = null;
+        this.render();
+      });
+    });
+
+    this.root.querySelectorAll<HTMLElement>("[data-collapse]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const key = scopedKey(this.pageKey, btn.dataset.collapse ?? "");
+        const set = new Set(this.layout.collapsed);
+        if (set.has(key)) set.delete(key); else set.add(key);
+        this.layout.collapsed = [...set];
+        this.saveLayout();
+        this.animateEntrance = !set.has(key);
+        this.render();
+      });
+      btn.addEventListener("contextmenu", (e) => {
+        const gid = btn.dataset.groupId;
+        if (!gid) return;
+        e.preventDefault();
+        this.ctxMenu = { x: e.clientX, y: e.clientY, groupId: gid };
+        this.render();
+      });
+    });
+
+    this.root.querySelectorAll<HTMLElement>("[data-set-size]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const [id, size] = (btn.dataset.setSize ?? "").split(":");
+        if (!id || !size) return;
+        this.layout.tileSizes[scopedKey(this.pageKey, id)] = size as TileSize;
+        this.saveLayout();
+        this.ctxMenu = null;
+        this.render();
+      });
+    });
+    this.root.querySelectorAll<HTMLElement>("[data-set-group]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const raw = btn.dataset.setGroup ?? "";
+        const i = raw.lastIndexOf(":");
+        const id = raw.slice(0, i);
+        const gid = raw.slice(i + 1);
+        if (gid) this.layout.groupMap[id] = gid; else delete this.layout.groupMap[id];
+        this.saveLayout();
+        this.ctxMenu = null;
+        this.render();
+      });
+    });
+    this.root.querySelectorAll<HTMLElement>("[data-new-group]").forEach((btn) => {
+      btn.addEventListener("click", () => this.openPrompt({ kind: "newGroup", deviceId: btn.dataset.newGroup ?? "" }));
+    });
+    this.root.querySelectorAll<HTMLElement>("[data-rename-device]").forEach((btn) => {
+      btn.addEventListener("click", () => this.openPrompt({ kind: "renameDevice", deviceId: btn.dataset.renameDevice ?? "" }));
+    });
+    this.root.querySelector("[data-start-editing]")?.addEventListener("click", () => {
+      this.ctxMenu = null;
+      this.startEditing();
+    });
+    this.root.querySelectorAll<HTMLElement>("[data-group-action]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const [action, gid] = (btn.dataset.groupAction ?? "").split(":");
+        if (!gid) return;
+        this.ctxMenu = null;
+        const groups = this.layout.groups;
+        const i = groups.findIndex((g) => g.id === gid);
+        if (action === "rename") { this.openPrompt({ kind: "renameGroup", groupId: gid }); return; }
+        if (action === "up" && i > 0) [groups[i - 1], groups[i]] = [groups[i]!, groups[i - 1]!];
+        if (action === "down" && i >= 0 && i < groups.length - 1) [groups[i + 1], groups[i]] = [groups[i]!, groups[i + 1]!];
+        if (action === "delete") {
+          this.layout.groups = groups.filter((g) => g.id !== gid);
+          for (const [d, g] of Object.entries(this.layout.groupMap)) if (g === gid) delete this.layout.groupMap[d];
+        }
+        this.saveLayout();
+        this.render();
+      });
+    });
+
+    const promptInput = this.root.querySelector<HTMLInputElement>("#prompt-input");
+    if (promptInput && document.activeElement !== promptInput) {
+      promptInput.focus();
+      promptInput.select();
+    }
+    promptInput?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") this.savePrompt(promptInput.value);
+      if (e.key === "Escape") { e.stopPropagation(); this.closePrompt(); }
+    });
+    this.root.querySelector("#btn-prompt-save")?.addEventListener("click", () => this.savePrompt(promptInput?.value ?? ""));
+    this.root.querySelectorAll<HTMLElement>("[data-prompt-cancel]").forEach((el) => el.addEventListener("click", () => this.closePrompt()));
+
+    this.root.querySelectorAll<HTMLElement>("[data-cycle-size]").forEach((btn) => {
+      btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+      btn.addEventListener("click", () => {
+        const dev = this.devices.find((d) => d.id === btn.dataset.cycleSize);
+        if (!dev) return;
+        this.layout.tileSizes[scopedKey(this.pageKey, dev.id)] = nextSize(this.tileSize(dev));
+        this.saveLayout();
+        this.render();
+      });
+    });
+
+    this.root.querySelectorAll<HTMLElement>("[data-acstep]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const [id, dir] = (btn.dataset.acstep ?? "").split(":");
+        const dev = this.devices.find((d) => d.id === id);
+        if (!dev || dev.kind.kind !== "climate") return;
+        const k = dev.kind;
+        const temperature = Math.min(k.maxTemp, Math.max(k.minTemp, k.targetTemperature + Number(dir) * (k.step || 1)));
+        void this.executeSingleCommand(dev, { kind: "setClimateTemperature", entityId: k.entityId, temperature }, `已将${dev.name}设为 ${temperature}°C`);
+      });
+    });
+    this.root.querySelectorAll<HTMLElement>("[data-acfan]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const raw = btn.dataset.acfan ?? "";
+        const i = raw.indexOf(":");
+        const dev = this.devices.find((d) => d.id === raw.slice(0, i));
+        if (!dev || dev.kind.kind !== "climate") return;
+        const fanMode = raw.slice(i + 1);
+        void this.executeSingleCommand(dev, { kind: "setClimateFanMode", entityId: dev.kind.entityId, fanMode }, `已将${dev.name}风速设为 ${localizeFanMode(fanMode)}`);
+      });
+    });
+
+    this.root.querySelectorAll<HTMLElement>("[data-skin]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this.settings.skin = btn.dataset.skin as AppSkin;
+        saveSettings(this.settings);
+        this.render();
+      });
+    });
+    this.root.querySelectorAll<HTMLElement>("[data-panel-height]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this.settings.panelHeight = btn.dataset.panelHeight as PanelHeight;
+        saveSettings(this.settings);
+        this.applyPanelHeight();
+        this.render();
+      });
+    });
+    this.root.querySelector<HTMLInputElement>("#settings-climate-panel")?.addEventListener("change", (e) => {
+      this.settings.climatePanel = (e.target as HTMLInputElement).checked;
+      saveSettings(this.settings);
+      this.render();
     });
 
     this.root.querySelector("#btn-hide-panel")?.addEventListener("click", () => {
@@ -1907,7 +2502,10 @@ export class MenuMijiaWindowsApp {
     this.root.querySelectorAll<HTMLElement>("[data-room]").forEach((btn) => {
       btn.addEventListener("click", () => {
         this.selectedRoom = btn.dataset.room ?? "全部";
+        this.animateEntrance = true;
+        this.expandedDeviceId = null;
         this.render();
+        this.root.querySelector(".cc-room-pill.is-active")?.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
       });
     });
 
@@ -1915,6 +2513,7 @@ export class MenuMijiaWindowsApp {
       const dev = this.devices.find((d) => d.id === id);
       if (!dev || dev.kind.kind === "sensor") return;
       const nextOn = !isDeviceActiveOn(dev);
+      this.poppedDeviceId = dev.id;
       const cmds = IntentValidator.commandsForIntent(
         { targetId: dev.id, operation: { kind: "power", isOn: nextOn } },
         dev,
@@ -2158,6 +2757,237 @@ export class MenuMijiaWindowsApp {
       invokeTauriVoid("set_pin_popover", { pin: false });
       this.render();
     });
+  }
+
+  // MARK: Layout editing
+
+  private startEditing(): void {
+    this.isEditingLayout = true;
+    this.expandedDeviceId = null;
+    invokeTauriVoid("set_pin_popover", { pin: true });
+    this.render();
+  }
+
+  private stopEditing(): void {
+    this.isEditingLayout = false;
+    this.draggingId = null;
+    this.dragPointer = null;
+    invokeTauriVoid("set_pin_popover", { pin: false });
+    this.render();
+  }
+
+  private openPrompt(prompt: NonNullable<typeof this.prompt>): void {
+    this.ctxMenu = null;
+    this.prompt = prompt;
+    invokeTauriVoid("set_pin_popover", { pin: true });
+    this.render();
+  }
+
+  private closePrompt(): void {
+    this.prompt = null;
+    invokeTauriVoid("set_pin_popover", { pin: this.isEditingLayout });
+    this.render();
+  }
+
+  private savePrompt(raw: string): void {
+    const name = raw.trim();
+    const p = this.prompt;
+    if (!p) return;
+    if (p.kind === "newGroup") {
+      if (!name) return;
+      const id = `g${Date.now().toString(36)}`;
+      this.layout.groups.push({ id, name });
+      this.layout.groupMap[p.deviceId] = id;
+    } else if (p.kind === "renameGroup") {
+      if (!name) return;
+      this.layout.groups = this.layout.groups.map((g) => (g.id === p.groupId ? { id: g.id, name } : g));
+    } else {
+      const original = this.devices.find((d) => d.id === p.deviceId)?.name;
+      if (!name || name === original) delete this.layout.aliases[p.deviceId];
+      else this.layout.aliases[p.deviceId] = name;
+    }
+    this.saveLayout();
+    this.closePrompt();
+  }
+
+  /** Keeps the picked-up card under the pointer; runs after every render. */
+  private applyDragOffset(): void {
+    if (!this.draggingId || !this.dragPointer) return;
+    const el = this.root.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(this.draggingId)}"]`);
+    if (!el) return;
+    el.style.translate = "0px 0px";
+    const r = el.getBoundingClientRect();
+    const p = this.dragPointer;
+    el.style.translate = `${p.x - p.grabX - r.left}px ${p.y - p.grabY - r.top}px`;
+  }
+
+  /** Section of a device on the current page: a user group id or "rest". */
+  private sectionOf(id: string): string {
+    const g = this.layout.groupMap[id];
+    return g && this.layout.groups.some((x) => x.id === g) ? g : "rest";
+  }
+
+  /** Before/after the hovered card (top or left half = before); first when above every card. */
+  private swapIfNeeded(x: number, y: number): void {
+    const dragged = this.draggingId;
+    if (!dragged) return;
+    const now = performance.now();
+    if (this.lastSwap && now - this.lastSwap.at < 250) return;
+    const others = Array.from(this.root.querySelectorAll<HTMLElement>("[data-tile-id]"))
+      .filter((el) => el.dataset.tileId !== dragged)
+      .map((el) => ({ id: el.dataset.tileId as string, r: el.getBoundingClientRect() }));
+    if (others.length === 0) return;
+    let target: string | null = null;
+    let after = false;
+    const top = others.reduce((a, b) => (b.r.top < a.r.top ? b : a));
+    if (y < top.r.top) {
+      target = top.id;
+    } else {
+      const hit = others.find((o) => x >= o.r.left && x <= o.r.right && y >= o.r.top && y <= o.r.bottom);
+      if (!hit) return;
+      target = hit.id;
+      const r = hit.r;
+      after = y < r.top + r.height * 0.3 ? false : y > r.bottom - r.height * 0.3 ? true : x > r.left + r.width / 2;
+    }
+    const slot = `${target}|${after}`;
+    if (this.lastSwap?.slot === slot) return;
+    this.lastSwap = { slot, at: now };
+    // Dropping beside a card in another group files the dragged card into that group.
+    const to = this.sectionOf(target);
+    if (to !== this.sectionOf(dragged)) {
+      if (to === "rest") delete this.layout.groupMap[dragged]; else this.layout.groupMap[dragged] = to;
+    }
+    this.layout.order = moveInOrder(this.layout.order, this.devices.map((d) => d.id), dragged, target, after);
+    this.saveLayout();
+    this.render();
+  }
+
+  /**
+   * One pointer stream drives tap, long-press-to-edit, drag-to-reorder and drag-to-dim. Listeners
+   * live on the persistent root/window, so re-rendering mid-gesture never cancels the drag.
+   */
+  private bindLayoutGestures(): void {
+    let press: { id: string; x: number; y: number; timer: number; dimming: boolean; el: HTMLElement } | null = null;
+
+    const beginDrag = (id: string, el: HTMLElement, x: number, y: number) => {
+      const r = el.getBoundingClientRect();
+      this.draggingId = id;
+      this.dragPointer = { x, y, grabX: x - r.left, grabY: y - r.top };
+      this.lastSwap = null;
+      this.suppressNextClick = true;
+    };
+
+    this.root.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      const el = (e.target as HTMLElement).closest<HTMLElement>("[data-tile-id]");
+      if (!el || (e.target as HTMLElement).closest(".cc-size-badge, input")) return;
+      const id = el.dataset.tileId as string;
+      const timer = this.isEditingLayout
+        ? 0
+        : window.setTimeout(() => {
+            if (!press || press.dimming) return;
+            beginDrag(id, el, press.x, press.y);
+            this.startEditing();
+          }, 450);
+      press = { id, x: e.clientX, y: e.clientY, timer, dimming: false, el };
+    });
+
+    window.addEventListener("pointermove", (e) => {
+      if (!press) return;
+      const dx = e.clientX - press.x;
+      const dy = e.clientY - press.y;
+      const moved = Math.hypot(dx, dy);
+      if (this.draggingId) {
+        if (this.dragPointer) { this.dragPointer.x = e.clientX; this.dragPointer.y = e.clientY; }
+        this.applyDragOffset();
+        this.swapIfNeeded(e.clientX, e.clientY);
+        return;
+      }
+      if (this.isEditingLayout) {
+        if (moved > 3) {
+          beginDrag(press.id, press.el, press.x, press.y);
+          this.render();
+        }
+        return;
+      }
+      const dev = this.devices.find((d) => d.id === press?.id);
+      const canDim = this.skin !== "classic" && dev?.kind.kind === "light" && dev.isOnline;
+      if (!press.dimming && moved > 8) {
+        window.clearTimeout(press.timer);
+        if (canDim && Math.abs(dx) > Math.abs(dy)) press.dimming = true; else { press = null; return; }
+      }
+      if (press.dimming) {
+        const tile = this.root.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(press.id)}"]`);
+        if (!tile) return;
+        const r = tile.getBoundingClientRect();
+        const percent = Math.max(1, Math.min(100, Math.round(((e.clientX - r.left) / r.width) * 100)));
+        this.dimPreview = { id: press.id, percent };
+        this.suppressNextClick = true;
+        this.render();
+      }
+    });
+
+    window.addEventListener("pointerup", () => {
+      if (!press) return;
+      window.clearTimeout(press.timer);
+      const finished = press;
+      press = null;
+      if (this.draggingId) {
+        this.draggingId = null;
+        this.dragPointer = null;
+        this.render();
+        return;
+      }
+      if (finished.dimming && this.dimPreview) {
+        const dev = this.devices.find((d) => d.id === finished.id);
+        const percent = this.dimPreview.percent;
+        this.dimPreview = null;
+        if (dev && dev.kind.kind === "light") {
+          void this.executeSingleCommand(dev, { kind: "setLightBrightness", entityId: dev.kind.entityId, percent }, `已将${dev.name}亮度设为 ${percent}%`);
+        }
+      }
+    });
+
+    // A long-press or dim drag ends with a click on the card; swallow it so nothing toggles.
+    this.root.addEventListener("click", (e) => {
+      if (this.suppressNextClick || this.isEditingLayout) {
+        if ((e.target as HTMLElement).closest("[data-tile-id]") && !(e.target as HTMLElement).closest(".cc-size-badge")) {
+          e.stopPropagation();
+          e.preventDefault();
+        }
+        this.suppressNextClick = false;
+      }
+    }, true);
+
+    this.root.addEventListener("contextmenu", (e) => {
+      const el = (e.target as HTMLElement).closest<HTMLElement>("[data-tile-id]");
+      if (!el) return;
+      e.preventDefault();
+      this.ctxMenu = { x: e.clientX, y: e.clientY, deviceId: el.dataset.tileId as string };
+      this.render();
+    });
+  }
+
+  /** Drop-in animation each time the tray popover is shown. */
+  private bindOpenAnimation(): void {
+    const play = () => {
+      this.root.classList.remove("is-opening");
+      void this.root.offsetWidth;
+      this.root.classList.add("is-opening");
+      const strip = this.root.querySelector<HTMLElement>(".cc-room-scroll");
+      const active = strip?.querySelector<HTMLElement>(".cc-room-pill.is-active");
+      if (strip && active) strip.scrollLeft = this.selectedRoom === "全部" ? 0 : active.offsetLeft - (strip.clientWidth - active.offsetWidth) / 2;
+    };
+    let hiddenAt = 0;
+    window.addEventListener("blur", () => { hiddenAt = performance.now(); });
+    window.addEventListener("focus", () => { if (performance.now() - hiddenAt > 150) play(); });
+    this.root.addEventListener("animationend", (e) => { if (e.target === this.root) this.root.classList.remove("is-opening"); });
+    play();
+  }
+
+  private applyPanelHeight(): void {
+    const h = PANEL_HEIGHTS.find((x) => x.id === this.settings.panelHeight) ?? PANEL_HEIGHTS[1]!;
+    invokeTauriVoid("set_panel_height", { height: h.px });
   }
 
   private escapeHtml(str: string): string {
