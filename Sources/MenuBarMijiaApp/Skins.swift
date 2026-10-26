@@ -246,8 +246,8 @@ struct SkinChipSurface<S: Shape>: ViewModifier {
                     if let tint { shape.fill(tint) }
                 }
                 .overlay { shape.stroke(p.line, lineWidth: 0.8) }
-                .shadow(color: p.neumorphic ? Color(red: 0.78, green: 0.80, blue: 0.85) : .clear, radius: 4, x: 3, y: 3)
-                .shadow(color: p.neumorphic ? .white : .clear, radius: 4, x: -3, y: -3)
+                .shadowIf(p.neumorphic, color: Color(red: 0.78, green: 0.80, blue: 0.85), radius: 4, x: 3, y: 3)
+                .shadowIf(p.neumorphic, color: .white, radius: 4, x: -3, y: -3)
         }
     }
 }
@@ -300,8 +300,8 @@ struct SkinTileSurface: ViewModifier {
         content
             .background {
                 shape.fill(isActive ? p.activeTile : p.tile)
-                    .shadow(color: p.neumorphic && !isActive ? Color(red: 0.78, green: 0.80, blue: 0.85) : .clear, radius: 6, x: 5, y: 5)
-                    .shadow(color: p.neumorphic && !isActive ? .white : .clear, radius: 6, x: -5, y: -5)
+                    .shadowIf(p.neumorphic && !isActive, color: Color(red: 0.78, green: 0.80, blue: 0.85), radius: 6, x: 5, y: 5)
+                    .shadowIf(p.neumorphic && !isActive, color: .white, radius: 6, x: -5, y: -5)
                 if p.neumorphic && isActive {
                     shape.stroke(Color(red: 0.78, green: 0.80, blue: 0.85), lineWidth: 4).blur(radius: 4).offset(x: 2, y: 2).mask(shape)
                     shape.stroke(.white, lineWidth: 4).blur(radius: 4).offset(x: -2, y: -2).mask(shape)
@@ -315,7 +315,7 @@ struct SkinTileSurface: ViewModifier {
                 }
             }
             .clipShape(shape)
-            .shadow(color: isActive && p.glow ? p.accent.opacity(0.5) : .clear, radius: 9)
+            .shadowIf(isActive && p.glow, color: p.accent.opacity(0.5), radius: 9)
             .animation(.easeOut(duration: 0.25), value: isActive)
     }
 }
@@ -415,6 +415,12 @@ struct BreathingDot: View {
 }
 
 extension View {
+    /// Adds a shadow only when `active`; a clear shadow still costs an offscreen pass per frame.
+    @ViewBuilder
+    func shadowIf(_ active: Bool, color: Color, radius: CGFloat, x: CGFloat = 0, y: CGFloat = 0) -> some View {
+        if active { self.shadow(color: color, radius: radius, x: x, y: y) } else { self }
+    }
+
     func staggerIn(_ index: Int) -> some View { modifier(StaggerIn(index: index)) }
     func toggleRipple(isOn: Bool, color: Color) -> some View { modifier(ToggleRipple(isOn: isOn, color: color)) }
     func listeningPulse(_ active: Bool, color: Color) -> some View { modifier(ListeningPulse(active: active, color: color)) }

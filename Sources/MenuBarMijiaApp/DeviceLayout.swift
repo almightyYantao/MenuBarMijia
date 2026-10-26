@@ -43,6 +43,15 @@ public enum DeviceLayoutPrefs {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
+    /// Memoised decode: cards read their size on every render, the JSON only changes on edits.
+    @MainActor private static var cache: (raw: String, sizes: [String: TileSize]) = ("", [:])
+
+    @MainActor
+    public static func cachedSize(raw: String, id: String) -> TileSize {
+        if cache.raw != raw { cache = (raw, decode(raw)) }
+        return cache.sizes[id] ?? .auto
+    }
+
     /// Resolves `.auto` into a concrete size for the current grid mode and climate setting.
     public static func resolved(_ size: TileSize, device: SmartDevice, compactGrid: Bool, climatePanel: Bool) -> TileSize {
         guard size == .auto else { return size }
@@ -106,14 +115,11 @@ struct LayoutEditable: ViewModifier {
     let onMove: (_ dragged: String, _ target: String) -> Void
     let onCycleSize: () -> Void
 
-    @State private var wiggle = false
-    // Alternating phase so neighbouring cards do not swing in sync.
-    private var phase: Double { Double(abs(deviceId.hashValue % 7)) * 0.03 }
+    // Per-card phase so neighbouring cards do not swing in sync.
+    private var phase: Double { Double(abs(deviceId.hashValue % 97)) / 97 * .pi * 2 }
 
     func body(content: Content) -> some View {
-        content
-            .allowsHitTesting(!editing)
-            .rotationEffect(.degrees(editing && !reduceMotion ? (wiggle ? 1.1 : -1.1) : 0))
+        jiggling(content.allowsHitTesting(!editing))
             .scaleEffect(draggingId == deviceId ? 1.04 : 1)
             .opacity(draggingId == deviceId ? 0.55 : 1)
             .overlay {
@@ -150,18 +156,19 @@ struct LayoutEditable: ViewModifier {
                     onEnterEditing()
                 }
             )
-            .onChange(of: editing) { _, on in startWiggle(on) }
-            .onAppear { startWiggle(editing) }
     }
 
-    private func startWiggle(_ on: Bool) {
-        guard on, !reduceMotion else {
-            withAnimation(.easeOut(duration: 0.15)) { wiggle = false }
-            return
-        }
-        wiggle = false
-        withAnimation(.easeInOut(duration: 0.13).repeatForever(autoreverses: true).delay(phase)) {
-            wiggle = true
+    /// Angle is computed from the clock each frame, so a card rebuilt mid-edit (e.g. after a
+    /// size change) keeps jiggling instead of freezing at the last animated angle.
+    @ViewBuilder
+    private func jiggling<V: View>(_ view: V) -> some View {
+        if editing && !reduceMotion && draggingId != deviceId {
+            TimelineView(.animation) { context in
+                let t = context.date.timeIntervalSinceReferenceDate
+                view.rotationEffect(.degrees(sin(t * 2 * .pi * 3.6 + phase) * 1.1))
+            }
+        } else {
+            view
         }
     }
 }

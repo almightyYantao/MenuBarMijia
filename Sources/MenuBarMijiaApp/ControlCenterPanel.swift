@@ -262,7 +262,7 @@ public struct ControlCenterPanel: View {
     /// The device's card size with `.auto` resolved; full and panel sizes take a whole row.
     private func tileSize(_ device: SmartDevice) -> TileSize {
         DeviceLayoutPrefs.resolved(
-            DeviceLayoutPrefs.decode(tileSizesRaw)[device.id] ?? .auto,
+            DeviceLayoutPrefs.cachedSize(raw: tileSizesRaw, id: device.id),
             device: device,
             compactGrid: store.isCompactGridMode,
             climatePanel: climatePanelModule

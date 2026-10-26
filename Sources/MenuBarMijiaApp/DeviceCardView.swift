@@ -35,7 +35,7 @@ public struct DeviceCardView: View {
         self.quickIndex = quickIndex
     }
 
-    private var chosenSize: TileSize { DeviceLayoutPrefs.decode(tileSizesRaw)[device.id] ?? .auto }
+    private var chosenSize: TileSize { DeviceLayoutPrefs.cachedSize(raw: tileSizesRaw, id: device.id) }
 
     private var resolvedSize: TileSize {
         DeviceLayoutPrefs.resolved(chosenSize, device: device, compactGrid: store.isCompactGridMode, climatePanel: climatePanelModule)
@@ -316,7 +316,7 @@ public struct DeviceCardView: View {
                         Text(device.name)
                             .font(.system(size: skin.isClassic ? 12 : 13.5, weight: .semibold))
                             .foregroundStyle(nameColor)
-                            .shadow(color: nameGlow, radius: 6)
+                            .shadowIf(nameGlow != .clear, color: nameGlow, radius: 6)
                             .lineLimit(1)
 
                         Text(dragBrightness.map { L10n.tr("亮度 \(Int($0 * 100))%", "Brightness \(Int($0 * 100))%") } ?? device.statusSubtitle)
@@ -476,7 +476,7 @@ public struct DeviceCardView: View {
             Circle()
                 .fill(on ? (skin == .capsule && lightOn ? Color(red: 1, green: 0.84, blue: 0.04) : p.accent) : p.chip)
                 .frame(width: 36, height: 36)
-                .shadow(color: on ? p.accent.opacity(0.25 + glow * 0.45) : .clear, radius: on ? 3 + glow * 9 : 0)
+                .shadowIf(on, color: p.accent.opacity(0.25 + glow * 0.45), radius: 3 + glow * 9)
             Image(systemName: resolvedSymbolName)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(on ? (skin == .capsule && lightOn ? Color(red: 0.23, green: 0.18, blue: 0) : p.onAccent) : p.muted)
