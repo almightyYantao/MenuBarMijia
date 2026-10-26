@@ -916,7 +916,10 @@ public struct ControlCenterPanel: View {
                     // the start (or the selected room) so the first pill is not half scrolled out.
                     .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
                         var t = Transaction(); t.disablesAnimations = true
-                        withTransaction(t) { proxy.scrollTo(store.selectedRoomId ?? "roomsStart", anchor: .leading) }
+                        withTransaction(t) {
+                            // Selected room goes to the middle, never under the faded left edge.
+                            if let id = store.selectedRoomId { proxy.scrollTo(id, anchor: .center) } else { proxy.scrollTo("roomsStart", anchor: .leading) }
+                        }
                     }
                     .onAppear { proxy.scrollTo("roomsStart", anchor: .leading) }
                     // Keep the chosen room fully visible; tapping a half-hidden one slides it in.
