@@ -106,6 +106,9 @@ public struct DeviceCardView: View {
            climatePanelModule || chosenSize != .auto {
             ClimatePanelModule(device: device, spec: spec, store: store, showRoomBadge: showRoomBadge, forceExpanded: resolvedSize == .panel)
                 .contextMenu { contextMenuItems }
+        } else if case .sensor(let spec) = device.kind, !isBentoTile {
+            SensorCardView(device: device, spec: spec, isCompact: isCompactTile, showRoomBadge: showRoomBadge)
+                .contextMenu { contextMenuItems }
         } else {
             cardBody
         }
