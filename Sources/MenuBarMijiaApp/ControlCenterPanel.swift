@@ -37,6 +37,8 @@ public struct ControlCenterPanel: View {
     @Namespace private var roomPillNamespace
     public let store: HomeStore
 
+    private static let panelWidth: CGFloat = 376
+    private var panelHeight: CGFloat { (PanelHeight(rawValue: panelHeightRaw) ?? .standard).points }
     private var skin: AppSkin { AppSkin(rawValue: skinRaw) ?? .classic }
     private var skinAccentFill: AnyShapeStyle { skin.isClassic ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(skin.palette.accentGradient) }
     private var skinOnAccent: Color { skin.isClassic ? .white : skin.palette.onAccent }
@@ -94,7 +96,9 @@ public struct ControlCenterPanel: View {
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.newGroupForDevice)
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingGroupId)
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingDeviceId)
-        .frame(width: skin.isClassic ? 356 : 376, height: (PanelHeight(rawValue: panelHeightRaw) ?? .standard).points)
+        .frame(width: Self.panelWidth, height: panelHeight)
+        .onChange(of: skinRaw) { _, _ in syncMenuBarWindowSize() }
+        .onChange(of: panelHeightRaw) { _, _ in syncMenuBarWindowSize() }
         // Open animation: drop in from the menu bar with a slight scale and fade.
         .scaleEffect(isPresented || reduceMotion ? 1 : 0.94, anchor: .top)
         .offset(y: isPresented || reduceMotion ? 0 : -10)
@@ -112,6 +116,7 @@ public struct ControlCenterPanel: View {
             else if !isPresented { withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true } }
         }
         .onAppear {
+            syncMenuBarWindowSize()
             withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true }
         }
         .environment(\.isEditingLayout, isEditingLayout)
@@ -119,6 +124,19 @@ public struct ControlCenterPanel: View {
         .task {
             await store.checkForUpdatesIfNeeded()
         }
+    }
+
+    private func syncMenuBarWindowSize() {
+        let target = NSSize(width: Self.panelWidth, height: panelHeight)
+        guard let window = NSApp.windows.first(where: { $0.className.contains("MenuBarExtra") }) else { return }
+        let oldFrame = window.frame
+        let newRect = window.frameRect(forContentRect: NSRect(origin: .zero, size: target))
+        guard abs(oldFrame.width - newRect.width) > 0.5 || abs(oldFrame.height - newRect.height) > 0.5 else { return }
+        let newOrigin = NSPoint(
+            x: (oldFrame.midX - newRect.width / 2).rounded(),
+            y: oldFrame.maxY - newRect.height
+        )
+        window.setFrame(NSRect(origin: newOrigin, size: newRect.size), display: true, animate: false)
     }
 
     // MARK: - Main Dashboard
