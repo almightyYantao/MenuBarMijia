@@ -386,7 +386,9 @@ struct AuditWave2Tests {
 
         #expect(store.menuBarDisplayMode == .sensorTemperature)
         #expect(store.menuBarTargetId == "temp:sensor_living")
-        #expect(store.menuBarText == "25.5°")
+        L10n.$overrideTemperatureUnit.withValue(.celsius) {
+            #expect(store.menuBarText == "25.5°C")
+        }
         #expect(defaults.string(forKey: "menubar_display_mode") == MenuBarDisplayMode.sensorTemperature.rawValue)
     }
 
@@ -404,7 +406,9 @@ struct AuditWave2Tests {
         let (store, _) = try await makeStore(devices: [], readings: [bedroom], suite: suite)
 
         #expect(store.menuBarDisplayMode == .sensorTemperature)
-        #expect(store.menuBarText == "24.2°")
+        L10n.$overrideTemperatureUnit.withValue(.celsius) {
+            #expect(store.menuBarText == "24.2°C")
+        }
         let hasRoomNameOption = store.availableMenuBarOptions.contains(where: { $0.title.contains("主卧") })
         #expect(!hasRoomNameOption)
     }
@@ -525,6 +529,9 @@ struct AuditWave2Tests {
         }
         // 主动建议同样不触发云端（上面的 override 一旦被调用就会记录 Issue 使测试失败）。
         await store.requestProactiveJevSuggestions()
+        let connection = await store.verifyAssistantConfig(store.assistantConfig)
+        #expect(!connection.isSuccess)
+        #expect(connection.message.contains("演示模式") || connection.message.contains("Demo"))
     }
 
     // MARK: - #50: privacy-first speech default

@@ -129,6 +129,9 @@ extension HomeStore {
     /// Persists and verifies the given AI configuration against the live endpoint using the same reloaded `assistantConfig` as normal command execution.
     public func verifyAssistantConfig(_ draftConfig: AssistantConfig) async -> (isSuccess: Bool, message: String) {
         assistantConfig = draftConfig
+        guard homeBackend != .demo else {
+            return (false, L10n.tr("演示模式不联网，请切换数据源后测试连接", "Demo mode is offline; switch the data source to test this connection"))
+        }
         let resolved = assistantConfig
         if shouldRejectMissingAPIKey(for: resolved) {
             return (false, AssistantError.userMessage(for: AssistantError.missingAPIKey))
@@ -471,11 +474,13 @@ extension HomeStore {
         case aiAutomatic
         /// A scheduled command fired (including a missed timer the user confirmed).
         case scheduled
+        /// A Mac-state automation rule fired (lock, sleep, display change); never trains habits (#59).
+        case automation
 
         var recordsHabits: Bool { self == .userInitiated }
     }
 
-    private func executeIntentPlan(
+    func executeIntentPlan(
         _ plan: IntentPlan,
         recordedUtterance: String?,
         origin: AssistantExecutionOrigin
@@ -541,13 +546,16 @@ extension HomeStore {
             )
         }
 
-        if appliedDeviceIds.count > 1 {
+        // Automation rules always offer undo, even for one device, and keep the banner long enough
+        // to survive a lock/sleep round trip (#59). The panel keeps its 2+ device rule (#53).
+        if !appliedDeviceIds.isEmpty, appliedDeviceIds.count > 1 || origin == .automation {
             scheduleUndoBanner(
                 title: plan.reply.isEmpty ? L10n.tr("已执行 AI 指令", "Executed AI command") : plan.reply,
                 restoreCommands: restoreCommands.reversed(),
                 previousDevices: previousSnapshot,
                 deviceCount: appliedDeviceIds.count,
-                habitReceipt: habitReceipt
+                habitReceipt: habitReceipt,
+                duration: origin == .automation ? AutomationPolicy.undoWindow : nil
             )
         }
 

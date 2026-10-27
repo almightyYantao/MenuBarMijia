@@ -467,11 +467,12 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
         case .climate(let s):
             if !s.isOn || s.hvacMode == "off" { return L10n.tr("已关闭", "Off") }
             let modeLabel = Self.localizeHVACMode(s.hvacMode)
-            let tempStr = String(format: "%.0f°C", s.targetTemperature)
+            // Stored and stepped in Celsius; only the digits shown follow the display unit (#52).
+            let tempStr = L10n.temperature(s.targetTemperature)
             if let cur = s.currentTemperature {
                 return L10n.tr(
-                    "\(modeLabel) \(tempStr) · 室温 \(String(format: "%.0f°", cur))",
-                    "\(modeLabel) \(tempStr) · Room \(String(format: "%.0f°", cur))"
+                    "\(modeLabel) \(tempStr) · 室温 \(L10n.temperature(cur))",
+                    "\(modeLabel) \(tempStr) · Room \(L10n.temperature(cur))"
                 )
             }
             return "\(modeLabel) · \(tempStr)"
@@ -499,9 +500,9 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
             return L10n.tr("已开启", "On")
 
         case .fridge(let s):
-            let cStr = s.fridgeCurrentTemp.map { String(format: L10n.tr("冷藏 %.0f°", "Fridge %.0f°"), $0) }
+            let cStr = s.fridgeCurrentTemp.map { L10n.format("冷藏 %@", "Fridge %@", L10n.temperature($0)) }
                 ?? L10n.tr("冷藏 --", "Fridge --")
-            let fStr = s.freezerCurrentTemp.map { String(format: L10n.tr("冷冻 %.0f°", "Freezer %.0f°"), $0) }
+            let fStr = s.freezerCurrentTemp.map { L10n.format("冷冻 %@", "Freezer %@", L10n.temperature($0)) }
                 ?? L10n.tr("冷冻 --", "Freezer --")
             return "\(cStr) · \(fStr)"
 
@@ -544,7 +545,7 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
 
         case .sensor(let s):
             if let t = s.temperature, let h = s.humidity {
-                return String(format: "%.1f°C · %.0f%%", t, h)
+                return "\(L10n.temperature(t, fractionDigits: 1)) · \(String(format: "%.0f%%", h))"
             }
             if let text = s.statusText {
                 if let bat = s.battery {

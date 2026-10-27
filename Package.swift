@@ -17,6 +17,12 @@ let package = Package(
     targets: [
         .target(
             name: "MijiaCore",
+            // Translation tables (#52): `Resources/Localizations/<language>.json`, copied into
+            // `MenuBarMijia_MijiaCore.bundle/Contents/Resources/Localizations`. A new language is a
+            // new file here — no Swift change, and `L10n.availableLanguages` picks it up.
+            resources: [
+                .copy("Resources/Localizations")
+            ],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]

@@ -382,7 +382,9 @@ struct MijiaCoreTests {
 
         // 1. Dynamic menu bar target: temp+humidity and total power
         store.menuBarTargetId = "temp_hum:dev_sensor_study"
-        #expect(store.menuBarText == "24.8° 52%")
+        L10n.$overrideTemperatureUnit.withValue(.celsius) {
+            #expect(store.menuBarText == "24.8°C 52%")
+        }
 
         store.menuBarTargetId = "power:total"
         #expect(store.totalPowerWatts == 1150)

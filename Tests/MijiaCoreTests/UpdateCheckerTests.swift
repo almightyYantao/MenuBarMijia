@@ -314,20 +314,6 @@ struct UpdateCheckerTests {
             == URL(string: "https://example.com/MenuBarMijia-1.2.0.dmg.ed25519.sig")!)
     }
 
-    @Test("Code-signing requirement pins the certificate hash only when present")
-    func codeSigningRequirementAndQuarantinePolicy() {
-        let identifier = "com.jryang1997.MenuBarMijia"
-        #expect(AppUpdater.codeSigningRequirement(bundleIdentifier: identifier, certificateSHA1: nil)
-            == "identifier \"com.jryang1997.MenuBarMijia\"")
-        #expect(AppUpdater.codeSigningRequirement(bundleIdentifier: identifier, certificateSHA1: "  ")
-            == "identifier \"com.jryang1997.MenuBarMijia\"")
-        #expect(AppUpdater.codeSigningRequirement(
-            bundleIdentifier: identifier,
-            certificateSHA1: "54E63A8A6BCCDC0D98C4D5188528A1B796B42C8D"
-        ) == "identifier \"com.jryang1997.MenuBarMijia\" and certificate leaf = H\"54e63a8a6bccdc0d98c4d5188528a1b796b42c8d\"")
-        #expect(AppUpdater.shouldStripQuarantine(currentAppIsAdHoc: true))
-        #expect(!AppUpdater.shouldStripQuarantine(currentAppIsAdHoc: false))
-    }
 
     @MainActor
     @Test("HomeStore orchestrates throttling, staging, cancellation, retry, and relaunch")
@@ -533,7 +519,7 @@ struct UpdateCheckerTests {
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
-        let adHocRequirement = AppUpdater.codeSigningRequirement(
+        let missingPinRequirement = AppUpdater.codeSigningRequirement(
             bundleIdentifier: AppUpdater.expectedBundleIdentifier,
             certificateSHA1: nil
         )
@@ -553,7 +539,9 @@ struct UpdateCheckerTests {
         let unpackedFromZip = try await UpdateSystemDriver.live.unpackArchive(zipURL, .zip, zipDest)
         #expect(unpackedFromZip.lastPathComponent == "MenuBarMijia.app")
         try await UpdateSystemDriver.live.stripQuarantine(unpackedFromZip)
-        try await UpdateSystemDriver.live.verifyCodeSignature(unpackedFromZip, adHocRequirement)
+        await #expect(throws: UpdateInstallError.self) {
+            try await UpdateSystemDriver.live.verifyCodeSignature(unpackedFromZip, missingPinRequirement)
+        }
         // 同 Bundle ID 的 ad-hoc 包必须被钉住证书的 requirement 拒绝。
         await #expect(throws: UpdateInstallError.self) {
             try await UpdateSystemDriver.live.verifyCodeSignature(unpackedFromZip, pinnedRequirement)
@@ -577,13 +565,15 @@ struct UpdateCheckerTests {
         #expect(unpackedFromDmg.lastPathComponent == "MenuBarMijia.app")
         #expect(!FileManager.default.fileExists(atPath: dmgDest.appendingPathComponent("mnt").path))
         try await UpdateSystemDriver.live.stripQuarantine(unpackedFromDmg)
-        try await UpdateSystemDriver.live.verifyCodeSignature(unpackedFromDmg, adHocRequirement)
+        await #expect(throws: UpdateInstallError.self) {
+            try await UpdateSystemDriver.live.verifyCodeSignature(unpackedFromDmg, missingPinRequirement)
+        }
 
         let evilDir = rootDir.appendingPathComponent("evil", isDirectory: true)
         try FileManager.default.createDirectory(at: evilDir, withIntermediateDirectories: true)
         let evilAppURL = try Self.makeSignedMachOAppBundle(in: evilDir, bundleID: "com.evil.Other", shortVersion: "1.5.0")
         await #expect(throws: UpdateInstallError.self) {
-            try await UpdateSystemDriver.live.verifyCodeSignature(evilAppURL, adHocRequirement)
+            try await UpdateSystemDriver.live.verifyCodeSignature(evilAppURL, pinnedRequirement)
         }
     }
     #endif

@@ -381,9 +381,16 @@ public enum LGWebOSProtocol {
     }
 }
 
-// MARK: - Self-Signed TLS Trust Delegate for LG webOS Port 3001
+// MARK: - First-Use TLS Trust for LG webOS Port 3001
 
-private final class LGWebOSTrustDelegate: NSObject, URLSessionDelegate, Sendable {
+final class LGWebOSTrustDelegate: NSObject, URLSessionDelegate, Sendable {
+    private let trustStore: LGCertificateTrust
+
+    init(trustStore: LGCertificateTrust = .shared) {
+        self.trustStore = trustStore
+        super.init()
+    }
+
     func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
@@ -391,8 +398,15 @@ private final class LGWebOSTrustDelegate: NSObject, URLSessionDelegate, Sendable
     ) {
         #if canImport(Darwin)
         if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-           let trust = challenge.protectionSpace.serverTrust {
-            completionHandler(.useCredential, URLCredential(trust: trust))
+           let trust = challenge.protectionSpace.serverTrust,
+           let certificates = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+           let leaf = certificates.first {
+            let certificate = SecCertificateCopyData(leaf) as Data
+            if trustStore.accepts(certificate: certificate, host: challenge.protectionSpace.host) {
+                completionHandler(.useCredential, URLCredential(trust: trust))
+            } else {
+                completionHandler(.cancelAuthenticationChallenge, nil)
+            }
             return
         }
         #endif
@@ -408,6 +422,7 @@ public actor LGWebOSClient {
     private let session: URLSession
     private let onDeviceUpdated: @Sendable (SmartDevice) -> Void
     private let onClientKeyRegistered: @Sendable (String) -> Void
+    private let onSecurityFailure: @Sendable (String) -> Void
 
     private var loopTask: Task<Void, Never>?
     private var activeWebSocket: URLSessionWebSocketTask?
@@ -425,11 +440,13 @@ public actor LGWebOSClient {
     public init(
         config: LGWebOSConfig,
         onDeviceUpdated: @escaping @Sendable (SmartDevice) -> Void,
-        onClientKeyRegistered: @escaping @Sendable (String) -> Void
+        onClientKeyRegistered: @escaping @Sendable (String) -> Void,
+        onSecurityFailure: @escaping @Sendable (String) -> Void
     ) {
         self.config = config
         self.onDeviceUpdated = onDeviceUpdated
         self.onClientKeyRegistered = onClientKeyRegistered
+        self.onSecurityFailure = onSecurityFailure
 
         let urlConfig = URLSessionConfiguration.ephemeral
         urlConfig.connectionProxyDictionary = [:]
@@ -469,6 +486,15 @@ public actor LGWebOSClient {
         } else {
             start()
         }
+    }
+
+    func resetTrustAndPair() throws {
+        stop()
+        guard LGCertificateTrust.shared.reset(host: config.host) else {
+            throw LGCertificateTrust.Failure.unavailable
+        }
+        config.clientKey = ""
+        start()
     }
 
     // MARK: - Command Execution
@@ -599,9 +625,14 @@ public actor LGWebOSClient {
             do {
                 try await connectAndListen()
             } catch {
+                guard !Task.isCancelled else { return }
                 isConnected = false
                 isWaitingForPairing = false
                 emitCurrentDevice()
+                if let failure = LGCertificateTrust.shared.failure(for: config.host) {
+                    onSecurityFailure(failure.localizedDescription)
+                    return
+                }
             }
             try? await Task.sleep(for: .seconds(6))
         }

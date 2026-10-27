@@ -919,15 +919,18 @@ public struct AppUpdater: Sendable {
     ///
     /// The pinned leaf certificate hash itself is the anchor. `anchor apple generic` is not
     /// assumed because the release certificate is self-signed and would never satisfy it;
-    /// without a pinned hash (local development builds) only the bundle identifier is enforced,
-    /// while the Ed25519 package signature remains mandatory.
+    /// missing or malformed pins fail closed, including local development builds.
+    /// The Ed25519 package signature is independently mandatory.
     public static func codeSigningRequirement(bundleIdentifier: String, certificateSHA1: String?) -> String {
         let base = "identifier \"\(bundleIdentifier)\""
-        guard let raw = certificateSHA1?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty else {
-            return base
+        guard let raw = certificateSHA1?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return base + " and never"
         }
         let hash = raw.replacingOccurrences(of: " ", with: "").lowercased()
+        guard hash.utf8.count == 40,
+              hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            return base + " and never"
+        }
         return base + " and certificate leaf = H\"\(hash)\""
     }
 
