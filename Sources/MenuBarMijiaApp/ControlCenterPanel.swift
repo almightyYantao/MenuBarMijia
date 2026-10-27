@@ -28,6 +28,8 @@ public struct ControlCenterPanel: View {
     @AppStorage(GroupPrefs.aliasesKey) private var aliasesRaw: String = "{}"
     @State private var layoutUI = LayoutUIState.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Opens the ⌘, Settings window; the popover no longer hosts the long form (#42).
+    @Environment(\.openSettings) private var openSettings
     /// Drives the open animation; reset whenever the menu-bar window closes so every open replays it.
     @State private var isPresented = false
 
@@ -50,11 +52,7 @@ public struct ControlCenterPanel: View {
     public var body: some View {
         let _ = store.effectiveLanguage
         ZStack(alignment: .bottom) {
-            if store.isShowingSettings {
-                SettingsSheetView(store: store)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
-            } else if store.shouldShowOnboarding {
+            if store.shouldShowOnboarding {
                 OnboardingGuideView(store: store)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
@@ -99,6 +97,16 @@ public struct ControlCenterPanel: View {
         .frame(width: Self.panelWidth, height: panelHeight)
         .onChange(of: skinRaw) { _, _ in syncMenuBarWindowSize() }
         .onChange(of: panelHeightRaw) { _, _ in syncMenuBarWindowSize() }
+        // #53: remember a successful assistant action so "撤销上一步" outlives the banner.
+        .onChange(of: store.assistantState) { _, state in
+            if case .done = state {
+                UndoAvailabilityTracker.shared.noteAssistantAction()
+            }
+        }
+        // #45: the only place that sees every error toast is the panel root.
+        .onChange(of: store.toastNotice?.id) { _, _ in
+            AppDiagnosticsLog.shared.record(store.toastNotice)
+        }
         // Open animation: drop in from the menu bar with a slight scale and fade.
         .scaleEffect(isPresented || reduceMotion ? 1 : 0.94, anchor: .top)
         .offset(y: isPresented || reduceMotion ? 0 : -10)
@@ -116,6 +124,7 @@ public struct ControlCenterPanel: View {
             else if !isPresented { withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true } }
         }
         .onAppear {
+            SettingsWindowOpener.shared.open = { openSettings() }
             syncMenuBarWindowSize()
             withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true }
         }
@@ -723,6 +732,19 @@ public struct ControlCenterPanel: View {
                         }
 
                         homeTitle
+
+                        if store.homeBackend == .demo {
+                            Text(L10n.tr("演示模式", "Demo"))
+                                .font(.system(size: 9.5, weight: .bold))
+                                .foregroundStyle(.orange)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.orange.opacity(0.16), in: Capsule(style: .continuous))
+                                .skinHelp(L10n.tr(
+                                    "正在使用内置虚拟设备，完全离线，不联网。可在设置里切回真实账号。",
+                                    "Using built-in virtual devices, fully offline. Switch back to a real account in Settings."
+                                ))
+                        }
                     }
 
                     Text(statusSummaryText)
@@ -1244,10 +1266,10 @@ public struct ControlCenterPanel: View {
                     }
                     .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
 
-                    Button(L10n.tr("偏好设置", "Preferences")) {
-                        withAnimation(AppleMotion.snappySpring) {
-                            store.isShowingSettings = true
-                        }
+                    Button {
+                        presentSettingsWindow()
+                    } label: {
+                        Text(L10n.tr("偏好设置", "Preferences"))
                     }
                     .buttonStyle(PillActionButtonStyle())
                 }
@@ -1339,6 +1361,14 @@ public struct ControlCenterPanel: View {
             .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 4)
             .padding(.horizontal, 14)
             .padding(.bottom, 42)
+            // #53: reading the banner must not cost the undo. Leaving restarts the full window.
+            .onHover { hovering in
+                if hovering {
+                    store.pauseUndoBannerCountdown()
+                } else {
+                    store.resumeUndoBannerCountdown()
+                }
+            }
             .transition(AppleMotion.drawerTransition)
         } else if let toast = store.toastNotice {
             let toastShape = Capsule(style: .continuous)
@@ -1379,12 +1409,12 @@ public struct ControlCenterPanel: View {
 
             if let release = store.updateState.badgeRelease {
                 Button {
-                    withAnimation(AppleMotion.snappySpring) {
-                        if store.updateState.isReadyToRelaunch {
+                    if store.updateState.isReadyToRelaunch {
+                        withAnimation(AppleMotion.snappySpring) {
                             store.confirmRelaunchForUpdate()
-                        } else {
-                            store.isShowingSettings = true
                         }
+                    } else {
+                        presentSettingsWindow()
                     }
                 } label: {
                     HStack(spacing: 4) {
@@ -1416,6 +1446,24 @@ public struct ControlCenterPanel: View {
                 )
             }
 
+            // #53: once the banner is gone the assistant action is still undoable for ten minutes.
+            if store.undoBanner == nil,
+               !store.isShowingAssistantBar,
+               UndoAvailabilityTracker.shared.isAvailable {
+                Button {
+                    store.presentAssistantBar()
+                    Task { await UndoAvailabilityTracker.shared.performUndo(store: store) }
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(.primary.opacity(0.72))
+                        .frame(width: 24, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .skinHelp(L10n.tr("撤销上一步（10 分钟内有效）", "Undo the last assistant action (valid for 10 minutes)"))
+            }
+
             Button {
                 store.refreshNow()
             } label: {
@@ -1429,9 +1477,7 @@ public struct ControlCenterPanel: View {
             .skinHelp(L10n.tr("立即同步最新状态", "Refresh device states now"))
 
             Button {
-                withAnimation(AppleMotion.snappySpring) {
-                    store.isShowingSettings = true
-                }
+                presentSettingsWindow()
             } label: {
                 Image(systemName: "slider.horizontal.3")
                     .font(.system(size: 12, weight: .semibold))
@@ -1440,8 +1486,13 @@ public struct ControlCenterPanel: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .skinHelp(L10n.tr("偏好设置与连接配置", "Preferences & connection settings"))
+            .skinHelp(L10n.tr("偏好设置与连接配置（⌘,）", "Preferences & connection settings (⌘,)"))
         }
+    }
+
+    /// `openSettings` is the supported way to reveal the Settings scene from a MenuBarExtra.
+    private func presentSettingsWindow() {
+        SettingsWindowOpener.shared.show()
     }
 
     private var statusDotColor: Color {
@@ -1455,6 +1506,9 @@ public struct ControlCenterPanel: View {
     private var statusFooterLabel: String {
         switch store.connectionStatus {
         case .connected:
+            if store.homeBackend == .demo {
+                return L10n.tr("演示模式 · 内置虚拟设备（完全离线）", "Demo Mode · Built-in virtual devices (offline)")
+            }
             if store.homeBackend == .xiaomiCloud {
                 return L10n.tr("\(store.serverHostSummary) · Miot 直连", "\(store.serverHostSummary) · MIoT Direct")
             }

@@ -4,6 +4,8 @@ import os
 public enum HomeBackend: String, CaseIterable, Identifiable, Sendable {
     case homeAssistant = "homeAssistant"
     case xiaomiCloud = "xiaomiCloud"
+    /// A built-in virtual home that works without an account and never touches the network (#47).
+    case demo = "demo"
 
     public var id: String { rawValue }
 
@@ -11,6 +13,7 @@ public enum HomeBackend: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .homeAssistant: return "Home Assistant"
         case .xiaomiCloud: return L10n.tr("米家云端直连", "Xiaomi Cloud Direct")
+        case .demo: return L10n.tr("演示模式", "Demo Mode")
         }
     }
 }
@@ -433,58 +436,5 @@ public actor HAWebSocketProvider: HomeProvider {
             wsStr = "ws://" + wsStr.dropFirst("http://".count)
         }
         return URL(string: "\(wsStr)/api/websocket")
-    }
-}
-
-// MARK: - Mock Provider for Testing & Instant Previews
-
-public actor MockHomeProvider: HomeProvider {
-    private var snapshot: SynthesizedHome
-    private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
-    public private(set) var executedCommands: [DeviceCommand] = []
-    /// Every polling context the store sent, in order (#26).
-    public private(set) var pollingContexts: [PollingContext] = []
-    public var shouldFailCommands: Bool = false
-
-    public init(snapshot: SynthesizedHome = .init()) {
-        self.snapshot = snapshot
-    }
-
-    public func setShouldFail(_ fail: Bool) {
-        self.shouldFailCommands = fail
-    }
-
-    public func setPollingContext(_ context: PollingContext) async {
-        pollingContexts.append(context)
-    }
-
-    public nonisolated func events() -> AsyncStream<HomeProviderEvent> {
-        AsyncStream { cont in
-            Task {
-                await self.register(cont)
-            }
-        }
-    }
-
-    private func register(_ cont: AsyncStream<HomeProviderEvent>.Continuation) {
-        self.continuation = cont
-        cont.yield(.statusChanged(.connected))
-        cont.yield(.snapshotUpdated(snapshot))
-    }
-
-    public func execute(_ command: DeviceCommand) async throws {
-        if shouldFailCommands {
-            throw HomeProviderError.serviceCallFailed(500, "模拟网络失败")
-        }
-        executedCommands.append(command)
-    }
-
-    public func refreshNow() async {
-        continuation?.yield(.snapshotUpdated(snapshot))
-    }
-
-    public func updateSnapshot(_ next: SynthesizedHome) {
-        self.snapshot = next
-        continuation?.yield(.snapshotUpdated(next))
     }
 }

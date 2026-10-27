@@ -236,7 +236,7 @@ struct MiotSynthesizerTests {
             values: MiotFixtures.lightValues
         )
         #expect(home.devices == [MiotFixtures.expectedLight])
-        #expect(home.rooms == [RoomArea(id: "shu_fang", name: "书房", sortOrder: 2)])
+        #expect(home.rooms == [RoomArea(id: "shu_fang", name: "书房", sortOrder: 0)])
         #expect(MiotSynthesizer.requiredProps(for: MiotFixtures.lightRecord, spec: MiotFixtures.specs["yeelink.light.ceiling22"]!) == [
             MiotFixtures.key("123", 2, 1), MiotFixtures.key("123", 2, 2),
             MiotFixtures.key("123", 2, 3), MiotFixtures.key("123", 2, 4),

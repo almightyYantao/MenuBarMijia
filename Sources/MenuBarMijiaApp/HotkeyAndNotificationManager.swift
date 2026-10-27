@@ -57,53 +57,107 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         }
     }
 
-    // MARK: - 1. Global Hotkey (Option + M) via Carbon RegisterEventHotKey
+    // MARK: - 1. Global Hotkey (user-recorded, ⌥M by default) via Carbon RegisterEventHotKey
 
     private func syncGlobalHotKeyRegistration(enabled: Bool) {
         if enabled {
-            setupGlobalHotKey()
+            applyHotkeyPreference()
         } else {
-            if let ref = hotKeyRef {
-                UnregisterEventHotKey(ref)
-                hotKeyRef = nil
-            }
+            unregisterGlobalHotKey()
+            HotkeySettingsState.shared.markDisabled()
         }
     }
 
-    private func setupGlobalHotKey() {
-        guard hotKeyRef == nil else { return }
+    /// Re-registers with the stored shortcut. Called when the toggle flips (#43 rule 3) and after
+    /// the recorder saves a new combination.
+    public func applyHotkeyPreference() {
+        guard let store, store.enableGlobalHotkey else {
+            unregisterGlobalHotKey()
+            HotkeySettingsState.shared.markDisabled()
+            return
+        }
+        let shortcut = HotkeyPreferences.load()
+        HotkeySettingsState.shared.reload()
+        registerGlobalHotKey(shortcut)
+    }
 
-        if eventHandlerRef == nil {
-            var eventType = EventTypeSpec(
-                eventClass: OSType(kEventClassKeyboard),
-                eventKind: UInt32(kEventHotKeyPressed)
-            )
+    /// Retry button next to the registration error.
+    public func retryHotkeyRegistration() {
+        applyHotkeyPreference()
+    }
 
-            let status = InstallEventHandler(
-                GetApplicationEventTarget(),
-                { _, _, _ -> OSStatus in
-                    Task { @MainActor in
-                        HotkeyAndNotificationManager.shared.handleGlobalHotKeyTriggered()
-                    }
-                    return noErr
-                },
-                1,
-                &eventType,
-                nil,
-                &eventHandlerRef
-            )
-            guard status == noErr else { return }
+    private func unregisterGlobalHotKey() {
+        if let ref = hotKeyRef {
+            UnregisterEventHotKey(ref)
+            hotKeyRef = nil
+        }
+    }
+
+    private func registerGlobalHotKey(_ shortcut: HotkeyShortcut) {
+        unregisterGlobalHotKey()
+        guard installHotKeyHandler() else {
+            reportHotkeyFailure(shortcut, status: OSStatus(-1))
+            return
         }
 
+        var ref: EventHotKeyRef?
         let hotKeyID = EventHotKeyID(signature: OSType(0x4D49_4A41), id: 1) // 'MIJA'
-        RegisterEventHotKey(
-            UInt32(kVK_ANSI_M),
-            UInt32(optionKey),
+        let status = RegisterEventHotKey(
+            UInt32(shortcut.keyCode),
+            Self.carbonModifiers(shortcut.modifiers),
             hotKeyID,
             GetApplicationEventTarget(),
             0,
-            &hotKeyRef
+            &ref
         )
+        if status == noErr, let ref {
+            hotKeyRef = ref
+            HotkeySettingsState.shared.markRegistered(shortcut)
+        } else {
+            reportHotkeyFailure(shortcut, status: status)
+        }
+    }
+
+    /// Never let a shortcut fail silently (#43): Settings shows the error and, when the panel is
+    /// visible, a toast says why the hotkey does nothing.
+    private func reportHotkeyFailure(_ shortcut: HotkeyShortcut, status: OSStatus) {
+        HotkeySettingsState.shared.markFailed(shortcut, status: status)
+        if let message = HotkeySettingsState.shared.registrationError {
+            store?.showToast(message, isError: true)
+        }
+    }
+
+    private func installHotKeyHandler() -> Bool {
+        if eventHandlerRef != nil { return true }
+
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+
+        let status = InstallEventHandler(
+            GetApplicationEventTarget(),
+            { _, _, _ -> OSStatus in
+                Task { @MainActor in
+                    HotkeyAndNotificationManager.shared.handleGlobalHotKeyTriggered()
+                }
+                return noErr
+            },
+            1,
+            &eventType,
+            nil,
+            &eventHandlerRef
+        )
+        return status == noErr
+    }
+
+    private static func carbonModifiers(_ modifiers: HotkeyModifiers) -> UInt32 {
+        var mask: UInt32 = 0
+        if modifiers.contains(.command) { mask |= UInt32(cmdKey) }
+        if modifiers.contains(.option) { mask |= UInt32(optionKey) }
+        if modifiers.contains(.control) { mask |= UInt32(controlKey) }
+        if modifiers.contains(.shift) { mask |= UInt32(shiftKey) }
+        return mask
     }
 
     private func handleGlobalHotKeyTriggered() {
@@ -468,11 +522,18 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
 
     private func handleKeyDown(_ event: NSEvent, store: HomeStore) -> Bool {
         let code = Int(event.keyCode)
+
+        // Settings is a separate scene; the panel has no app menu of its own (agent app).
+        if code == kVK_ANSI_Comma, event.modifierFlags.contains(.command) {
+            SettingsWindowOpener.shared.show()
+            return true
+        }
+
         // Do not intercept typing when a text field (e.g., XiaoAi input or Settings URL) is first responder
         if let responder = NSApp.keyWindow?.firstResponder,
            responder is NSTextView || responder is NSTextField {
             if code == kVK_Escape {
-                if store.isShowingAssistantBar && !store.isShowingSettings {
+                if store.isShowingAssistantBar {
                     store.dismissAssistantBar()
                 }
                 NSApp.keyWindow?.makeFirstResponder(nil)
@@ -481,20 +542,18 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             return false
         }
 
-        // Option+M inside open window closes it
-        if event.modifierFlags.contains(.option),
-           event.charactersIgnoringModifiers?.lowercased() == "m",
-           store.enableGlobalHotkey {
-            NSApp.keyWindow?.orderOut(nil)
-            return true
+        // Arrow/space/digit shortcuts belong to the menu-bar panel. The Settings window (⌘,) keeps
+        // normal AppKit control behavior instead of triggering device actions (#42).
+        if let keyWindow = NSApp.keyWindow,
+           !isStatusBarWindow(keyWindow),
+           keyWindow !== findMenuBarExtraPanelWindow() {
+            return false
         }
 
-        if store.isShowingSettings {
-            if code == kVK_Escape {
-                store.isShowingSettings = false
-                return true
-            }
-            return false
+        // The configured global shortcut also closes an open panel instead of being re-triggered.
+        if store.enableGlobalHotkey, HotkeyRecorderController.matches(event) {
+            NSApp.keyWindow?.orderOut(nil)
+            return true
         }
 
         if event.charactersIgnoringModifiers == "/",
@@ -586,10 +645,8 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         )
         center.setNotificationCategories([category, missedCategory])
 
-        Task {
-            _ = try? await center.requestAuthorization(options: [.alert, .sound])
-        }
-
+        // Permission is requested on demand (#55): first time 守护提醒 is enabled or a timer is set,
+        // after an in-app explanation. Nothing is asked at launch.
         store?.onSafetyAlert = { [weak self] alert in
             self?.deliverNotification(for: alert)
         }
@@ -597,6 +654,50 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             self?.deliverMissedTimerNotification(for: entry)
         }
         store?.notifyMissedScheduledCommandsIfNeeded()
+        Task { [weak self] in
+            await self?.refreshNotificationPermission()
+        }
+    }
+
+    // MARK: - Notification Permission on Demand (#55)
+
+    /// Set the first time the user is asked, so a denial is not re-prompted in-app forever.
+    public static let notificationPromptedKey = "notification_permission_prompted"
+
+    public static var hasRequestedNotificationAuthorization: Bool {
+        UserDefaults.standard.bool(forKey: notificationPromptedKey)
+    }
+
+    /// Shows the macOS prompt only when it can still be shown. Returns whether banners are allowed.
+    public func requestNotificationAuthorization() async -> Bool {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return false }
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        if settings.authorizationStatus == .notDetermined {
+            UserDefaults.standard.set(true, forKey: Self.notificationPromptedKey)
+            let granted = (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
+            await refreshNotificationPermission()
+            return granted
+        }
+        await refreshNotificationPermission()
+        return settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+    }
+
+    /// Mirrors the system state into the settings UI (authorized / denied / not asked yet).
+    public func refreshNotificationPermission() async {
+        let state = NotificationPermissionState.shared
+        guard Bundle.main.bundleURL.pathExtension == "app" else {
+            state.update(.notDetermined, canRequest: false)
+            return
+        }
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        state.update(settings.authorizationStatus, canRequest: settings.authorizationStatus == .notDetermined)
+    }
+
+    /// "打开系统设置" next to a denied state.
+    public func openNotificationSystemSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private struct MissedTimerNotificationIdentifier {

@@ -55,7 +55,8 @@ public struct OnboardingGuideView: View {
             voiceAuthorized = SpeechInputController.shared.hasVoicePermissions
             if store.miSessionMaskedUserId == nil,
                haTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               store.homeBackend != .xiaomiCloud {
+               store.homeBackend == .homeAssistant {
+                // Never pull a user who chose the offline demo back into a cloud login (#47).
                 store.switchBackend(.xiaomiCloud)
             }
             Task {
@@ -174,9 +175,51 @@ public struct OnboardingGuideView: View {
             .labelsHidden()
             .controlSize(.small)
 
+            // #47: let people try the panel before signing any account in.
+            if store.homeBackend == .demo {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                        .padding(.top, 1)
+                    Text(L10n.tr(
+                        "演示模式已开启：内置虚拟家庭，完全离线，不发起任何网络请求。选择上方「米家云端直连」或「Home Assistant」即可切回真实账号。",
+                        "Demo mode is on: a built-in virtual home, fully offline, no network requests. Pick Xiaomi Cloud or Home Assistant above to switch back to a real account."
+                    ))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(8)
+                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            } else {
+                HStack(spacing: 6) {
+                    Button {
+                        withAnimation(AppleMotion.snappySpring) {
+                            store.switchBackend(.demo)
+                            // No `completeOnboarding()`: once demo devices arrive the guide hides by
+                            // itself, and switching to an account without credentials shows it again.
+                            store.showToast(L10n.tr("已进入演示模式，可随时在设置里切回真实账号", "Demo mode on; switch back anytime in Settings"))
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "play.rectangle")
+                            Text(L10n.tr("先看看演示（无需账号）", "Try the Demo (No Account)"))
+                        }
+                        .font(.system(size: 10.5, weight: .semibold))
+                    }
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
+
+                    Text(L10n.tr("用虚拟设备体验面板与皮肤", "Explore the dashboard with virtual devices"))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+            }
+
             if store.homeBackend == .xiaomiCloud {
                 MiAccountSection(store: store)
-            } else {
+            } else if store.homeBackend == .homeAssistant {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
                         TextField("http://homeassistant.local:8123", text: $haURLDraft)
@@ -450,6 +493,7 @@ public struct OnboardingGuideView: View {
     // MARK: - Subviews
 
     private var isBackendConnected: Bool {
+        if store.homeBackend == .demo { return true }
         if case .connected = store.connectionStatus { return true }
         if store.homeBackend == .xiaomiCloud && store.miSessionMaskedUserId != nil { return true }
         return false

@@ -86,6 +86,12 @@ extension HomeStore {
     /// from current room temp/humidity, time of day, active devices, and the user's learned habit memory.
     public func requestProactiveJevSuggestions() async {
         guard !isProactiveRecommending else { return }
+        guard homeBackend != .demo else {
+            // 演示模式完全离线（#47）：只给基于本地习惯记忆的建议。
+            assistantSuggestions = userHabitMemory.topSuggestions(devices: devices, scenes: scenes, limit: 3)
+            setAssistantState(.done(L10n.tr("演示模式建议基于内置虚拟设备", "Demo suggestions are based on the built-in virtual home")))
+            return
+        }
         let config = assistantConfig
         if shouldRejectMissingAPIKey(for: config) {
             setAssistantState(.failed(AssistantError.userMessage(for: AssistantError.missingAPIKey)))
@@ -206,7 +212,7 @@ extension HomeStore {
         assistantSuggestions.removeAll { $0.id == suggestion.id }
         let reply = IntentReply.describe(suggestion.intents, devices: devices, scenes: scenes)
         let plan = IntentPlan(intents: suggestion.intents, reply: reply, source: .model)
-        _ = await executeIntentPlan(plan, recordedUtterance: nil)
+        _ = await executeIntentPlan(plan, recordedUtterance: nil, origin: .userInitiated)
     }
 
     /// Resolves a natural-language command (local parser first, model fallback) and applies it.
@@ -234,6 +240,13 @@ extension HomeStore {
         let plan: IntentPlan
         if let local = LocalIntentParser.parse(utterance, devices: devices, scenes: scenes) {
             plan = local
+        } else if homeBackend == .demo {
+            // 演示模式完全离线（#47）：本地解析不了的指令绝不送云端。
+            setAssistantState(.failed(L10n.tr(
+                "演示模式只在本机解析。试试「打开客厅灯」「空调调到 26 度」这类说法",
+                "Demo mode parses locally. Try phrases like \"Turn on the living room light\" or \"Set the AC to 26\""
+            )))
+            return nil
         } else {
             let config = assistantConfig
             if shouldRejectMissingAPIKey(for: config) {
@@ -269,7 +282,10 @@ extension HomeStore {
         if let delayed {
             return schedule(plan, after: delayed.delay)
         }
-        return await executeIntentPlan(plan, recordedUtterance: utterance)
+        // A locally parsed command is the user's explicit ask. A model plan is the AI filling in
+        // devices/actions the user never spelled out, so it does not train habits (#34).
+        let origin: AssistantExecutionOrigin = plan.source == .local ? .userInitiated : .aiAutomatic
+        return await executeIntentPlan(plan, recordedUtterance: utterance, origin: origin)
     }
 
     // MARK: - Voice Undo
@@ -288,6 +304,11 @@ extension HomeStore {
             guard let idx = devices.firstIndex(where: { $0.id == previous.id }) else { continue }
             devices[idx] = previous
             lockOptimistic(previous.id, duration: .seconds(3.0))
+        }
+        if let receipt = last.habitReceipt {
+            var memory = userHabitMemory
+            memory.unrecord(receipt)
+            userHabitMemory = memory
         }
         for cmd in last.restore {
             try? await executeDeviceCommand(cmd)
@@ -335,7 +356,7 @@ extension HomeStore {
             }
             await self.waitForInitialSnapshotIfNeeded()
             guard !Task.isCancelled else { return }
-            _ = await self.executeIntentPlan(entry.plan, recordedUtterance: nil)
+            _ = await self.executeIntentPlan(entry.plan, recordedUtterance: nil, origin: .scheduled)
             self.scheduledCommands.removeAll { $0.id == entry.id }
             self.scheduledTasks[entry.id] = nil
             self.persistAllScheduledCommands()
@@ -415,7 +436,7 @@ extension HomeStore {
         notifiedMissedTimerIds.remove(id)
         persistAllScheduledCommands()
         await waitForInitialSnapshotIfNeeded()
-        return await executeIntentPlan(entry.plan, recordedUtterance: nil)
+        return await executeIntentPlan(entry.plan, recordedUtterance: nil, origin: .scheduled)
     }
 
     public func dismissMissedScheduledCommand(id: UUID) {
@@ -442,7 +463,23 @@ extension HomeStore {
         return targets.count + missedTargets.count
     }
 
-    private func executeIntentPlan(_ plan: IntentPlan, recordedUtterance: String?) async -> IntentPlan {
+    /// Where an executed plan came from; only explicit user actions train habits (#34).
+    enum AssistantExecutionOrigin: Equatable, Sendable {
+        /// Local plan from a typed/spoken command, or a suggestion the user tapped.
+        case userInitiated
+        /// The model inferred device actions the user did not spell out.
+        case aiAutomatic
+        /// A scheduled command fired (including a missed timer the user confirmed).
+        case scheduled
+
+        var recordsHabits: Bool { self == .userInitiated }
+    }
+
+    private func executeIntentPlan(
+        _ plan: IntentPlan,
+        recordedUtterance: String?,
+        origin: AssistantExecutionOrigin
+    ) async -> IntentPlan {
         let previousSnapshot = devices
         var groupOrder: [String] = []
         var intentsByTarget: [String: [DeviceIntent]] = [:]
@@ -486,12 +523,21 @@ extension HomeStore {
             }
         }
 
+        // Only explicit user actions become habits; AI-inferred and timer executions do not (#34).
+        var habitReceipt: UserHabitMemory.RecordingReceipt?
+        if origin.recordsHabits, isHabitLearningEnabled, failedNames.isEmpty, !appliedDeviceIds.isEmpty {
+            var memory = userHabitMemory
+            habitReceipt = memory.record(utterance: recordedUtterance, intents: plan.intents, devices: devices, scenes: scenes)
+            userHabitMemory = memory
+        }
+
         if !appliedDeviceIds.isEmpty {
             lastAssistantUndo = (
                 reply: plan.reply,
                 restore: restoreCommands.reversed(),
                 previous: previousSnapshot.filter { appliedDeviceIds.contains($0.id) },
-                at: Date()
+                at: Date(),
+                habitReceipt: habitReceipt
             )
         }
 
@@ -499,7 +545,9 @@ extension HomeStore {
             scheduleUndoBanner(
                 title: plan.reply.isEmpty ? L10n.tr("已执行 AI 指令", "Executed AI command") : plan.reply,
                 restoreCommands: restoreCommands.reversed(),
-                previousDevices: previousSnapshot
+                previousDevices: previousSnapshot,
+                deviceCount: appliedDeviceIds.count,
+                habitReceipt: habitReceipt
             )
         }
 
@@ -513,14 +561,10 @@ extension HomeStore {
                 : L10n.tr("\(offlineNames.joined(separator: sep)) 当前离线", "\(offlineNames.joined(separator: sep)) offline")
             setAssistantState(.failed(reason))
         } else {
-            var memory = userHabitMemory
-            memory.record(utterance: recordedUtterance, intents: plan.intents, devices: devices, scenes: scenes)
-            if isHabitLearningEnabled { userHabitMemory = memory }
-
             if !plan.suggestions.isEmpty {
                 assistantSuggestions = plan.suggestions
             } else {
-                assistantSuggestions = memory.topSuggestions(devices: devices, scenes: scenes, limit: 3)
+                assistantSuggestions = userHabitMemory.topSuggestions(devices: devices, scenes: scenes, limit: 3)
             }
             setAssistantState(.done(plan.reply))
         }

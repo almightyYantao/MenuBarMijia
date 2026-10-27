@@ -312,6 +312,8 @@ struct AssistantCommandBar: View {
 
     @Bindable private var speech = SpeechInputController.shared
     @State private var lastHandledVoiceRequest: Int = 0
+    /// Asked once when the first timer is scheduled (#55).
+    @State private var asksForTimerNotifications = false
     @FocusState private var isFieldFocused: Bool
 
     var body: some View {
@@ -368,6 +370,29 @@ struct AssistantCommandBar: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
+            if store.undoBanner == nil,
+               UndoAvailabilityTracker.shared.isAvailable,
+               store.pendingCloudConsent == nil {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Image(systemName: "arrow.uturn.backward.circle")
+                        .foregroundStyle(Color.orange)
+                    Text(L10n.tr(
+                        "刚才的操作 10 分钟内仍可撤销（也可以直接说「撤销」）",
+                        "The last action can still be undone for 10 minutes (or just say \"undo\")"
+                    ))
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .lineLimit(2)
+                    Spacer(minLength: 4)
+                    Button(L10n.tr("撤销上一步", "Undo")) {
+                        Task { await UndoAvailabilityTracker.shared.performUndo(store: store) }
+                    }
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
+                }
+                .font(.system(size: 10.5, weight: .medium))
+                .padding(.horizontal, 4)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
             if let consent = store.pendingCloudConsent {
                 cloudConsentRow(consent)
             }
@@ -378,6 +403,10 @@ struct AssistantCommandBar: View {
 
             if !store.scheduledCommands.isEmpty {
                 scheduledRow
+            }
+
+            if asksForTimerNotifications {
+                timerNotificationPromptRow
             }
 
             suggestionsRow
@@ -391,6 +420,7 @@ struct AssistantCommandBar: View {
         .animation(AppleMotion.snappySpring, value: store.missedScheduledCommands)
         .animation(AppleMotion.snappySpring, value: store.pendingCloudConsent)
         .animation(AppleMotion.snappySpring, value: store.scheduledCommands)
+        .animation(AppleMotion.snappySpring, value: asksForTimerNotifications)
         .animation(AppleMotion.snappySpring, value: speech.isListening)
         .onAppear {
             if store.assistantVoiceRequest != lastHandledVoiceRequest {
@@ -408,6 +438,17 @@ struct AssistantCommandBar: View {
         .onChange(of: store.assistantVoiceRequest) { _, newValue in
             lastHandledVoiceRequest = newValue
             speech.toggle(store: store)
+        }
+        // First timer: explain notifications before macOS ever asks (#55).
+        .onChange(of: store.scheduledCommands.count) { oldValue, newValue in
+            guard newValue > oldValue, !asksForTimerNotifications else { return }
+            Task {
+                await HotkeyAndNotificationManager.shared.refreshNotificationPermission()
+                let permission = NotificationPermissionState.shared
+                guard permission.canRequest,
+                      !HotkeyAndNotificationManager.hasRequestedNotificationAuthorization else { return }
+                asksForTimerNotifications = true
+            }
         }
     }
 
@@ -443,6 +484,37 @@ struct AssistantCommandBar: View {
                             speech.draft = ""
                         }
                     }
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .padding(.horizontal, 4)
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    /// Asked once, right after the first timed command, before the system prompt (#55).
+    private var timerNotificationPromptRow: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: "bell.badge")
+                    .foregroundStyle(Color.accentColor)
+                Text(L10n.tr(
+                    "定时到点后要靠系统通知提醒你。通知只在本机显示，不上传任何内容。允许通知吗？",
+                    "Timers are announced with local macOS notifications. They stay on this Mac. Allow notifications?"
+                ))
+                .foregroundStyle(.primary.opacity(0.88))
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 6) {
+                Spacer(minLength: 0)
+                Button(L10n.tr("暂不", "Not Now")) {
+                    asksForTimerNotifications = false
+                }
+                .buttonStyle(PillActionButtonStyle())
+                Button(L10n.tr("允许通知", "Allow Notifications")) {
+                    asksForTimerNotifications = false
+                    Task { _ = await HotkeyAndNotificationManager.shared.requestNotificationAuthorization() }
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
             }
@@ -894,6 +966,13 @@ struct AssistantSettingsSection: View {
         return cfg
     }
 
+    /// Whether the current UI language ships an on-device recognizer on this Mac (#50).
+    private static func supportsOnDeviceSpeech(for language: AppLanguage) -> Bool {
+        let locale = Locale(identifier: language.speechLocaleIdentifier)
+        guard let recognizer = SFSpeechRecognizer(locale: locale) else { return false }
+        return recognizer.supportsOnDeviceRecognition
+    }
+
     @ViewBuilder
     private func privacySection(habitItems: [UserHabitMemory.ReadableItem], habitCount: Int) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -916,6 +995,20 @@ struct AssistantSettingsSection: View {
             }
             .toggleStyle(.switch)
             .controlSize(.mini)
+
+            // #50: say so instead of silently falling back to Apple's servers.
+            if store.prefersOnDeviceSpeech && !Self.supportsOnDeviceSpeech(for: store.effectiveLanguage) {
+                Label(
+                    L10n.tr(
+                        "当前语言（\(store.effectiveLanguage.speechLocaleIdentifier)）不支持本机识别，语音将使用苹果服务器。",
+                        "This language (\(store.effectiveLanguage.speechLocaleIdentifier)) can't be recognized on-device; Apple's servers will be used."
+                    ),
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
 
             HStack {
                 Button(isShowingHabits

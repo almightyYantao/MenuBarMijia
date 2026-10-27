@@ -2,8 +2,8 @@ import Foundation
 import Security
 
 public enum MenuBarDisplayMode: String, CaseIterable, Identifiable, Sendable {
-    case primaryTemp = "primaryTemp"
-    case balconyTemp = "balconyTemp"
+    /// Shows the sensor picked through `HomeStore.menuBarTargetId` (first temperature sensor when unset).
+    case sensorTemperature = "sensorTemperature"
     case activeCount = "activeCount"
     case iconOnly = "iconOnly"
 
@@ -11,12 +11,15 @@ public enum MenuBarDisplayMode: String, CaseIterable, Identifiable, Sendable {
 
     public var label: String {
         switch self {
-        case .primaryTemp: return L10n.tr("主卧温度 (如 26.6°)", "Bedroom Temp (e.g. 26.6°)")
-        case .balconyTemp: return L10n.tr("阳台温度 (如 28.1°)", "Balcony Temp (e.g. 28.1°)")
+        case .sensorTemperature: return L10n.tr("传感器温度 (如 26.6°)", "Sensor Temp (e.g. 26.6°)")
         case .activeCount: return L10n.tr("开启设备数", "Active Devices")
         case .iconOnly: return L10n.tr("仅显示图标", "Icon Only")
         }
     }
+
+    /// Raw values written by ≤1.0.x that hardcoded the author's 主卧/阳台 rooms. Read once on launch
+    /// and migrated to `.sensorTemperature` plus the first available temperature sensor (#36).
+    public static let legacyTemperatureRawValues: Set<String> = ["primaryTemp", "balconyTemp"]
 }
 
 public enum KeychainHelper {

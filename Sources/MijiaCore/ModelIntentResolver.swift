@@ -294,9 +294,10 @@ public struct ModelIntentResolver: Sendable {
             ]
         ]
 
-        // Add per-device parallel decision heads (up to 10 controllable devices) so Jev can simultaneously
-        // orchestrate multiple devices for ambient commands ("准备写代码，有点热") and surface secondary probabilities.
-        for (alias, device) in Self.controllableDevicesWithAliases(devices: devices).prefix(10) {
+        // Add per-device parallel decision heads for every controllable device so Jev can
+        // orchestrate the whole home for ambient commands ("准备写代码，有点热") and surface
+        // secondary probabilities. No truncation: device 11+ must stay visible (#33).
+        for (alias, device) in Self.controllableDevicesWithAliases(devices: devices) {
             questions["dev_\(alias)"] = [
                 "type": "choice",
                 "instructions": "What action should be taken on \(device.name) (room: \(device.roomName)) for this command? Choose none if unrelated.",
@@ -336,7 +337,7 @@ public struct ModelIntentResolver: Sendable {
 
         let resolvedModel = resolvedSystemOneModel(for: url)
         var questions: [String: Any] = [:]
-        for (alias, device) in Self.controllableDevicesWithAliases(devices: devices).prefix(10) {
+        for (alias, device) in Self.controllableDevicesWithAliases(devices: devices) {
             questions["dev_\(alias)"] = [
                 "type": "choice",
                 "instructions": "Given the current time, indoor temperature/humidity, active devices, and user habits, what proactive adjustment would the user most likely want right now for \(device.name) (\(device.roomName))? Select none if current state is already ideal.",

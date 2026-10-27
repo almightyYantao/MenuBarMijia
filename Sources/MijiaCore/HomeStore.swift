@@ -18,17 +18,21 @@ public struct UndoBanner: Equatable, Sendable {
     public var title: String
     public var restoreCommands: [DeviceCommand]
     public var previousDevices: [SmartDevice]
+    /// Habit records written while executing this action; undoing the banner takes them back (#34).
+    public var habitReceipt: UserHabitMemory.RecordingReceipt?
 
     public init(
         id: UUID = UUID(),
         title: String,
         restoreCommands: [DeviceCommand],
-        previousDevices: [SmartDevice]
+        previousDevices: [SmartDevice],
+        habitReceipt: UserHabitMemory.RecordingReceipt? = nil
     ) {
         self.id = id
         self.title = title
         self.restoreCommands = restoreCommands
         self.previousDevices = previousDevices
+        self.habitReceipt = habitReceipt
     }
 }
 
@@ -133,7 +137,8 @@ public final class HomeStore {
     }
 
     /// Ask macOS to keep speech recognition on this Mac (no audio sent to Apple) when the language supports it.
-    public var prefersOnDeviceSpeech: Bool = false {
+    /// Defaults on for privacy; an explicitly saved `false` still wins (#50).
+    public var prefersOnDeviceSpeech: Bool = true {
         didSet { userDefaults.set(prefersOnDeviceSpeech, forKey: "assistant_on_device_speech") }
     }
 
@@ -176,6 +181,9 @@ public final class HomeStore {
 
     public var serverHostSummary: String {
         let _ = effectiveLanguage
+        if homeBackend == .demo {
+            return L10n.tr("演示模式（虚拟设备）", "Demo Mode (Virtual Devices)")
+        }
         if homeBackend == .xiaomiCloud {
             return miSessionMaskedUserId.map { L10n.tr("米家云端 (\($0))", "Xiaomi Cloud (\($0))") }
                 ?? L10n.tr("米家云端 (未登录)", "Xiaomi Cloud (Signed Out)")
@@ -238,6 +246,16 @@ public final class HomeStore {
     private var lowBatteryAlertedAt: [String: Date] = [:]
     private var activeSinceByDeviceId: [String: Date] = [:]
     private var longRunAlertedForSession: Set<String> = []
+    /// #35: a plug joins the long-running reminder only when it reports power above this threshold.
+    /// Plugs without a power reading (router, fridge, fish tank) never trigger it; 300 W keeps
+    /// low-draw infrastructure quiet while a coffee machine or heater still alerts after 45 min.
+    static let longRunningPlugMinimumWatts: Double = 300
+    static let lowBatteryAlertedAtKey = "safety_low_battery_alerted_at_v1"
+    static let lastManualLightIdKey = "last_manual_light_id"
+    /// Last light the user switched on by hand; the 柔和夜灯 fallback uses it instead of "主卧" (#36).
+    private(set) var lastManuallyUsedLightId: String?
+    /// A legacy 主卧/阳台 menu-bar mode was migrated; pick the first temperature sensor when readings arrive.
+    private var pendingLegacyMenuBarTargetMigration = false
     private var previousOnlineDeviceIds: Set<String> = []
 
     public init(
@@ -283,7 +301,8 @@ public final class HomeStore {
         self.lgConfig = LGWebOSConfig.load(from: ud)
         self.homeName = ud.string(forKey: "home_name") ?? KeychainHelper.localizedDefaultHomeName
         self.isHabitLearningEnabled = boolOrDefaultTrue("assistant_habit_learning_enabled")
-        self.prefersOnDeviceSpeech = ud.bool(forKey: "assistant_on_device_speech")
+        // Privacy-first default: ask for on-device recognition unless the user explicitly opted out (#50).
+        self.prefersOnDeviceSpeech = boolOrDefaultTrue("assistant_on_device_speech")
         self.hasCompletedOnboarding = ud.bool(forKey: "has_completed_onboarding")
         self.hideOfflineDevices = ud.bool(forKey: "hide_offline_devices")
         self.showQuickActionsBar = boolOrDefaultTrue("show_quick_actions_bar")
@@ -291,12 +310,21 @@ public final class HomeStore {
         self.enableSafetyAlerts = boolOrDefaultTrue("enable_safety_alerts")
         self.isCompactGridMode = ud.bool(forKey: "compact_grid_mode")
         self.menuBarTargetId = ud.string(forKey: "menubar_target_id") ?? "auto:primary"
+        self.lastManuallyUsedLightId = ud.string(forKey: Self.lastManualLightIdKey)
+        self.lowBatteryAlertedAt = Self.loadLowBatteryAlertedAt(from: ud)
 
-        if let modeRaw = ud.string(forKey: "menubar_display_mode"),
-           let mode = MenuBarDisplayMode(rawValue: modeRaw) {
+        let savedModeRaw = ud.string(forKey: "menubar_display_mode")
+        if let savedModeRaw, let mode = MenuBarDisplayMode(rawValue: savedModeRaw) {
             self.menuBarDisplayMode = mode
+        } else if let savedModeRaw, MenuBarDisplayMode.legacyTemperatureRawValues.contains(savedModeRaw) {
+            // ≤1.0.x stored 主卧/阳台 modes. Keep the user on a temperature readout, but let the
+            // generic sensor option pick whichever sensor exists in this home (#36).
+            self.menuBarDisplayMode = .sensorTemperature
+            ud.set(MenuBarDisplayMode.sensorTemperature.rawValue, forKey: "menubar_display_mode")
+            let savedTarget = ud.string(forKey: "menubar_target_id")
+            self.pendingLegacyMenuBarTargetMigration = savedTarget == nil || savedTarget == "auto:primary"
         } else {
-            self.menuBarDisplayMode = .primaryTemp
+            self.menuBarDisplayMode = .sensorTemperature
         }
 
         if let savedFavs = ud.stringArray(forKey: "favorite_device_ids") {
@@ -318,6 +346,8 @@ public final class HomeStore {
         } else if initialBackend == .xiaomiCloud {
             nonisolated(unsafe) let ud = userDefaults
             self.provider = MiCloudProvider(sessionLoader: { MiSessionStore.load(defaults: ud) })
+        } else if initialBackend == .demo {
+            self.provider = DemoHomeProvider()
         } else {
             self.provider = HAWebSocketProvider(baseURLString: savedURL, token: initialHAToken)
         }
@@ -326,7 +356,8 @@ public final class HomeStore {
         }
         startListening()
         restoreScheduledCommands()
-        if provider == nil {
+        // Demo mode is strictly offline: no LAN discovery, no LG connection (#47).
+        if provider == nil, initialBackend != .demo {
             startLGWebOSIfNeeded()
             Task { [weak self] in
                 _ = await self?.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
@@ -334,7 +365,22 @@ public final class HomeStore {
         }
     }
 
+    private static func loadLowBatteryAlertedAt(from defaults: UserDefaults) -> [String: Date] {
+        let stored = defaults.dictionary(forKey: Self.lowBatteryAlertedAtKey) ?? [:]
+        return stored.compactMapValues { ($0 as? NSNumber)?.doubleValue }
+            .mapValues { Date(timeIntervalSince1970: $0) }
+    }
+
+    /// Remembers the 24 h low-battery cooldown across launches (#35).
+    private func persistLowBatteryAlertedAt() {
+        userDefaults.set(
+            lowBatteryAlertedAt.mapValues { $0.timeIntervalSince1970 },
+            forKey: Self.lowBatteryAlertedAtKey
+        )
+    }
+
     private func startLGWebOSIfNeeded() {
+        guard homeBackend != .demo else { return }
         let client = LGWebOSClient(
             config: lgConfig,
             onDeviceUpdated: { [weak self] dev in
@@ -460,6 +506,11 @@ public final class HomeStore {
             self.rooms = nextRooms
             self.homes = snapshot.homes
             self.environmentReadings = snapshot.environmentReadings
+            if pendingLegacyMenuBarTargetMigration,
+               let first = snapshot.environmentReadings.first(where: { $0.temperature != nil }) {
+                self.menuBarTargetId = "temp:\(first.id)"
+                pendingLegacyMenuBarTargetMigration = false
+            }
             self.scenes = snapshot.scenes
 
             let now = ContinuousClock.now
@@ -567,7 +618,7 @@ public final class HomeStore {
     public var availableMenuBarOptions: [MenuBarMetricOption] {
         let _ = effectiveLanguage
         var opts: [MenuBarMetricOption] = [
-            MenuBarMetricOption(id: "auto:primary", title: L10n.tr("自动（主卧温度优先）", "Auto (Bedroom Temp First)"))
+            MenuBarMetricOption(id: "auto:primary", title: L10n.tr("自动（第一个温度传感器）", "Auto (First Temp Sensor)"))
         ]
         for env in environmentReadings {
             opts.append(MenuBarMetricOption(id: "temp:\(env.id)", title: L10n.tr("\(env.label) · 温度", "\(env.label) · Temp")))
@@ -653,15 +704,10 @@ public final class HomeStore {
         switch menuBarDisplayMode {
         case .iconOnly:
             return nil
-        case .primaryTemp:
-            if let primary = environmentReadings.first(where: { $0.label.contains("主卧") }) ?? environmentReadings.first,
-               let t = primary.temperature {
-                return String(format: "%.1f°", t)
-            }
-            return nil
-        case .balconyTemp:
-            if let bal = environmentReadings.first(where: { $0.label.contains("阳台") }) ?? environmentReadings.last,
-               let t = bal.temperature {
+        case .sensorTemperature:
+            // No room names: the first reading that actually reports a temperature (#36).
+            if let sensor = environmentReadings.first(where: { $0.temperature != nil }),
+               let t = sensor.temperature {
                 return String(format: "%.1f°", t)
             }
             return nil
@@ -701,6 +747,7 @@ public final class HomeStore {
                 let lastAlert = lowBatteryAlertedAt[dev.id]
                 if lastAlert == nil || now.timeIntervalSince(lastAlert!) >= 86_400 {
                     lowBatteryAlertedAt[dev.id] = now
+                    persistLowBatteryAlertedAt()
                     emitted.append(
                         SafetyAlert(
                             id: "battery:\(dev.id)",
@@ -724,7 +771,9 @@ public final class HomeStore {
                 let elapsed = now.timeIntervalSince(startedAt)
 
                 switch dev.kind {
-                case .plug(let s) where elapsed >= 45 * 60 && !longRunAlertedForSession.contains(dev.id):
+                case .plug(let s) where elapsed >= 45 * 60
+                    && (s.powerWatts ?? 0) > Self.longRunningPlugMinimumWatts
+                    && !longRunAlertedForSession.contains(dev.id):
                     longRunAlertedForSession.insert(dev.id)
                     emitted.append(
                         SafetyAlert(
@@ -953,6 +1002,9 @@ public final class HomeStore {
 
         guard let cmd = command else { return }
         devices[idx] = updated
+        if case .light = updated.kind, updated.isActiveOn {
+            recordManualLightUse(device.id)
+        }
         lockOptimistic(device.id, duration: .seconds(2.2))
 
         var memory = userHabitMemory
@@ -977,6 +1029,12 @@ public final class HomeStore {
         }
     }
 
+    private func recordManualLightUse(_ deviceId: String) {
+        if let current = lastManuallyUsedLightId, current == deviceId { return }
+        lastManuallyUsedLightId = deviceId
+        userDefaults.set(deviceId, forKey: Self.lastManualLightIdKey)
+    }
+
     // MARK: - Detail Drawer Controls (Debounced & Optimistic)
 
     public func setLightBrightness(_ deviceId: String, percent: Int) {
@@ -986,6 +1044,7 @@ public final class HomeStore {
         s.isOn = percent > 0
         s.brightnessPercent = percent
         devices[idx].kind = .light(s)
+        if s.isOn { recordManualLightUse(deviceId) }
         lockOptimistic(deviceId, duration: .seconds(2.5))
 
         dispatchDebounced(
@@ -1004,6 +1063,7 @@ public final class HomeStore {
         s.colorTempKelvin = kelvin
         s.currentEffect = nil
         devices[idx].kind = .light(s)
+        recordManualLightUse(deviceId)
         lockOptimistic(deviceId, duration: .seconds(2.5))
 
         dispatchDebounced(
@@ -1031,6 +1091,7 @@ public final class HomeStore {
             scenes: scenes
         )
         if isHabitLearningEnabled { userHabitMemory = memory }
+        recordManualLightUse(deviceId)
 
         dispatchImmediate(
             deviceId: deviceId,
@@ -1350,11 +1411,13 @@ public final class HomeStore {
         let previousSnapshot = devices
         var commands: [DeviceCommand] = []
         var restoreCommands: [DeviceCommand] = []
+        var affectedDeviceIds: Set<String> = []
 
         switch action {
         case .lightsOff:
             for idx in devices.indices where devices[idx].isOnline {
                 guard case .light(var s) = devices[idx].kind, s.isOn else { continue }
+                affectedDeviceIds.insert(devices[idx].id)
                 lockOptimistic(devices[idx].id, duration: .seconds(3.0))
                 commands.append(.setLightPower(entityId: s.entityId, isOn: false))
                 restoreCommands.append(.setLightPower(entityId: s.entityId, isOn: true))
@@ -1372,15 +1435,21 @@ public final class HomeStore {
                     if dev.isOnline, case .light = dev.kind { return true }
                     return false
                 }
-                let fallbackIdx = devices.indices.first(where: { isOnlineLight(devices[$0]) && favoriteDeviceIds.contains(devices[$0].id) })
-                    ?? devices.indices.first(where: { isOnlineLight(devices[$0]) && devices[$0].roomName == "主卧" })
-                    ?? devices.indices.first(where: { isOnlineLight(devices[$0]) })
+                // Prefer the light the user last switched on by hand; otherwise the first light (#36).
+                let fallbackIdx = lastManuallyUsedLightId.flatMap { lastLightId in
+                    devices.indices.first(where: { isOnlineLight(devices[$0]) && devices[$0].id == lastLightId })
+                } ?? devices.indices.first(where: { isOnlineLight(devices[$0]) })
                 if let fallbackIdx {
                     targetIndices = [fallbackIdx]
+                    if lastManuallyUsedLightId == nil {
+                        // No manual pick yet: remember the light this action chose so the next tap is stable.
+                        recordManualLightUse(devices[fallbackIdx].id)
+                    }
                 }
             }
             for idx in targetIndices {
                 guard case .light(var s) = devices[idx].kind else { continue }
+                affectedDeviceIds.insert(devices[idx].id)
                 lockOptimistic(devices[idx].id, duration: .seconds(3.0))
                 let prevOn = s.isOn
                 let prevBri = s.brightnessPercent ?? 80
@@ -1405,6 +1474,7 @@ public final class HomeStore {
                 switch devices[idx].kind {
                 case .climate(var s) where s.isOn && s.hvacMode != "off":
                     let prevMode = s.hvacMode
+                    affectedDeviceIds.insert(devices[idx].id)
                     lockOptimistic(devices[idx].id, duration: .seconds(3.0))
                     commands.append(.setClimatePower(entityId: s.entityId, isOn: false, fallbackMode: prevMode))
                     restoreCommands.append(.setClimatePower(entityId: s.entityId, isOn: true, fallbackMode: prevMode))
@@ -1412,6 +1482,7 @@ public final class HomeStore {
                     s.hvacMode = "off"
                     devices[idx].kind = .climate(s)
                 case .fan(var s) where s.isOn:
+                    affectedDeviceIds.insert(devices[idx].id)
                     lockOptimistic(devices[idx].id, duration: .seconds(3.0))
                     commands.append(.setFanPower(entityId: s.entityId, isOn: false))
                     restoreCommands.append(.setFanPower(entityId: s.entityId, isOn: true))
@@ -1431,7 +1502,8 @@ public final class HomeStore {
         scheduleUndoBanner(
             title: L10n.tr("已执行「\(action.title)」", "Executed \"\(action.title)\""),
             restoreCommands: restoreCommands,
-            previousDevices: previousSnapshot
+            previousDevices: previousSnapshot,
+            deviceCount: affectedDeviceIds.count
         )
 
         Task {
@@ -1531,7 +1603,8 @@ public final class HomeStore {
         scheduleUndoBanner(
             title: L10n.tr("已关闭 \(offCommands.count) 台设备", "Turned off \(offCommands.count) device(s)"),
             restoreCommands: restoreCommands,
-            previousDevices: previousSnapshot
+            previousDevices: previousSnapshot,
+            deviceCount: targetIds.count
         )
 
         Task {
@@ -1541,23 +1614,30 @@ public final class HomeStore {
         }
     }
 
-    /// How long the 撤销 banner stays after 全关 and similar bulk actions (#23).
-    nonisolated static let undoBannerSeconds: Double = 10
+    /// How long the 撤销 banner stays after 全关 and similar bulk actions (#23): 10 s for one or two
+    /// devices, 15 s from three on so the user can read which devices the AI touched (#53).
+    nonisolated static func undoBannerSeconds(forDeviceCount count: Int) -> Double {
+        count >= 3 ? 15 : 10
+    }
 
     func scheduleUndoBanner(
         title: String,
         restoreCommands: [DeviceCommand],
-        previousDevices: [SmartDevice]
+        previousDevices: [SmartDevice],
+        deviceCount: Int,
+        habitReceipt: UserHabitMemory.RecordingReceipt? = nil
     ) {
         let banner = UndoBanner(
             title: title,
             restoreCommands: restoreCommands,
-            previousDevices: previousDevices
+            previousDevices: previousDevices,
+            habitReceipt: habitReceipt
         )
         self.undoBanner = banner
         undoTimerTask?.cancel()
+        let seconds = Self.undoBannerSeconds(forDeviceCount: deviceCount)
         undoTimerTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Self.undoBannerSeconds))
+            try? await Task.sleep(for: .seconds(seconds))
             guard !Task.isCancelled else { return }
             if self?.undoBanner?.id == banner.id {
                 self?.undoBanner = nil
@@ -1574,6 +1654,12 @@ public final class HomeStore {
 
         for dev in banner.previousDevices where currentMap[dev.id] != dev {
             lockOptimistic(dev.id, duration: .seconds(3.0))
+        }
+
+        if let receipt = banner.habitReceipt {
+            var memory = userHabitMemory
+            memory.unrecord(receipt)
+            userHabitMemory = memory
         }
 
         Task {
@@ -1645,6 +1731,7 @@ public final class HomeStore {
         let matches: Bool = switch backend {
         case .homeAssistant: provider is HAWebSocketProvider
         case .xiaomiCloud: provider is MiCloudProvider
+        case .demo: provider is DemoHomeProvider
         }
         guard homeBackend != backend || !matches else { return }
 
@@ -1658,6 +1745,13 @@ public final class HomeStore {
         case .xiaomiCloud:
             nonisolated(unsafe) let ud = userDefaults
             self.provider = MiCloudProvider(sessionLoader: { MiSessionStore.load(defaults: ud) })
+        case .demo:
+            // Strictly offline: stop any LAN TV connection started by the previous backend (#47).
+            if let lgClient = lgWebOSClient {
+                Task { await lgClient.stop() }
+            }
+            latestLGDevice = nil
+            self.provider = DemoHomeProvider()
         }
         startListening()
     }
@@ -1845,7 +1939,7 @@ public final class HomeStore {
     public func refreshNow() {
         Task {
             await provider.refreshNow()
-            if lgConfig.isEnabled, lgConfig.hasConfiguredHost, let lgClient = lgWebOSClient {
+            if homeBackend != .demo, lgConfig.isEnabled, lgConfig.hasConfiguredHost, let lgClient = lgWebOSClient {
                 await lgClient.start()
             }
         }
@@ -1943,7 +2037,13 @@ public final class HomeStore {
     var notifiedMissedTimerIds: Set<UUID> = []
     var scheduledTasks: [UUID: Task<Void, Never>] = [:]
     /// The most recent assistant action, kept so "撤销" can restore it after the 5 s banner is gone.
-    var lastAssistantUndo: (reply: String, restore: [DeviceCommand], previous: [SmartDevice], at: Date)?
+    var lastAssistantUndo: (
+        reply: String,
+        restore: [DeviceCommand],
+        previous: [SmartDevice],
+        at: Date,
+        habitReceipt: UserHabitMemory.RecordingReceipt?
+    )?
     /// How long a spoken "撤销" can still reach back.
     static let voiceUndoWindow: TimeInterval = 10 * 60
     /// Test seam for the delay before a scheduled command fires.

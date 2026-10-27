@@ -3,6 +3,7 @@ import type {
   AssistantSuggestion,
   DeviceCommand,
   DeviceIntent,
+  EnvironmentReading,
   HomeScene,
   IntentOperation,
   IntentPlan,
@@ -1267,6 +1268,404 @@ export const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
 export const INSECURE_ENDPOINT_MESSAGE =
   "AI 服务地址不是 https。为保护 API Key，只有本机或局域网地址可以用 http。";
 
+// MARK: - Ambient Context & Jev SystemOne Request (#38)
+
+/**
+ * Ambient context sent with Jev `/v1/systemone` requests. Field names and empty-value
+ * semantics match macOS `AssistantContext` (Sources/MijiaCore/UserHabitMemory.swift),
+ * so both ends send the same `state` keys for the same home (#38).
+ */
+export interface AssistantContext {
+  readonly timeSummary: string;
+  readonly environmentSummary: string;
+  readonly activeDevicesSummary: string;
+  readonly habitSummary: string;
+}
+
+export const EMPTY_ASSISTANT_CONTEXT: AssistantContext = {
+  timeSummary: "",
+  environmentSummary: "",
+  activeDevicesSummary: "",
+  habitSummary: "",
+};
+
+/** The part of `learnedShortcuts` the habit summary reads. */
+export interface HabitPhraseSummary {
+  readonly phrase: string;
+  readonly reply: string;
+}
+
+/** Time-of-day buckets, identical to macOS `UserHabitMemory.TimeBucket`. */
+export function timeBucketLabel(hour: number): string {
+  if (hour >= 6 && hour < 11) return "清晨";
+  if (hour >= 11 && hour < 14) return "午间";
+  if (hour >= 14 && hour < 18) return "下午";
+  if (hour >= 18 && hour < 23) return "夜晚";
+  return "深夜";
+}
+
+/** `下午 15:07`, matching HomeStore.buildAssistantContext on macOS. */
+export function buildTimeSummary(now: Date): string {
+  const hours = String(now.getHours()).padStart(2, "0");
+  const minutes = String(now.getMinutes()).padStart(2, "0");
+  return `${timeBucketLabel(now.getHours())} ${hours}:${minutes}`;
+}
+
+/** `客厅 25.5°C 52%，卧室 23.0°C`, matching the macOS environment summary. */
+export function buildEnvironmentSummary(readings: readonly EnvironmentReading[]): string {
+  return readings
+    .map((reading) => {
+      let text = reading.roomName;
+      if (reading.temperature !== null) text += ` ${reading.temperature.toFixed(1)}°C`;
+      if (reading.humidity !== null) text += ` ${Math.round(reading.humidity)}%`;
+      return text;
+    })
+    .join("，");
+}
+
+/**
+ * Windows' habit memory only stores phrase → action pairs (`learnedShortcuts`), not the
+ * macOS time-bucket/frequency entries. TODO-#38: replace this with a full habit summary
+ * once Windows tracks per-bucket counts; the `user_habits` field name must stay aligned
+ * with macOS.
+ */
+export function buildHabitSummary(
+  enabled: boolean,
+  shortcuts: readonly HabitPhraseSummary[]
+): string {
+  if (!enabled || shortcuts.length === 0) return "";
+  const top = shortcuts.slice(0, 4).map((shortcut) => `「${shortcut.phrase}」→${shortcut.reply}`);
+  return `个人口头禅：${top.join("；")}`;
+}
+
+/** Builds the ambient context macOS sends: time, indoor readings, running devices, habits. */
+export function buildAssistantContext(options: {
+  readonly now: Date;
+  readonly readings: readonly EnvironmentReading[];
+  readonly devices: readonly SmartDevice[];
+  readonly habitSummary?: string;
+}): AssistantContext {
+  const active = options.devices
+    .filter((device) => device.isOnline && isDeviceActiveOn(device))
+    .map((device) => `${device.name}(${catalogStateSummary(device)})`);
+  return {
+    timeSummary: buildTimeSummary(options.now),
+    environmentSummary: buildEnvironmentSummary(options.readings),
+    activeDevicesSummary: active.length > 0 ? active.join("、") : "全屋设备均关闭",
+    habitSummary: options.habitSummary ?? "",
+  };
+}
+
+/** `light`/`climate`/`fan`/`plug`/`vacuum`; `null` for sensors (not assistant-controllable). */
+export function assistantDeviceCategory(device: SmartDevice): string | null {
+  switch (device.kind.kind) {
+    case "light":
+    case "climate":
+    case "fan":
+    case "plug":
+    case "vacuum":
+      return device.kind.kind;
+    case "sensor":
+      return null;
+  }
+}
+
+function formatTemperatureValue(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+/**
+ * One-line state summary inside the catalog, mirroring macOS `IntentCatalog.stateSummary`.
+ * Kept byte-for-byte compatible in shape (Chinese words and separators) so a prompt built
+ * on either platform means the same thing to the model.
+ */
+export function catalogStateSummary(device: SmartDevice): string {
+  if (!device.isOnline) return "离线";
+  const kind = device.kind;
+  switch (kind.kind) {
+    case "light": {
+      const effects = kind.availableEffects.length > 0 ? ` 可用模式:${kind.availableEffects.join("/")}` : "";
+      if (!kind.isOn) return `关${effects}`;
+      let text = "开";
+      if (kind.brightnessPercent !== null) text += ` 亮度${kind.brightnessPercent}%`;
+      if (kind.currentEffect) text += ` 当前:${kind.currentEffect}`;
+      return text + effects;
+    }
+    case "climate": {
+      const modes = kind.availableModes.join("/");
+      const range = `${formatTemperatureValue(kind.minTemp)}-${formatTemperatureValue(kind.maxTemp)}°C`;
+      const current = kind.isOn && kind.hvacMode !== "off"
+        ? `${kind.hvacMode} ${formatTemperatureValue(kind.targetTemperature)}°C`
+        : "关";
+      const fan = kind.availableFanModes.length > 0 ? ` 可选风速:${kind.availableFanModes.join("/")}` : "";
+      return `${current} 可用模式:${modes} 温度范围:${range}${fan}`;
+    }
+    case "fan": {
+      let text = kind.isOn ? "开" : "关";
+      if (kind.isOn && kind.presetMode) text += ` 风速:${kind.presetMode}`;
+      if (kind.availablePresetModes.length > 0) text += ` 可选风速:${kind.availablePresetModes.join("/")}`;
+      if (kind.isOscillating !== null) text += ` 摇头:${kind.isOscillating ? "开" : "关"}`;
+      return text;
+    }
+    case "plug":
+      return kind.isOn ? "开" : "关";
+    case "vacuum":
+      // macOS VacuumSpec.isCleaning treats both "cleaning" and "on" as 清扫中 (#38).
+      return kind.status === "cleaning" || kind.status === "on" ? "清扫中" : "待机";
+    case "sensor":
+      return "";
+  }
+}
+
+export interface IntentCatalog {
+  /** Two-section prompt text: controllable devices then scenes, exactly like macOS. */
+  readonly text: string;
+  readonly aliasDevices: ReadonlyArray<{ readonly alias: string; readonly device: SmartDevice }>;
+  readonly criteriaByAlias: Readonly<Record<string, string>>;
+  readonly aliasToIds: ReadonlyMap<string, readonly string[]>;
+}
+
+/**
+ * Short aliases for controllable devices (d1…dN, never truncated) plus scene aliases and
+ * the room/all-light/whole-home shortcuts macOS offers the model (#33 / #38).
+ */
+export function buildIntentCatalog(
+  devices: readonly SmartDevice[],
+  scenes: readonly HomeScene[]
+): IntentCatalog {
+  const lines: string[] = [];
+  const sceneLines: string[] = [];
+  const aliasDevices: Array<{ alias: string; device: SmartDevice }> = [];
+  const aliasToIds = new Map<string, string[]>();
+  const criteriaByAlias: Record<string, string> = {};
+  const allLightIds: string[] = [];
+  const allDeviceIds: string[] = [];
+  const roomLights = new Map<string, string[]>();
+
+  for (const device of devices) {
+    const category = assistantDeviceCategory(device);
+    if (category === null) continue;
+    const alias = `d${aliasDevices.length + 1}`;
+    const summary = catalogStateSummary(device);
+    aliasDevices.push({ alias, device });
+    aliasToIds.set(alias, [device.id]);
+    aliasToIds.set(device.id, [device.id]);
+    if (!aliasToIds.has(device.name)) aliasToIds.set(device.name, [device.id]);
+    criteriaByAlias[alias] = `${device.name} (${device.roomName}, ${category}, ${summary})`;
+    lines.push([alias, device.name, device.roomName, category, summary].join("|"));
+    allDeviceIds.push(device.id);
+    if (category === "light") {
+      allLightIds.push(device.id);
+      if (device.roomName) {
+        const ids = roomLights.get(device.roomName) ?? [];
+        ids.push(device.id);
+        roomLights.set(device.roomName, ids);
+      }
+    }
+  }
+
+  for (const [room, ids] of roomLights.entries()) {
+    if (ids.length < 2) continue;
+    const alias = `room_lights:${room}`;
+    aliasToIds.set(alias, ids);
+    criteriaByAlias[alias] = `${room}所有灯具 (${ids.length}盏)`;
+  }
+  if (allLightIds.length >= 2) {
+    aliasToIds.set("all_lights", allLightIds);
+    criteriaByAlias["all_lights"] = `全屋所有灯具 (${allLightIds.length}盏)`;
+  }
+  if (allDeviceIds.length >= 2) {
+    aliasToIds.set("all_devices", allDeviceIds);
+    criteriaByAlias["all_devices"] = `全屋所有可控设备 (${allDeviceIds.length}台)`;
+  }
+
+  scenes.forEach((scene, index) => {
+    const alias = `s${index + 1}`;
+    aliasToIds.set(alias, [scene.id]);
+    aliasToIds.set(scene.id, [scene.id]);
+    if (!aliasToIds.has(scene.name)) aliasToIds.set(scene.name, [scene.id]);
+    criteriaByAlias[alias] = `场景：${scene.name}`;
+    sceneLines.push(`${alias}|${scene.name}`);
+  });
+
+  let text = "设备(id|名称|房间|类型|当前状态):\n" + lines.join("\n");
+  if (sceneLines.length > 0) {
+    text += "\n场景(id|名称):\n" + sceneLines.join("\n");
+  }
+
+  return { text, aliasDevices, criteriaByAlias, aliasToIds };
+}
+
+/** Operations offered to the model, matching macOS `opCriteria` (#38). */
+export function systemOneOpCriteria(): Record<string, string> {
+  return {
+    power_on: "打开设备电源",
+    power_off: "关闭设备电源",
+    effect_night: "切换月光/夜灯模式 (Night)",
+    effect_day: "切换日光模式 (Day)",
+    bri_20: "调暗灯光 (亮度 20%)",
+    bri_50: "中等亮度 (亮度 50%)",
+    bri_100: "调亮/最亮灯光 (亮度 100%)",
+    bri_down_20: "相对调暗一点 (-20%)",
+    bri_up_20: "相对调亮一点 (+20%)",
+    ct_2700: "暖光/黄光 (色温 2700K)",
+    ct_4000: "自然光 (色温 4000K)",
+    ct_6500: "白光/冷光 (色温 6500K)",
+    hvac_cool: "空调制冷模式",
+    hvac_heat: "空调制热模式",
+    hvac_dry: "空调除湿模式",
+    hvac_fan: "空调送风模式",
+    hvac_auto: "空调自动模式",
+    temp: "仅调节空调温度",
+    temp_up_2: "空调温度相对调高 2°C",
+    temp_down_2: "空调温度相对调低 2°C",
+    fan_low: "风速调为低档/一档",
+    fan_medium: "风速调为中档/二档",
+    fan_high: "风速调为高档/三档",
+    fan_auto: "风速调为自动档",
+    osc_on: "开启风扇摇头/摆风",
+    osc_off: "停止风扇摇头/摆风",
+    scene: "执行智能场景",
+  };
+}
+
+export function systemOneTempCriteria(): Record<string, string> {
+  const criteria: Record<string, string> = { none: "不指定具体温度" };
+  for (let celsius = 18; celsius <= 28; celsius += 1) {
+    criteria[String(celsius)] = `${celsius}°C`;
+  }
+  return criteria;
+}
+
+/** Per-device decision head choices, mirroring macOS `deviceSpecificCriteria` (#38). */
+export function deviceSpecificCriteria(device: SmartDevice): Record<string, string> {
+  const criteria: Record<string, string> = {
+    none: `保持不变，不操作${device.name}`,
+    power_on: `打开${device.name}`,
+    power_off: `关闭${device.name}`,
+  };
+  const kind = device.kind;
+  switch (kind.kind) {
+    case "light": {
+      if (kind.availableEffects.some((effect) => effect.toLowerCase() === "day")) {
+        criteria["effect_day"] = "切换为日光模式（专注照明）";
+      }
+      if (kind.availableEffects.some((effect) => effect.toLowerCase() === "night")) {
+        criteria["effect_night"] = "切换为月光/夜灯模式（柔和助眠）";
+      }
+      criteria["bri_20"] = "调暗灯光 (20%)";
+      criteria["bri_100"] = "调亮灯光 (100%)";
+      if (kind.isOn) {
+        criteria["bri_down_20"] = "再暗一点 (-20%)";
+        criteria["bri_up_20"] = "再亮一点 (+20%)";
+      }
+      break;
+    }
+    case "climate": {
+      if (kind.availableModes.includes("cool")) {
+        criteria["cool_24"] = "开启制冷 24°C（快速降温）";
+        criteria["cool_25"] = "开启制冷 25°C";
+        criteria["cool_26"] = "开启制冷 26°C（舒适恒温）";
+      }
+      if (kind.availableModes.includes("heat")) {
+        criteria["heat_22"] = "开启制热 22°C";
+        criteria["heat_24"] = "开启制热 24°C";
+      }
+      if (kind.availableModes.includes("dry")) {
+        criteria["hvac_dry"] = "开启除湿模式";
+      }
+      if (kind.isOn) {
+        criteria["temp_up_2"] = "温度相对调高 2°C";
+        criteria["temp_down_2"] = "温度相对调低 2°C";
+      }
+      break;
+    }
+    case "fan": {
+      if (kind.availablePresetModes.length > 0) {
+        criteria["fan_low"] = "风速调为低档";
+        criteria["fan_medium"] = "风速调为中档";
+        criteria["fan_high"] = "风速调为高档";
+      }
+      criteria["osc_on"] = "开启摇头";
+      criteria["osc_off"] = "停止摇头";
+      break;
+    }
+    case "plug":
+    case "vacuum":
+    case "sensor":
+      break;
+  }
+  return criteria;
+}
+
+export interface SystemOneRequest {
+  readonly body: {
+    readonly model: string;
+    readonly state: Record<string, unknown>;
+    readonly questions: Record<string, unknown>;
+  };
+  readonly catalog: IntentCatalog;
+}
+
+/**
+ * Builds the Jev `/v1/systemone` body with the same keys and per-device heads as macOS
+ * `ModelIntentResolver.makeSystemOneRequest` (#38). Shared fixture:
+ * Tests/Fixtures/ai_request_golden.json.
+ */
+export function buildSystemOneRequestBody(options: {
+  readonly model: string;
+  readonly utterance: string;
+  readonly devices: readonly SmartDevice[];
+  readonly scenes: readonly HomeScene[];
+  readonly context?: AssistantContext;
+}): SystemOneRequest {
+  const catalog = buildIntentCatalog(options.devices, options.scenes);
+  const context = options.context ?? EMPTY_ASSISTANT_CONTEXT;
+
+  const targetCriteria: Record<string, string> = { ...catalog.criteriaByAlias, none: "无匹配设备或场景" };
+  const questions: Record<string, unknown> = {
+    target: {
+      type: "choice",
+      instructions: "Select the primary target device, room light group, or scene id for the command",
+      criteria: targetCriteria,
+    },
+    op: {
+      type: "choice",
+      instructions: "Select the primary operation to perform on the target",
+      criteria: systemOneOpCriteria(),
+    },
+    temp: {
+      type: "choice",
+      instructions: "If the command sets an air-conditioner temperature, select the degree in Celsius; otherwise none",
+      criteria: systemOneTempCriteria(),
+    },
+  };
+
+  for (const { alias, device } of catalog.aliasDevices) {
+    questions[`dev_${alias}`] = {
+      type: "choice",
+      instructions:
+        `What action should be taken on ${device.name} (room: ${device.roomName}) for this command? ` +
+        "Choose none if unrelated.",
+      criteria: deviceSpecificCriteria(device),
+    };
+  }
+
+  const state: Record<string, unknown> = {
+    catalog: catalog.text,
+    command: options.utterance,
+  };
+  if (context.timeSummary) state["time"] = context.timeSummary;
+  if (context.environmentSummary) state["environment"] = context.environmentSummary;
+  if (context.activeDevicesSummary) state["active_devices"] = context.activeDevicesSummary;
+  if (context.habitSummary) state["user_habits"] = context.habitSummary;
+
+  return {
+    body: { model: options.model, state, questions },
+    catalog,
+  };
+}
+
 export class ModelIntentResolver {
   private readonly config: AssistantConfig;
   private readonly transport: HttpTransport;
@@ -1321,10 +1720,11 @@ export class ModelIntentResolver {
   async resolve(
     utterance: string,
     devices: readonly SmartDevice[],
-    scenes: readonly HomeScene[]
+    scenes: readonly HomeScene[],
+    context: AssistantContext = EMPTY_ASSISTANT_CONTEXT
   ): Promise<IntentPlan> {
     if (this.usesSystemOne) {
-      return this.resolveViaSystemOne(utterance, devices, scenes);
+      return this.resolveViaSystemOne(utterance, devices, scenes, context);
     }
     return this.resolveViaChatCompletions(utterance, devices, scenes);
   }
@@ -1384,73 +1784,12 @@ export class ModelIntentResolver {
   private async resolveViaSystemOne(
     utterance: string,
     devices: readonly SmartDevice[],
-    scenes: readonly HomeScene[]
+    scenes: readonly HomeScene[],
+    context: AssistantContext
   ): Promise<IntentPlan> {
     const url = this.endpointURL("/systemone");
     const model = this.resolvedSystemOneModel(url);
-
-    const targetCriteria: Record<string, string> = { none: "无匹配设备或场景" };
-    const aliasToIds = new Map<string, string[]>();
-    const controllable = devices.filter((d) => d.kind.kind !== "sensor");
-
-    controllable.forEach((d, idx) => {
-      const alias = `d${idx + 1}`;
-      aliasToIds.set(alias, [d.id]);
-      targetCriteria[alias] = `${d.name} (${d.roomName}, ${d.isOnline ? "在线" : "离线"})`;
-    });
-
-    const roomLights = new Map<string, string[]>();
-    for (const d of controllable) {
-      if (d.kind.kind === "light") {
-        const prev = roomLights.get(d.roomName) ?? [];
-        prev.push(d.id);
-        roomLights.set(d.roomName, prev);
-      }
-    }
-    for (const [room, ids] of roomLights.entries()) {
-      const key = `room_lights:${room}`;
-      aliasToIds.set(key, ids);
-      targetCriteria[key] = `${room}的所有灯`;
-    }
-
-    scenes.forEach((s, idx) => {
-      const alias = `s${idx + 1}`;
-      aliasToIds.set(alias, [s.id]);
-      targetCriteria[alias] = `场景：${s.name}`;
-    });
-
-    const opCriteria: Record<string, string> = {
-      power_on: "打开设备电源",
-      power_off: "关闭设备电源",
-      effect_night: "切换月光/夜灯模式 (Night)",
-      effect_day: "切换日光模式 (Day)",
-      bri_20: "调暗灯光 (20%)",
-      bri_50: "中等亮度 (50%)",
-      bri_100: "调亮灯光 (100%)",
-      bri_down_20: "相对调暗一点 (-20%)",
-      bri_up_20: "相对调亮一点 (+20%)",
-      ct_2700: "暖光 (2700K)",
-      ct_4000: "自然光 (4000K)",
-      ct_6500: "冷白光 (6500K)",
-      hvac_cool: "空调制冷模式",
-      hvac_heat: "空调制热模式",
-      hvac_dry: "空调除湿模式",
-      hvac_fan: "空调送风模式",
-      hvac_auto: "空调自动模式",
-      temp_up_2: "空调温度相对调高 2°C",
-      temp_down_2: "空调温度相对调低 2°C",
-      fan_low: "风速低档",
-      fan_medium: "风速中档",
-      fan_high: "风速高档",
-      osc_on: "开启摇头",
-      osc_off: "停止摇头",
-      scene: "执行智能场景",
-    };
-
-    const tempCriteria: Record<string, string> = {
-      none: "不指定具体温度",
-      "18": "18°C", "20": "20°C", "22": "22°C", "24": "24°C", "25": "25°C", "26": "26°C", "27": "27°C", "28": "28°C",
-    };
+    const request = buildSystemOneRequestBody({ model, utterance, devices, scenes, context });
 
     const resp = await this.transport({
       url,
@@ -1459,22 +1798,14 @@ export class ModelIntentResolver {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.effectiveAPIKey()}`,
       },
-      body: JSON.stringify({
-        model,
-        state: { command: utterance },
-        questions: {
-          target: { type: "choice", instructions: "Select primary target", criteria: targetCriteria },
-          op: { type: "choice", instructions: "Select primary operation", criteria: opCriteria },
-          temp: { type: "choice", instructions: "Select temperature in Celsius or none", criteria: tempCriteria },
-        },
-      }),
+      body: JSON.stringify(request.body),
     });
 
     if (resp.status !== 200) {
       throw new Error(this.friendlyHttpError(resp.status));
     }
 
-    return ModelIntentResolver.planFromSystemOne(resp.body, aliasToIds, devices, scenes);
+    return ModelIntentResolver.planFromSystemOne(resp.body, request.catalog.aliasToIds, devices, scenes);
   }
 
   static planFromSystemOne(
@@ -1544,11 +1875,13 @@ export class ModelIntentResolver {
       case "hvac_dry": return { kind: "hvacMode", mode: "dry" };
       case "hvac_fan": return { kind: "hvacMode", mode: "fan_only" };
       case "hvac_auto": return { kind: "hvacMode", mode: "auto" };
+      case "temp": return null; // the temperature itself arrives through the `temp` question
       case "temp_up_2": return { kind: "temperatureStep", delta: 2 };
       case "temp_down_2": return { kind: "temperatureStep", delta: -2 };
       case "fan_low": return { kind: "fanSpeed", speed: "low" };
       case "fan_medium": return { kind: "fanSpeed", speed: "medium" };
       case "fan_high": return { kind: "fanSpeed", speed: "high" };
+      case "fan_auto": return { kind: "fanSpeed", speed: "auto" };
       case "osc_on": return { kind: "oscillation", enabled: true };
       case "osc_off": return { kind: "oscillation", enabled: false };
       case "scene": return { kind: "activateScene" };

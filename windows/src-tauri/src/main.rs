@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent,
 };
@@ -23,7 +23,16 @@ static PIN_POPOVER: AtomicBool = AtomicBool::new(false);
 static EXTRA_ALLOWED_HOSTS: LazyLock<RwLock<HashSet<String>>> =
     LazyLock::new(|| RwLock::new(HashSet::new()));
 
-const BUILT_IN_HOST_SUFFIXES: &[&str] = &["account.xiaomi.com", "api.io.mi.com", "miot-spec.org"];
+const BUILT_IN_HOST_SUFFIXES: &[&str] = &[
+    "account.xiaomi.com",
+    "api.io.mi.com",
+    "miot-spec.org",
+    // Public release metadata for the update check (#39); no credentials are sent.
+    "api.github.com",
+];
+
+/// Windows release page opened from the tray/update row (#39).
+const RELEASE_PAGE_URL: &str = "https://github.com/jryang1997/MenuBarMijia/releases/latest";
 
 fn normalize_host(raw: &str) -> String {
     raw.trim()
@@ -123,6 +132,91 @@ fn now_epoch_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Rebuilds the tray menu, adding the "有新版本" entry only when a release is known (#39).
+fn build_tray_menu(app: &AppHandle, update_version: Option<&str>) -> tauri::Result<Menu<tauri::Wry>> {
+    let mut builder = MenuBuilder::new(app).text("toggle", "打开/隐藏控制中心 (Alt+M)");
+    if let Some(version) = update_version {
+        builder = builder.text("update", format!("有新版本 v{version}，点击查看"));
+    }
+    builder.text("quit", "退出 MenuBarMijia").build()
+}
+
+/// The only external URL the frontend may open: a MenuBarMijia release page on GitHub.
+fn validated_release_url(raw: &str) -> Result<String, String> {
+    let url = reqwest::Url::parse(raw).map_err(|_| "更新页面地址无效".to_string())?;
+    if url.scheme() != "https" {
+        return Err("更新页面只允许 https 地址".to_string());
+    }
+    let host = url
+        .host_str()
+        .map(normalize_host)
+        .unwrap_or_default();
+    if host != "github.com" {
+        return Err(format!("拒绝打开非 GitHub 地址：{host}"));
+    }
+    if !url.path().starts_with("/jryang1997/MenuBarMijia/releases") {
+        return Err("拒绝打开非 MenuBarMijia 发布页".to_string());
+    }
+    Ok(url.to_string())
+}
+
+#[cfg(windows)]
+#[link(name = "shell32")]
+extern "system" {
+    fn ShellExecuteW(
+        hwnd: *mut core::ffi::c_void,
+        operation: *const u16,
+        file: *const u16,
+        parameters: *const u16,
+        directory: *const u16,
+        show_cmd: i32,
+    ) -> isize;
+}
+
+#[cfg(windows)]
+fn open_url_in_browser(url: &str) {
+    use std::os::windows::ffi::OsStrExt;
+
+    let wide = |value: &str| -> Vec<u16> {
+        std::ffi::OsStr::new(value)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    };
+    let operation = wide("open");
+    let file = wide(url);
+    // ShellExecuteW returns a value > 32 on success; a failure has no useful recovery here.
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn open_url_in_browser(_url: &str) {}
+
+#[tauri::command]
+fn open_release_page(url: String) -> Result<(), String> {
+    let target = validated_release_url(&url)?;
+    open_url_in_browser(&target);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_update_available(app: AppHandle, version: Option<String>) -> Result<(), String> {
+    let tray = app
+        .tray_by_id("main-tray")
+        .ok_or_else(|| "托盘尚未就绪".to_string())?;
+    let menu = build_tray_menu(&app, version.as_deref()).map_err(|error| error.to_string())?;
+    tray.set_menu(Some(menu)).map_err(|error| error.to_string())
 }
 
 #[derive(Serialize)]
@@ -413,7 +507,9 @@ fn main() {
             hide_panel,
             quit_app,
             set_panel_height,
-            set_pin_popover
+            set_pin_popover,
+            set_update_available,
+            open_release_page
         ])
         .setup(move |app| {
             let _ = app.global_shortcut().register(alt_m);
@@ -431,10 +527,7 @@ fn main() {
                 });
             }
 
-            let toggle_item =
-                MenuItem::with_id(app, "toggle", "打开/隐藏控制中心 (Alt+M)", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "退出 MenuBarMijia", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&toggle_item, &quit_item])?;
+            let menu = build_tray_menu(app.handle(), None)?;
 
             let mut tray_builder = TrayIconBuilder::with_id("main-tray")
                 .tooltip("MenuBarMijia · 菜单栏米家 (Alt+M)")
@@ -442,6 +535,11 @@ fn main() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "toggle" => toggle_main_window(app, None, false),
+                    "update" => {
+                        if let Ok(url) = validated_release_url(RELEASE_PAGE_URL) {
+                            open_url_in_browser(&url);
+                        }
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -539,5 +637,31 @@ mod tests {
         assert!(allowed_credential_name("arbitrary_key").is_err());
         assert!(allowed_credential_name("assistant_api_key_").is_err());
         assert!(allowed_credential_name("assistant_api_key_a/b").is_err());
+    }
+
+    #[test]
+    fn allows_the_public_github_release_api_only() {
+        assert!(allows(
+            "https://api.github.com/repos/jryang1997/MenuBarMijia/releases/latest",
+            &[]
+        ));
+        // The browser-facing host is opened through the OS, never proxied by native_http.
+        assert!(!allows("https://github.com/jryang1997/MenuBarMijia/releases", &[]));
+        assert!(!allows("https://api.github.com.evil.example/latest", &[]));
+    }
+
+    #[test]
+    fn only_opens_menu_barmijia_release_pages() {
+        assert!(validated_release_url(RELEASE_PAGE_URL).is_ok());
+        assert!(validated_release_url(
+            "https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.7"
+        )
+        .is_ok());
+
+        assert!(validated_release_url("http://github.com/jryang1997/MenuBarMijia/releases").is_err());
+        assert!(validated_release_url("https://evil.example/jryang1997/MenuBarMijia/releases").is_err());
+        assert!(validated_release_url("https://github.com/other/repo/releases").is_err());
+        assert!(validated_release_url("https://github.com/jryang1997/MenuBarMijia").is_err());
+        assert!(validated_release_url("javascript:alert(1)").is_err());
     }
 }

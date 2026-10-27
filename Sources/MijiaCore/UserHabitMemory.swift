@@ -79,6 +79,26 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         public var count: Int
     }
 
+    /// What one `record` call changed, so undoing the action can take the habit back (#34).
+    public struct RecordingReceipt: Equatable, Sendable {
+        public struct EntryChange: Equatable, Sendable {
+            public var bucket: TimeBucket
+            public var targetId: String
+            public var operationKey: String
+            /// `nil` means the entry was inserted by this call and should be removed on undo.
+            public var previousCount: Int?
+        }
+
+        public struct PhraseChange: Equatable, Sendable {
+            public var phrase: String
+            /// `nil` means the phrase was inserted by this call and should be removed on undo.
+            public var previous: PhraseMemory?
+        }
+
+        public var entries: [EntryChange] = []
+        public var phrase: PhraseChange?
+    }
+
     private static let storageKey = "assistant_user_habit_memory_v1"
     private static let maxEntries = 60
     private static let maxPhrases = 15
@@ -104,23 +124,41 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         defaults.set(data, forKey: Self.storageKey)
     }
 
+    @discardableResult
     public mutating func record(
         utterance: String?,
         intents: [DeviceIntent],
         devices: [SmartDevice],
         scenes: [HomeScene],
         now: Date = Date()
-    ) {
-        guard !intents.isEmpty else { return }
+    ) -> RecordingReceipt? {
+        guard !intents.isEmpty else { return nil }
         let bucket = TimeBucket.from(date: now)
+        var receipt = RecordingReceipt()
 
         for intent in intents {
             guard let opKey = Self.encodeOperation(intent.operation) else { continue }
             if let idx = entries.firstIndex(where: {
                 $0.bucket == bucket && $0.targetId == intent.targetId && $0.operationKey == opKey
             }) {
+                receipt.entries.append(
+                    RecordingReceipt.EntryChange(
+                        bucket: bucket,
+                        targetId: intent.targetId,
+                        operationKey: opKey,
+                        previousCount: entries[idx].count
+                    )
+                )
                 entries[idx].count += 1
             } else {
+                receipt.entries.append(
+                    RecordingReceipt.EntryChange(
+                        bucket: bucket,
+                        targetId: intent.targetId,
+                        operationKey: opKey,
+                        previousCount: nil
+                    )
+                )
                 entries.append(HabitEntry(bucket: bucket, targetId: intent.targetId, operationKey: opKey, count: 1))
             }
         }
@@ -134,10 +172,12 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
             let actionSummary = Self.describe(intents: intents, devices: devices, scenes: scenes)
             if !actionSummary.isEmpty {
                 if let idx = phrases.firstIndex(where: { $0.phrase == raw }) {
+                    receipt.phrase = RecordingReceipt.PhraseChange(phrase: raw, previous: phrases[idx])
                     phrases[idx].count += 1
                     phrases[idx].bucket = bucket
                     phrases[idx].summary = actionSummary
                 } else {
+                    receipt.phrase = RecordingReceipt.PhraseChange(phrase: raw, previous: nil)
                     phrases.insert(
                         PhraseMemory(phrase: raw, bucket: bucket, summary: actionSummary, count: 1),
                         at: 0
@@ -149,6 +189,39 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
                 }
             }
         }
+
+        return receipt
+    }
+
+    /// Undoes the exact changes from one `record` call, leaving earlier habits untouched (#34).
+    public mutating func unrecord(_ receipt: RecordingReceipt) {
+        for change in receipt.entries.reversed() {
+            guard let idx = entries.firstIndex(where: {
+                $0.bucket == change.bucket
+                    && $0.targetId == change.targetId
+                    && $0.operationKey == change.operationKey
+            }) else { continue }
+            if let previousCount = change.previousCount {
+                entries[idx].count = previousCount
+            } else {
+                entries.remove(at: idx)
+            }
+        }
+
+        if let phraseChange = receipt.phrase {
+            if let previous = phraseChange.previous {
+                if let idx = phrases.firstIndex(where: { $0.phrase == phraseChange.phrase }) {
+                    phrases[idx] = previous
+                } else {
+                    phrases.insert(previous, at: 0)
+                }
+            } else {
+                phrases.removeAll { $0.phrase == phraseChange.phrase }
+            }
+        }
+
+        entries.sort { $0.count > $1.count }
+        phrases.sort { $0.count > $1.count }
     }
 
     // MARK: - Viewing & Forgetting (privacy)

@@ -62,20 +62,22 @@ public enum AppLanguagePreference: String, CaseIterable, Identifiable, Codable, 
 
 public enum MiCloudRegion: String, CaseIterable, Identifiable, Codable, Sendable {
     case cn = "cn"
-    case sg = "sg"
     case de = "de"
-    case us = "us"
+    case i2 = "i2"
     case ru = "ru"
+    case sg = "sg"
+    case us = "us"
 
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
         case .cn: return L10n.tr("中国大陆 (cn)", "China Mainland (cn)")
-        case .sg: return L10n.tr("新加坡 / 国际 (sg)", "Singapore / Global (sg)")
         case .de: return L10n.tr("欧洲 (de)", "Europe (de)")
-        case .us: return L10n.tr("美区 (us)", "United States (us)")
+        case .i2: return L10n.tr("印度 (i2)", "India (i2)")
         case .ru: return L10n.tr("俄罗斯 (ru)", "Russia (ru)")
+        case .sg: return L10n.tr("新加坡 / 国际 (sg)", "Singapore / Global (sg)")
+        case .us: return L10n.tr("美区 (us)", "United States (us)")
         }
     }
 

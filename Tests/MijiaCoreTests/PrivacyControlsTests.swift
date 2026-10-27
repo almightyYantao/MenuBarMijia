@@ -50,16 +50,17 @@ struct PrivacyControlsTests {
         let suite = "test.privacy.persist.\(UUID().uuidString)"
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [], scenes: []))
         let first = HomeStore(provider: mock, defaultsSuiteName: suite)
-        #expect(first.prefersOnDeviceSpeech == false)
+        // Privacy-first default: on-device speech unless the user explicitly turned it off (#50).
+        #expect(first.prefersOnDeviceSpeech == true)
         first.isHabitLearningEnabled = false
-        first.prefersOnDeviceSpeech = true
+        first.prefersOnDeviceSpeech = false
         first.completeOnboarding()
         #expect(first.hasCompletedOnboarding == true)
         #expect(first.shouldShowOnboarding == false)
 
         let second = HomeStore(provider: mock, defaultsSuiteName: suite)
         #expect(second.isHabitLearningEnabled == false)
-        #expect(second.prefersOnDeviceSpeech == true)
+        #expect(second.prefersOnDeviceSpeech == false)
         #expect(second.hasCompletedOnboarding == true)
 
         second.reopenOnboarding()

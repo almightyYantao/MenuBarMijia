@@ -13,7 +13,7 @@
  * the store refuses, the app never falls back to writing plaintext.
  */
 
-import type { MiSession } from "./miCloudClient.js";
+import { normalizeMiCloudRegion, type MiSession } from "./miCloudClient.js";
 
 export type SecureCredentialName = "mi_session" | "ha_token" | "assistant_api_key";
 
@@ -73,7 +73,7 @@ export function parseMiSession(raw: unknown): MiSession | null {
     ssecurity,
     serviceToken,
     passToken: "",
-    region: stringField("region") ?? "cn",
+    region: normalizeMiCloudRegion(stringField("region")),
   };
 }
 

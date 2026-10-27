@@ -10,20 +10,37 @@ import {
   ModelIntentResolver,
   UndoPhrase,
   assistantEndpointIdentity,
+  buildAssistantContext,
+  buildHabitSummary,
+  buildSystemOneRequestBody,
+  buildTimeSummary,
   endpointAllowsSendingSecrets,
   inferAssistantPreset,
 } from "../src/core/assistant.js";
 import {
+  MI_CLOUD_REGIONS,
   MiAccountLogin,
   MiCloudClient,
   MiotCommandMapper,
   MiotSpecResolver,
   MiotSynthesizer,
   maskedMiUserId,
+  miApiBaseURL,
+  miCloudRegionLabel,
+  normalizeMiCloudRegion,
   parseMiotDeviceSpec,
   parseMiotInstanceIndex,
   type MiotDeviceSpec,
 } from "../src/core/miCloudClient.js";
+import {
+  checkForUpdate,
+  compareVersions,
+  isNewerVersion,
+  parseLatestRelease,
+  parseUpdateState,
+  serializeUpdateState,
+  updateCheckDayKey,
+} from "../src/core/updateChecker.js";
 import { MiCloudCrypto, RC4 } from "../src/core/miCloudCrypto.js";
 import {
   CredentialVault,
@@ -1042,5 +1059,337 @@ describe("全关 leaves plugs and vacuums alone unless asked (#23)", () => {
     assert.equal(joinsAllOffByDefault(lamp), true);
     assert.deepEqual(allOffTargets([lamp, router], {}).map((d) => d.id), ["lamp"]);
     assert.deepEqual(allOffTargets([lamp, router], { router: true, lamp: false }).map((d) => d.id), ["router"]);
+  });
+});
+
+describe("Xiaomi cloud regions (#37)", () => {
+  it("matches the shared region golden corpus used by both apps", () => {
+    const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/region_golden.json"), "utf8");
+    const golden = JSON.parse(raw) as { regions: string[] };
+    assert.deepEqual(MI_CLOUD_REGIONS.map((region) => region.code), golden.regions);
+    assert.deepEqual(golden.regions, ["cn", "de", "i2", "ru", "sg", "us"]);
+    assert.equal(new Set(golden.regions).size, golden.regions.length);
+  });
+
+  it("normalizes unknown settings back to China Mainland and labels every option", () => {
+    assert.equal(normalizeMiCloudRegion("US"), "us");
+    assert.equal(normalizeMiCloudRegion(" de "), "de");
+    assert.equal(normalizeMiCloudRegion("nope"), "cn");
+    assert.equal(normalizeMiCloudRegion(undefined), "cn");
+    assert.equal(miCloudRegionLabel("de"), "欧洲 (de)");
+    assert.equal(miCloudRegionLabel("i2"), "印度 (i2)");
+  });
+
+  it("maps every region to its API host", () => {
+    assert.equal(miApiBaseURL("cn"), "https://api.io.mi.com/app");
+    assert.equal(miApiBaseURL("de"), "https://de.api.io.mi.com/app");
+    assert.equal(miApiBaseURL("i2"), "https://i2.api.io.mi.com/app");
+    assert.equal(miApiBaseURL("ru"), "https://ru.api.io.mi.com/app");
+    assert.equal(miApiBaseURL("sg"), "https://sg.api.io.mi.com/app");
+    assert.equal(miApiBaseURL("us"), "https://us.api.io.mi.com/app");
+  });
+
+  it("keeps the selected region in the session returned by QR login", async () => {
+    const ticketBody =
+      '&&&START&&&{"loginUrl":"https://account.xiaomi.com/longPolling/login?ticket=abc","qr":"https://account.xiaomi.com/longPolling/qr?ticket=abc","lp":"https://lp.example/poll","timeout":"30","code":0}';
+    const login = new MiAccountLogin(async (req) => {
+      if (req.url.startsWith("https://lp.example")) {
+        return {
+          status: 200,
+          headers: {},
+          body: '&&&START&&&{"userId":1234567890,"ssecurity":"c3M=","cUserId":"cu","passToken":"pt","location":"https://sts.example/sts"}',
+        };
+      }
+      if (req.url.startsWith("https://sts.example")) {
+        return { status: 200, headers: { "Set-Cookie": "serviceToken=tok-de; path=/" } as Record<string, string>, body: "ok" };
+      }
+      return { status: 200, headers: {} as Record<string, string>, body: ticketBody };
+    }, "de");
+
+    const ticket = await login.start();
+    const session = await login.waitForScan(ticket);
+    assert.equal(session.region, "de");
+    assert.equal(miApiBaseURL(session.region), "https://de.api.io.mi.com/app");
+    assert.equal(session.serviceToken, "tok-de");
+  });
+});
+
+describe("Jev SystemOne request structure parity (#38)", () => {
+  const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/ai_request_golden.json"), "utf8");
+  const golden = JSON.parse(raw) as {
+    utterance: string;
+    context: {
+      timeSummary: string;
+      environmentSummary: string;
+      activeDevicesSummary: string;
+      habitSummary: string;
+    };
+    devices: SmartDevice[];
+    scenes: Array<{ id: string; name: string; entityId: string }>;
+    expected: {
+      stateKeys: string[];
+      questionsKeys: string[];
+      targetAliases: string[];
+      catalogDeviceLines: Array<{ alias: string; name: string; room: string; category: string }>;
+      catalogSceneLines: Array<{ alias: string; name: string }>;
+      decisionHeadCriteriaKeys: Record<string, string[]>;
+    };
+  };
+  const request = buildSystemOneRequestBody({
+    model: "~typesafe/jev-latest",
+    utterance: golden.utterance,
+    devices: golden.devices,
+    scenes: golden.scenes,
+    context: golden.context,
+  });
+  const questions = request.body.questions as Record<string, { criteria: Record<string, string> }>;
+
+  it("sends the macOS state block in the same key order", () => {
+    assert.deepEqual(Object.keys(request.body.state), golden.expected.stateKeys);
+    assert.equal(request.body.state["command"], golden.utterance);
+    assert.equal(request.body.state["time"], golden.context.timeSummary);
+    assert.equal(request.body.state["environment"], golden.context.environmentSummary);
+    assert.equal(request.body.state["active_devices"], golden.context.activeDevicesSummary);
+    assert.equal(request.body.state["user_habits"], golden.context.habitSummary);
+  });
+
+  it("adds one decision head per controllable device and never truncates at 10", () => {
+    assert.deepEqual(Object.keys(request.body.questions), golden.expected.questionsKeys);
+    assert.ok(questions["dev_d12"], "the 12th controllable device must keep its head");
+    assert.equal(questions["dev_d13"], undefined);
+    // Only the 12 controllable devices get heads; the sensor does not.
+    assert.equal(Object.keys(request.body.questions).length, 3 + 12);
+  });
+
+  it("keeps the catalog aliases, rooms and categories the model sees", () => {
+    const catalog = String(request.body.state["catalog"]);
+    const marker = "\n场景(id|名称):\n";
+    const [devicePart, scenePart] = catalog.split(marker);
+    assert.ok(devicePart && scenePart, "catalog must have device and scene sections");
+    const deviceLines = devicePart!
+      .split("\n")
+      .slice(1)
+      .map((line) => {
+        const [alias, name, room, category] = line.split("|");
+        return { alias, name, room, category };
+      });
+    assert.deepEqual(deviceLines, golden.expected.catalogDeviceLines);
+    const sceneLines = scenePart!.split("\n").map((line) => {
+      const [alias, name] = line.split("|");
+      return { alias, name };
+    });
+    assert.deepEqual(sceneLines, golden.expected.catalogSceneLines);
+  });
+
+  it("offers the same target aliases as macOS, including room and whole-home groups", () => {
+    assert.deepEqual(Object.keys(questions["target"]!.criteria), golden.expected.targetAliases);
+  });
+
+  it("sends per-device criteria shaped like macOS", () => {
+    for (const [head, expectedKeys] of Object.entries(golden.expected.decisionHeadCriteriaKeys)) {
+      assert.deepEqual(Object.keys(questions[head]!.criteria), expectedKeys, head);
+    }
+  });
+
+  it("omits empty ambient summaries instead of sending placeholder keys", () => {
+    const bare = buildSystemOneRequestBody({
+      model: "~typesafe/jev-latest",
+      utterance: golden.utterance,
+      devices: golden.devices,
+      scenes: golden.scenes,
+    });
+    assert.deepEqual(Object.keys(bare.body.state), ["catalog", "command"]);
+  });
+});
+
+describe("assistant ambient context (#38)", () => {
+  const light: SmartDevice = {
+    id: "lamp",
+    name: "客厅吸顶灯",
+    roomId: "living",
+    roomName: "客厅",
+    model: "yeelink.light.ceiling22",
+    isOnline: true,
+    kind: {
+      kind: "light",
+      entityId: "miot:lamp:2",
+      isOn: true,
+      brightnessPercent: 60,
+      colorTempKelvin: 4100,
+      minKelvin: 2700,
+      maxKelvin: 6500,
+      currentEffect: "Day",
+      availableEffects: ["Day", "Night"],
+    },
+  };
+  const lightKind = light.kind as Extract<SmartDevice["kind"], { kind: "light" }>;
+  const offLight: SmartDevice = {
+    ...light,
+    id: "lamp-off",
+    name: "书房台灯",
+    kind: { ...lightKind, isOn: false, brightnessPercent: null, currentEffect: null, availableEffects: [] },
+  };
+  const sensor: SmartDevice = {
+    id: "sensor.living",
+    name: "客厅温湿度计",
+    roomId: "living",
+    roomName: "客厅",
+    model: "miaomiaoce.sensor_ht.t2",
+    isOnline: true,
+    kind: { kind: "sensor", temperature: 26.5, humidity: 58, battery: 94 },
+  };
+
+  it("formats the time bucket and clock like macOS", () => {
+    assert.equal(buildTimeSummary(new Date(2026, 9, 27, 15, 30)), "下午 15:30");
+    assert.equal(buildTimeSummary(new Date(2026, 9, 27, 8, 5)), "清晨 08:05");
+    assert.equal(buildTimeSummary(new Date(2026, 9, 27, 23, 5)), "深夜 23:05");
+  });
+
+  it("summarizes sensors, running devices and learned phrases", () => {
+    const context = buildAssistantContext({
+      now: new Date(2026, 9, 27, 15, 30),
+      readings: [{ id: "sensor.living", label: "客厅温湿度计", roomName: "客厅", temperature: 26.5, humidity: 58, battery: 94 }],
+      devices: [light, offLight, sensor],
+      habitSummary: buildHabitSummary(true, [{ phrase: "有点热", reply: "已将主卧空调设为 25°C" }]),
+    });
+    assert.equal(context.timeSummary, "下午 15:30");
+    assert.equal(context.environmentSummary, "客厅 26.5°C 58%");
+    assert.equal(context.activeDevicesSummary, "客厅吸顶灯(开 亮度60% 当前:Day 可用模式:Day/Night)");
+    assert.equal(context.habitSummary, "个人口头禅：「有点热」→已将主卧空调设为 25°C");
+  });
+
+  it("says the whole home is off and sends no habits when learning is disabled", () => {
+    const context = buildAssistantContext({
+      now: new Date(2026, 9, 27, 15, 30),
+      readings: [],
+      devices: [offLight],
+      habitSummary: buildHabitSummary(false, [{ phrase: "有点热", reply: "开空调" }]),
+    });
+    assert.equal(context.activeDevicesSummary, "全屋设备均关闭");
+    assert.equal(context.environmentSummary, "");
+    assert.equal(context.habitSummary, "");
+    assert.equal(buildHabitSummary(true, []), "");
+  });
+});
+
+describe("Windows update check (#39)", () => {
+  const releaseBody = JSON.stringify({
+    tag_name: "v1.0.10",
+    html_url: "https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.10",
+  });
+
+  it("compares dotted versions numerically, not as strings", () => {
+    assert.ok(compareVersions("1.0.6", "1.0.10") < 0);
+    assert.ok(compareVersions("1.0.10", "1.0.9") > 0);
+    assert.equal(compareVersions("v1.0.6", "1.0.6"), 0);
+    assert.equal(compareVersions("1.0", "1.0.0"), 0);
+    assert.equal(isNewerVersion("v1.0.10", "1.0.6"), true);
+    assert.equal(isNewerVersion("1.0.6", "1.0.6"), false);
+    assert.equal(isNewerVersion("1.0.5", "1.0.6"), false);
+  });
+
+  it("parses GitHub's latest-release payload and rejects malformed bodies", () => {
+    assert.deepEqual(parseLatestRelease(releaseBody), {
+      version: "1.0.10",
+      tag: "v1.0.10",
+      htmlURL: "https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.10",
+    });
+    assert.equal(parseLatestRelease("{}"), null);
+    assert.equal(parseLatestRelease("not json"), null);
+    assert.equal(parseLatestRelease(JSON.stringify({ tag_name: "nightly" })), null);
+    assert.deepEqual(
+      parseLatestRelease(JSON.stringify({ tag_name: "v1.0.7", html_url: "https://evil.example/release" })),
+      {
+        version: "1.0.7",
+        tag: "v1.0.7",
+        htmlURL: "https://github.com/jryang1997/MenuBarMijia/releases/latest",
+      },
+    );
+  });
+
+  it("requests at most once per local calendar day", async () => {
+    let calls = 0;
+    const requestLatest = async () => {
+      calls += 1;
+      return { status: 200, body: releaseBody };
+    };
+    const morning = new Date(2026, 9, 27, 9, 0).getTime();
+    const evening = new Date(2026, 9, 27, 20, 0).getTime();
+    const nextDay = new Date(2026, 9, 28, 0, 5).getTime();
+    assert.equal(updateCheckDayKey(morning), updateCheckDayKey(evening));
+
+    const skipped = await checkForUpdate({
+      currentVersion: "1.0.6",
+      enabled: true,
+      lastCheckedAtMs: morning,
+      nowMs: evening,
+      requestLatest,
+    });
+    assert.equal(skipped.requested, false);
+    assert.equal(calls, 0);
+
+    const checked = await checkForUpdate({
+      currentVersion: "1.0.6",
+      enabled: true,
+      lastCheckedAtMs: morning,
+      nowMs: nextDay,
+      requestLatest,
+    });
+    assert.equal(checked.requested, true);
+    assert.equal(checked.updateAvailable, true);
+    assert.equal(checked.checkedAtMs, nextDay);
+    assert.equal(calls, 1);
+  });
+
+  it("never requests when the auto-check switch is off, even for a forced check", async () => {
+    let calls = 0;
+    const result = await checkForUpdate({
+      currentVersion: "1.0.6",
+      enabled: false,
+      lastCheckedAtMs: null,
+      nowMs: Date.now(),
+      force: true,
+      requestLatest: async () => {
+        calls += 1;
+        return { status: 200, body: releaseBody };
+      },
+    });
+    assert.equal(result.requested, false);
+    assert.equal(result.checkedAtMs, null);
+    assert.equal(calls, 0);
+  });
+
+  it("does not claim an update when the request or payload fails", async () => {
+    const nowMs = new Date(2026, 9, 27, 12, 0).getTime();
+    const offline = await checkForUpdate({
+      currentVersion: "1.0.6",
+      enabled: true,
+      lastCheckedAtMs: null,
+      nowMs,
+      requestLatest: async () => {
+        throw new Error("offline");
+      },
+    });
+    assert.equal(offline.requested, true);
+    assert.equal(offline.failed, true);
+    assert.equal(offline.updateAvailable, false);
+    assert.equal(offline.checkedAtMs, nowMs);
+
+    const rateLimited = await checkForUpdate({
+      currentVersion: "1.0.6",
+      enabled: true,
+      lastCheckedAtMs: null,
+      nowMs,
+      requestLatest: async () => ({ status: 403, body: "rate limited" }),
+    });
+    assert.equal(rateLimited.failed, true);
+    assert.equal(rateLimited.release, null);
+  });
+
+  it("round-trips the stored last-check state", () => {
+    const state = { lastCheckedAtMs: 1_764_000_000_000, release: parseLatestRelease(releaseBody) };
+    assert.deepEqual(parseUpdateState(serializeUpdateState(state)), state);
+    assert.deepEqual(parseUpdateState(null), { lastCheckedAtMs: null, release: null });
+    assert.deepEqual(parseUpdateState("{bad json"), { lastCheckedAtMs: null, release: null });
   });
 });

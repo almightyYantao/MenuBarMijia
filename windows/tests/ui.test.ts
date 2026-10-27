@@ -51,6 +51,9 @@ beforeEach(() => {
   dom = new Window({ url: "http://localhost/" });
   installWindow(dom);
   document.body.innerHTML = '<div id="app"></div>';
+  // Most UI tests do not exercise the daily GitHub check; mark it done today so the
+  // startup request cannot change their request lists (#39). Update tests clear this.
+  localStorage.setItem("menumijia.windows.update.v1", JSON.stringify({ lastCheckedAtMs: Date.now(), release: null }));
 });
 
 afterEach(async () => {
@@ -400,5 +403,96 @@ describe("全关 (#23)", () => {
     await setImmediate();
     assert.doesNotMatch(tile("light.living_ceiling"), /已开启/);
     assert.match(tile("plug.entry_socket"), /供电中/);
+  });
+});
+
+describe("Xiaomi cloud region switch (#37)", () => {
+  it("names the current region in the empty state and saves a newly selected region", async () => {
+    localStorage.removeItem("menumijia.windows.update.v1");
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "xiaomiCloud",
+      hasCompletedOnboarding: true,
+      miCloudRegion: "de",
+      cachedXiaomiDevices: [],
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
+    assert.match(document.body.textContent ?? "", /当前地区（de）没有设备，可尝试切换地区/);
+
+    await click("#btn-empty-settings");
+    const select = document.querySelector<HTMLSelectElement>("select[data-mi-region]");
+    assert.ok(select, "settings must offer the region dropdown");
+    assert.deepEqual(
+      Array.from(select!.options).map((option) => option.value),
+      ["cn", "de", "i2", "ru", "sg", "us"],
+    );
+    assert.equal(select!.value, "de");
+
+    select!.value = "us";
+    select!.dispatchEvent(new Event("change", { bubbles: true }));
+    await setImmediate();
+    const saved = JSON.parse(localStorage.getItem("menumijia.windows.settings.v2") ?? "{}") as { miCloudRegion?: string };
+    assert.equal(saved.miCloudRegion, "us");
+  });
+});
+
+describe("Update notice (#39)", () => {
+  it("shows a newer release in settings and hands it to the tray", async () => {
+    localStorage.removeItem("menumijia.windows.update.v1");
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const releaseBody = JSON.stringify({
+      tag_name: "v9.9.9",
+      html_url: "https://github.com/jryang1997/MenuBarMijia/releases/tag/v9.9.9",
+    });
+    const invoke = async (name: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+      calls.push({ name, args });
+      if (name === "native_http" && String(args["url"]).startsWith("https://api.github.com/")) {
+        return { status: 200, headers: {}, body: releaseBody };
+      }
+      return undefined;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+    }));
+
+    new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+    await setImmediate();
+
+    const trayCall = calls.find((call) => call.name === "set_update_available");
+    assert.deepEqual(trayCall?.args, { version: "9.9.9" });
+    const saved = JSON.parse(localStorage.getItem("menumijia.windows.update.v1") ?? "{}") as {
+      release?: { version?: string };
+    };
+    assert.equal(saved.release?.version, "9.9.9");
+
+    await click("#btn-settings");
+    assert.match(document.body.textContent ?? "", /有新版本 v9\.9\.9，点击查看/);
+    await click("#btn-open-update");
+    const openCall = calls.find((call) => call.name === "open_release_page");
+    assert.deepEqual(openCall?.args, {
+      url: "https://github.com/jryang1997/MenuBarMijia/releases/tag/v9.9.9",
+    });
+  });
+
+  it("makes no request when automatic checks are switched off", async () => {
+    localStorage.removeItem("menumijia.windows.update.v1");
+    const urls: string[] = [];
+    const invoke = async (name: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+      if (name === "native_http") urls.push(String(args["url"]));
+      return undefined;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+      autoCheckUpdates: false,
+    }));
+
+    new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+    await setImmediate();
+    assert.deepEqual(urls, []);
   });
 });

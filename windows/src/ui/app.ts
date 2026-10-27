@@ -6,6 +6,8 @@ import {
   LocalIntentParser,
   ModelIntentResolver,
   UndoPhrase,
+  buildAssistantContext,
+  buildHabitSummary,
   inferAssistantPreset,
   assistantEndpointIdentity,
   endpointAllowsSendingSecrets,
@@ -18,6 +20,7 @@ import {
   type HttpRequest,
   type HttpResponse,
   type HttpTransport,
+  MI_CLOUD_REGIONS,
   MiAccountLogin,
   MiCloudClient,
   MiotCommandMapper,
@@ -28,7 +31,20 @@ import {
   type MiSession,
   type QRLoginTicket,
   maskedMiUserId,
+  miCloudRegionLabel,
+  normalizeMiCloudRegion,
 } from "../core/miCloudClient.js";
+import {
+  UPDATE_RELEASES_PAGE,
+  UPDATE_RELEASES_URL,
+  UPDATE_STORAGE_KEY,
+  checkForUpdate,
+  isNewerVersion,
+  parseUpdateState,
+  serializeUpdateState,
+  type GitHubRelease,
+  type UpdateState,
+} from "../core/updateChecker.js";
 import {
   CredentialVault,
   credentialsFromSettings,
@@ -125,6 +141,10 @@ interface LearnedShortcut {
 interface PersistedSettings {
   connectionMode: ConnectionMode;
   miSession: MiSession | null;
+  /** Non-sensitive Xiaomi cloud region for the next QR login (#37); the session keeps the region it logged in with. */
+  miCloudRegion: string;
+  /** Daily GitHub release check (#39); off means no request at all. */
+  autoCheckUpdates: boolean;
   haBaseURL: string;
   haToken: string;
   assistantBaseURL: string;
@@ -169,6 +189,10 @@ interface ReplyBannerState {
 
 const STORAGE_KEY = "menumijia.windows.settings.v2";
 const LEGACY_STORAGE_KEY = "menumijia.windows.settings.v1";
+
+// Injected at build time by vite.config.ts from the repository's VERSION file (#39).
+const APP_VERSION =
+  typeof __APP_VERSION__ === "string" && __APP_VERSION__.trim() !== "" ? __APP_VERSION__.trim() : "0.0.0";
 
 // Crisp Apple SF-Symbol-matched vector icons (zero Windows emojis)
 const SF_ICONS = {
@@ -400,6 +424,8 @@ function loadSettings(): LoadedSettings {
         settings: {
           connectionMode: mode,
           miSession,
+          miCloudRegion: normalizeMiCloudRegion(parsed.miCloudRegion ?? miSession?.region),
+          autoCheckUpdates: parsed.autoCheckUpdates ?? true,
           haBaseURL: parsed.haBaseURL ?? "",
           haToken: rawHaToken,
           assistantBaseURL: parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1",
@@ -448,6 +474,8 @@ function loadSettings(): LoadedSettings {
     settings: {
       connectionMode: "demo",
       miSession: null,
+      miCloudRegion: "cn",
+      autoCheckUpdates: true,
       haBaseURL: "",
       haToken: "",
       assistantBaseURL: "https://openrouter.ai/api/v1",
@@ -530,6 +558,9 @@ export class MenuMijiaWindowsApp {
   private qrTicket: QRLoginTicket | null = null;
   private qrStatusText = "点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。";
   private isPollingQR = false;
+  /** Latest GitHub release found by the daily check (#39); shown in settings and the tray menu. */
+  private availableUpdate: GitHubRelease | null = null;
+  private updateState: UpdateState = { lastCheckedAtMs: null, release: null };
   private readonly transport: HttpTransport = createTransport();
   private readonly specResolver: MiotSpecResolver;
   private speechRecognition: SpeechRecognitionInstance | null = null;
@@ -567,11 +598,14 @@ export class MenuMijiaWindowsApp {
     this.bindOpenAnimation();
     this.applyPanelHeight();
     this.startTimerLoop();
+    this.restoreUpdateState();
     this.render();
 
     if (this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession) {
       void this.refreshXiaomiDevices();
     }
+    // At most one GitHub request per local day, and only inside the packaged app (#39).
+    void this.checkForAppUpdate(false);
   }
 
   /**
@@ -606,6 +640,7 @@ export class MenuMijiaWindowsApp {
       }
       if (this.settings.miSession) {
         this.settings.hasCompletedOnboarding = true;
+        this.settings.miCloudRegion = normalizeMiCloudRegion(this.settings.miSession.region);
         if (this.activeSheet === "onboarding") this.activeSheet = "none";
       }
       this.syncAllowedHosts();
@@ -651,6 +686,79 @@ export class MenuMijiaWindowsApp {
     if (serialized === this.lastAllowedHosts) return;
     this.lastAllowedHosts = serialized;
     invokeTauriVoid("set_allowed_hosts", { hosts });
+  }
+
+  /** Restores the last known release so an update found yesterday still shows after a restart. */
+  private restoreUpdateState(): void {
+    try {
+      this.updateState = parseUpdateState(localStorage.getItem(UPDATE_STORAGE_KEY));
+    } catch {
+      this.updateState = { lastCheckedAtMs: null, release: null };
+    }
+    const release = this.updateState.release;
+    if (release && isNewerVersion(release.version, APP_VERSION)) {
+      this.availableUpdate = release;
+      invokeTauriVoid("set_update_available", { version: release.version });
+    }
+  }
+
+  private saveUpdateState(): void {
+    try {
+      localStorage.setItem(UPDATE_STORAGE_KEY, serializeUpdateState(this.updateState));
+    } catch {
+      // Quota errors only cost the "once per day" memory, never the check itself.
+    }
+  }
+
+  /**
+   * Automatic check is skipped outside Tauri (browser preview/tests) because the CSP only
+   * allows `native_http`. `manual` is an explicit user action, so it bypasses the daily
+   * limit and the auto-check switch (#39).
+   */
+  private async checkForAppUpdate(manual: boolean): Promise<void> {
+    if (!manual && !window.__TAURI_INTERNALS__?.invoke) return;
+    const result = await checkForUpdate({
+      currentVersion: APP_VERSION,
+      enabled: manual || this.settings.autoCheckUpdates,
+      lastCheckedAtMs: this.updateState.lastCheckedAtMs,
+      nowMs: Date.now(),
+      force: manual,
+      requestLatest: () =>
+        this.transport({
+          url: UPDATE_RELEASES_URL,
+          method: "GET",
+          headers: {
+            Accept: "application/vnd.github+json",
+            "User-Agent": "MenuBarMijia-Windows",
+          },
+          timeoutMs: 8000,
+        }),
+    });
+    if (!result.requested) return;
+
+    this.updateState = { lastCheckedAtMs: result.checkedAtMs, release: result.release };
+    this.saveUpdateState();
+    if (result.updateAvailable && result.release) {
+      this.availableUpdate = result.release;
+      invokeTauriVoid("set_update_available", { version: result.release.version });
+      this.render();
+    } else if (!result.failed && this.availableUpdate) {
+      // A successful check with no newer release retires yesterday's notice.
+      this.availableUpdate = null;
+      invokeTauriVoid("set_update_available", { version: null });
+      this.render();
+    } else if (manual) {
+      this.replyBanner = {
+        text: result.failed ? "检查更新失败，请稍后再试" : `已是最新版本 v${APP_VERSION}`,
+        source: "检查更新",
+        isError: result.failed,
+      };
+      this.render();
+    }
+  }
+
+  private openUpdatePage(): void {
+    invokeTauriVoid("open_release_page", { url: this.availableUpdate?.htmlURL ?? UPDATE_RELEASES_PAGE });
   }
 
   private bindGlobalKeys(): void {
@@ -990,7 +1098,16 @@ export class MenuMijiaWindowsApp {
           },
           this.transport,
         );
-        plan = await resolver.resolve(trimmed, aliasedDevices, this.scenes);
+        // Same ambient context macOS sends with Jev requests (#38); the getter falls
+        // back to sensor devices when no refreshed EnvironmentReading list exists.
+        const readings = this.computedEnvironmentReadings;
+        const context = buildAssistantContext({
+          now: new Date(),
+          readings,
+          devices: aliasedDevices,
+          habitSummary: buildHabitSummary(this.settings.habitLearningEnabled, this.settings.learnedShortcuts),
+        });
+        plan = await resolver.resolve(trimmed, aliasedDevices, this.scenes, context);
         sourceLabel = resolver.usesSystemOne ? "Jev SystemOne" : this.settings.assistantModel;
       }
 
@@ -1391,7 +1508,7 @@ export class MenuMijiaWindowsApp {
     this.render();
 
     try {
-      const login = new MiAccountLogin(this.transport);
+      const login = new MiAccountLogin(this.transport, this.settings.miCloudRegion);
       const ticket = await login.start();
       this.qrTicket = ticket;
       this.qrStatusText = "请打开手机「米家 App → 我的 → 右上角扫一扫」确认登录";
@@ -1400,6 +1517,7 @@ export class MenuMijiaWindowsApp {
       const session = await login.waitForScan(ticket);
       // The account-level passToken is never persisted (#27).
       this.settings.miSession = sessionWithoutPassToken(session);
+      this.settings.miCloudRegion = normalizeMiCloudRegion(session.region);
       this.settings.connectionMode = "xiaomiCloud";
       this.settings.hasCompletedOnboarding = true;
       // Clear fake demo devices immediately upon real Xiaomi login
@@ -1843,7 +1961,7 @@ export class MenuMijiaWindowsApp {
         <div class="cc-empty-state">
           <div class="cc-empty-icon">${SF_ICONS.houseFill}</div>
           <div class="cc-empty-title">尚未同步到米家设备</div>
-          <div class="cc-empty-subtitle">请确认当前小米账号在米家 App 中中国大陆区有绑定的智能设备</div>
+          <div class="cc-empty-subtitle">当前地区（${this.escapeHtml(normalizeMiCloudRegion(this.settings.miSession?.region ?? this.settings.miCloudRegion))}）没有设备，可尝试切换地区</div>
           <div class="cc-empty-actions">
             <button class="cc-btn-primary" id="btn-empty-resync">重新同步设备</button>
             <button class="cc-btn-secondary" id="btn-empty-settings">切换账号 / 设置</button>
@@ -2286,6 +2404,16 @@ export class MenuMijiaWindowsApp {
             手机打开「米家 App → 扫一扫」即可直接同步全屋真实设备；常驻 Windows 右下角系统托盘，点击图标或按 Alt+M 随时弹出，点击外部自动收起。
           </p>
 
+          <div class="cc-field">
+            <label>云端服务器地区</label>
+            <select class="cc-input" data-mi-region>
+              ${MI_CLOUD_REGIONS.map(
+                (region) => `<option value="${region.code}" ${normalizeMiCloudRegion(this.settings.miCloudRegion) === region.code ? "selected" : ""}>${this.escapeHtml(region.label)}</option>`,
+              ).join("")}
+            </select>
+            <p class="cc-field-hint">欧洲、印度、俄罗斯、新加坡、美区的米家账号请先选择对应地区，再扫码登录。</p>
+          </div>
+
           <div class="cc-qr-box">
             <button class="cc-btn-primary is-full" id="btn-start-qr" ${this.isPollingQR ? "disabled" : ""}>
               ${SF_ICONS.qrcode}
@@ -2372,6 +2500,16 @@ export class MenuMijiaWindowsApp {
                 演示设备预览
               </button>
             </div>
+          </div>
+
+          <div class="cc-field">
+            <label>云端服务器地区</label>
+            <select class="cc-input" data-mi-region>
+              ${MI_CLOUD_REGIONS.map(
+                (region) => `<option value="${region.code}" ${normalizeMiCloudRegion(this.settings.miCloudRegion) === region.code ? "selected" : ""}>${this.escapeHtml(region.label)}</option>`,
+              ).join("")}
+            </select>
+            <p class="cc-field-hint">当前选择：${this.escapeHtml(miCloudRegionLabel(this.settings.miCloudRegion))}。切换后请重新扫码登录该地区的米家账号；已登录会话仍使用登录时的地区。</p>
           </div>
 
           <div class="cc-qr-box">
@@ -2487,6 +2625,22 @@ export class MenuMijiaWindowsApp {
                   </div>`
                 : ""
             }
+          </div>
+
+          <div class="cc-field">
+            <label>软件更新</label>
+            <div class="cc-update-row">
+              <span>当前版本 v${APP_VERSION}</span>
+              ${
+                this.availableUpdate
+                  ? `<button type="button" class="cc-btn-secondary" id="btn-open-update">有新版本 v${this.availableUpdate.version}，点击查看</button>`
+                  : `<button type="button" class="cc-btn-secondary" id="btn-check-update">立即检查</button>`
+              }
+            </div>
+            <label class="cc-checkbox">
+              <input type="checkbox" id="settings-auto-update" ${this.settings.autoCheckUpdates ? "checked" : ""} />
+              <span>每天自动检查更新（关闭后不再请求 GitHub）</span>
+            </label>
           </div>
 
           <div class="cc-sheet-footer">
@@ -3001,6 +3155,28 @@ export class MenuMijiaWindowsApp {
       this.settings.cloudConsentEndpoints = [];
       this.saveSettings();
       this.render();
+    });
+
+    this.root.querySelectorAll<HTMLSelectElement>("[data-mi-region]").forEach((select) => {
+      select.addEventListener("change", () => {
+        this.settings.miCloudRegion = normalizeMiCloudRegion(select.value);
+        this.saveSettings();
+        this.render();
+      });
+    });
+
+    this.root.querySelector<HTMLInputElement>("#settings-auto-update")?.addEventListener("change", (event) => {
+      this.settings.autoCheckUpdates = (event.target as HTMLInputElement).checked;
+      this.saveSettings();
+      this.render();
+    });
+
+    this.root.querySelector("#btn-check-update")?.addEventListener("click", () => {
+      void this.checkForAppUpdate(true);
+    });
+
+    this.root.querySelector("#btn-open-update")?.addEventListener("click", () => {
+      this.openUpdatePage();
     });
 
     this.root.querySelector("#btn-start-qr")?.addEventListener("click", () => {

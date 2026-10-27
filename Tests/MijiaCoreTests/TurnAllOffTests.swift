@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import MijiaCore
 
-/// #23: 全关 only touches what is on screen, leaves plugs and vacuums alone by default, and can be undone for 10 s.
+/// #23: 全关 only touches what is on screen, leaves plugs and vacuums alone by default, and can be undone.
 struct TurnAllOffTests {
     static let bedroomLight = SmartDevice(
         id: "light_bed", name: "主卧吸顶灯", roomId: "bed", roomName: "主卧",
@@ -98,8 +98,11 @@ struct TurnAllOffTests {
         #expect(store.allOffOverrides == ["plug_router": true])
     }
 
-    @Test("The undo banner stays for 10 seconds")
+    @Test("The undo banner lasts 10 seconds for one or two devices and 15 seconds from three")
     func undoBannerLasts() {
-        #expect(HomeStore.undoBannerSeconds >= 10)
+        #expect(HomeStore.undoBannerSeconds(forDeviceCount: 1) == 10)
+        #expect(HomeStore.undoBannerSeconds(forDeviceCount: 2) == 10)
+        #expect(HomeStore.undoBannerSeconds(forDeviceCount: 3) == 15)
+        #expect(HomeStore.undoBannerSeconds(forDeviceCount: 8) == 15)
     }
 }

@@ -33,6 +33,12 @@ struct MenuBarMijiaApp: App {
             .help(L10n.tr("单击打开面板；按住直接说话控制设备", "Click to open panel; hold to speak a command"))
         }
         .menuBarExtraStyle(.window)
+
+        // ⌘, standard Settings window (#42). Living in its own scene means switching to the browser
+        // to copy a token no longer tears the form down with the popover.
+        Settings {
+            SettingsWindowView(store: store)
+        }
     }
 
     private var menuBarSpeechText: String {

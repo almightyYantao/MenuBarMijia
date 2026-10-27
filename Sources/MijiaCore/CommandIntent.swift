@@ -400,7 +400,7 @@ public struct IntentCatalog: Sendable {
             let effectList = s.availableEffects.isEmpty ? "" : " 可用模式:\(s.availableEffects.joined(separator: "/"))"
             guard s.isOn else { return "关" + effectList }
             let bri = s.brightnessPercent.map { " 亮度\($0)%" } ?? ""
-            let eff = s.currentEffect.map { " 当前:\($0)" } ?? ""
+            let eff = s.currentEffect.flatMap { $0.isEmpty ? nil : " 当前:\($0)" } ?? ""
             return "开\(bri)\(eff)\(effectList)"
         case .climate(let s):
             let modes = s.availableModes.joined(separator: "/")
