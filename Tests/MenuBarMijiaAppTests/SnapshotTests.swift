@@ -128,8 +128,8 @@ struct SnapshotTests {
     private func snapshotReady<V: View>(_ view: V) -> some View {
         view
             .environment(\.colorScheme, .light)
-            .environment(\.accessibilityReduceMotion, true)
-            .environment(\.accessibilityReduceTransparency, true)
+            .accessibilityReduceMotion(true)
+            .accessibilityReduceTransparency(true)
             .transaction { transaction in
                 transaction.disablesAnimations = true
             }
@@ -169,8 +169,8 @@ struct SnapshotTests {
         assertSnapshot(
             of: snapshotView,
             as: .image(size: size),
-            record: recordMode,
             named: name,
+            record: recordMode,
             file: file,
             testName: testName
         )
