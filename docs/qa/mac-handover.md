@@ -2,6 +2,36 @@
 
 本任务继续维护 `jryang1997/MenuBarMijia` 的 PR #65、分支 `fix/audit-issues`。目标是完成 #64 索引中的审计问题；自动化检查通过和真实 macOS 行为通过分别记录。不得用“Swift 编译通过”代替菜单栏、系统权限、钥匙串、快捷指令或真实设备验收。
 
+## 本轮交接状态
+
+按用户要求收敛范围：Windows 端能在本机执行的检查已完成；macOS 编译、打包、系统交互及真实设备验收交给 Mac 端继续。代码已分四笔功能提交及一笔验证修正推送到草稿 PR #65；没有合并 main、打 tag 或发布。
+
+固定代码基准：`ad6c72046ca4a7ca88d48ce57cc08da0b7351a55`。其后的交接文档提交不改功能代码。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| `npm test` | 93/93 通过；核心、界面、布局设置及国际化回归。 |
+| `npm run build` | TypeScript 检查与 Vite 生产打包通过。 |
+| 浏览器页面冒烟 | 运行真实 Vite 页面，通过 DOM 事件验证英文/华氏切换、重新加载后保留设置与引导不再出现；修正并核对“全部”和设备辅助标签的残留中文。浏览器指针点击与截图接口异常，本轮未验证原生点击手感/视觉布局，不能当作 Tauri 原生验收。 |
+| `bash scripts/check.sh --lint-only` | 密钥扫描与机械性编码规范通过。 |
+| `bash -n scripts/build_app.sh`、`bash -n scripts/release.sh` | 语法通过；不代表 macOS 实际打包通过。 |
+| `bash packaging/homebrew/self_test.sh` | 28 项离线自检通过；本机没有 Ruby，Ruby 语法项未测。 |
+| `cargo test --locked --manifest-path windows/src-tauri/Cargo.toml` | 本机失败：`tauri v2.12.4` 自定义 build script 以 `0xc0000005 STATUS_ACCESS_VIOLATION` 退出；未进入测试，不能记为通过。Windows CI 已接入此命令。 |
+| `swift test` / App Release 构建 / 本轮 UI 快照 | 本机没有 Swift/Xcode。首轮 CI <https://github.com/jryang1997/MenuBarMijia/actions/runs/40450924249> 的 Linux 与 macOS 均编译失败；Windows 前端通过、Windows 安装包因依赖失败跳过。错误已按下文修正，但 `ad6c720` 的后续 Swift 结果尚未确认，接手先查看 PR 最新 CI。 |
+| Homebrew 工作流 | `6a58d7d` 的离线自检 job 已成功：<https://github.com/jryang1997/MenuBarMijia/actions/runs/40450924311>。未向真实 tap 推送。
+
+上一批 `8e5c4dd` 的四项 CI 与 14 张快照通过，不能据此认定本轮新增代码通过。14 条 issue 已附此前证据关闭；其他项目保留未验证或外部前置条件。当前批次尚未完成最终独立双轴复审，Mac 端修复编译/实机问题后需继续复审。
+
+优先检查三处集成：`scripts/build_app.sh` 的 App Intents 元数据路径及本地化资源包；`MenuBarPanelController` 的点击/按住说话、失焦收起、设置窗口入口；语言与温度单位切换后的实时刷新和设备精度。不得删掉元数据门禁或盲录快照以获得绿灯。
+
+### 已定位的 CI 错误与修正
+
+- Linux：`PanelSearchTests.swift` 的三个调用参数顺序错误，另一个 `hasCommand` 误传给测试 helper，而非 `PanelSearchKey`。`ad6c720` 仅纠正实参顺序和归属，没有删除测试或更改断言。
+- macOS：`MenuBarPanelController.installObservers` 在 `MainActor.assumeIsolated` 中捕获不可发送的 `Notification`，Swift 6 报 `sending 'notification' risks causing data races`。`ad6c720` 改为先提取 `NSWindow`，仅在主执行器闭包使用该窗口；还需实际编译验证。
+- 这两个失败不能称为“平台误报”；修正后的完整核心测试、App 测试、打包及快照仍需跑完。
+
+给 Mac 端代理的任务：读取本文与 PR #65，从上述固定代码 SHA 建修复分支，先跑 `bash scripts/check.sh` 与 `bash scripts/build_app.sh`，修复实际失败，再按下表逐项做系统/真实设备验收与独立双轴复审。沿用现有设备模型、凭据与安全门禁，不扩大功能，不合并或发布；交回固定 SHA、测试结果、失败日志及剩余未测项。
+
 ## 领取代码与固定证据
 
 在独立目录领取 PR 的确定提交，不覆盖正在使用的仓库或应用配置：
@@ -10,7 +40,7 @@
 git clone --branch fix/audit-issues https://github.com/jryang1997/MenuBarMijia.git MenuBarMijia-qa
 cd MenuBarMijia-qa
 git fetch origin pull/65/head
-git checkout --detach FETCH_HEAD
+git checkout --detach ad6c72046ca4a7ca88d48ce57cc08da0b7351a55
 QA_DIR="$HOME/Library/Logs/MenuBarMijia-qa/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$QA_DIR"
 git rev-parse HEAD | tee "$QA_DIR/commit.txt"
