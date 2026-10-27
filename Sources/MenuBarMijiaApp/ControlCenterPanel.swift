@@ -1125,7 +1125,7 @@ public struct ControlCenterPanel: View {
                 .foregroundStyle(.primary.opacity(0.88))
 
             if let t = env.temperature {
-                Text(String(format: "%.1f°", t))
+                Text(L10n.temperatureValue(t, fractionDigits: 1) + "°")
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .foregroundStyle(.primary)
                     .monospacedDigit()
