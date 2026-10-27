@@ -67,7 +67,7 @@ struct ClimatePanelModule: View {
     private var strip: some View {
         HStack(spacing: 8) {
             Button {
-                withAnimation(AppleMotion.snappySpring) { store.togglePrimary(device) }
+                withAnimation(AppleMotion.snappySpring) { _ = store.togglePrimary(device) }
                 if device.isOnline { SoundFeedback.playSuccess() }
             } label: {
                 ZStack {

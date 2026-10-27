@@ -347,7 +347,7 @@ public struct DeviceCardView: View {
 
     private var bentoBody: some View {
         Button {
-            withAnimation(AppleMotion.snappySpring) { store.togglePrimary(device) }
+            withAnimation(AppleMotion.snappySpring) { _ = store.togglePrimary(device) }
             if device.isOnline { SoundFeedback.playSuccess() }
         } label: {
             VStack(alignment: .leading, spacing: 0) {
@@ -394,7 +394,7 @@ public struct DeviceCardView: View {
         HStack(spacing: 8) {
             Button {
                 withAnimation(AppleMotion.snappySpring) {
-                    store.togglePrimary(device)
+                    _ = store.togglePrimary(device)
                 }
                 if device.isOnline { SoundFeedback.playSuccess() }
             } label: {
@@ -409,7 +409,7 @@ public struct DeviceCardView: View {
                     if device.hasDetailDrawer {
                         store.toggleExpanded(device.id)
                     } else {
-                        store.togglePrimary(device)
+                        _ = store.togglePrimary(device)
                         if device.isOnline { SoundFeedback.playSuccess() }
                     }
                 }
@@ -457,7 +457,7 @@ public struct DeviceCardView: View {
         HStack(spacing: 8) {
             Button {
                 withAnimation(AppleMotion.snappySpring) {
-                    store.togglePrimary(device)
+                    _ = store.togglePrimary(device)
                 }
                 if device.isOnline { SoundFeedback.playSuccess() }
             } label: {
@@ -1191,7 +1191,7 @@ public struct DeviceCardView: View {
                 AdaptiveGlassContainer(spacing: 6) {
                     HStack(spacing: 6) {
                         Button {
-                            store.togglePrimary(device)
+                            _ = store.togglePrimary(device)
                             if device.isOnline { SoundFeedback.playSuccess() }
                         } label: {
                             Label(device.isActiveOn ? L10n.tr("关机待机", "Standby") : L10n.tr("唤醒开机", "Wake"), systemImage: "power")

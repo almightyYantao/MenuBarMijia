@@ -356,7 +356,7 @@ public struct ControlCenterPanel: View {
     }
 
     private func toggleSearchResult(_ device: SmartDevice) {
-        withAnimation(AppleMotion.snappySpring) { store.togglePrimary(device) }
+        withAnimation(AppleMotion.snappySpring) { _ = store.togglePrimary(device) }
         if device.isOnline { SoundFeedback.playSuccess() }
     }
 
@@ -1200,7 +1200,7 @@ public struct ControlCenterPanel: View {
                         ForEach(store.scenes) { scene in
                             Button {
                                 withAnimation(AppleMotion.snappySpring) {
-                                    store.triggerScene(scene)
+                                    _ = store.triggerScene(scene)
                                 }
                             } label: {
                                 HStack(spacing: 4) {
@@ -1926,7 +1926,7 @@ enum PanelSearchKeyboard {
 
         case .toggleSelection:
             guard let device = state.selected(in: results) else { return false }
-            withAnimation(AppleMotion.snappySpring) { store.togglePrimary(device) }
+            withAnimation(AppleMotion.snappySpring) { _ = store.togglePrimary(device) }
             if device.isOnline { SoundFeedback.playSuccess() }
             return true
 
