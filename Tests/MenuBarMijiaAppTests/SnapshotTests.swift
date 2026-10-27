@@ -207,6 +207,7 @@ private struct SnapshotFixture {
     let store: HomeStore
     private let previousSkin: String?
     private let previousAppearance: String?
+    private let previousTemperatureUnit: String?
     private let previousLanguage: AppLanguage
 
     init() async throws {
@@ -214,8 +215,10 @@ private struct SnapshotFixture {
         L10n.currentLanguage = .zhHans
         previousSkin = UserDefaults.standard.string(forKey: AppSkin.storageKey)
         previousAppearance = UserDefaults.standard.string(forKey: AppAppearance.storageKey)
+        previousTemperatureUnit = UserDefaults.standard.string(forKey: TemperatureUnitPreference.storageKey)
         UserDefaults.standard.set(AppSkin.classic.rawValue, forKey: AppSkin.storageKey)
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        UserDefaults.standard.set(TemperatureUnitPreference.celsius.rawValue, forKey: TemperatureUnitPreference.storageKey)
 
         let suiteName = "MenuBarMijiaSnapshotTests-\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
@@ -223,6 +226,7 @@ private struct SnapshotFixture {
         }
         defaults.set(true, forKey: "has_completed_onboarding")
         defaults.set(AppLanguagePreference.zhHans.rawValue, forKey: "app_language")
+        defaults.set(TemperatureUnitPreference.celsius.rawValue, forKey: TemperatureUnitPreference.storageKey)
         defaults.set(false, forKey: "show_quick_actions_bar")
         // The panel's `.task` checks for updates; keep the snapshot offline and deterministic.
         defaults.set(false, forKey: "automatically_checks_for_updates")
@@ -252,5 +256,10 @@ private struct SnapshotFixture {
             UserDefaults.standard.removeObject(forKey: AppAppearance.storageKey)
         }
         L10n.currentLanguage = previousLanguage
+        if let previousTemperatureUnit {
+            UserDefaults.standard.set(previousTemperatureUnit, forKey: TemperatureUnitPreference.storageKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: TemperatureUnitPreference.storageKey)
+        }
     }
 }

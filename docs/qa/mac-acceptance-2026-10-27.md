@@ -22,7 +22,7 @@
 | 实际 Release 打包 | `build-final.log`。执行 `bash scripts/build_app.sh` 成功，保留元数据缺失即失败的门禁。Xcode 产生新常量数据后显式提取元数据，包内含四个动作和四个 App Shortcuts。 |
 | 签名 | `build-final.log` 对应 ad-hoc 包。随后使用本机已有 Apple Development 证书，`build-development-signed.log` 打包完成，严格签名核验为 0，Team ID 存在。开发签名不等于 Developer ID 发布、Gatekeeper 或升级验收。 |
 | 资源 | 安装包包含 `MenuBarMijia_MijiaCore.bundle` 和繁体资源。新增实际包资源发现回归，不用源目录 override 代替包验证。 |
-| 独立复审 | sol-loop 三轮，`gpt-6.1-sol`，xhigh。S1 冷启动查询空数据、S2 提前报告执行成功均修复，第二、三轮 APPROVE。用量未暴露。第三轮覆盖界面动画闭包结果修正。批准不替代快照和真实设备验收。CI 后续发现 Swift 6.3.3 的动画闭包结果类型冲突，界面调用已显式丢弃控制 Task，关联 20 项本机测试通过，待新 CI。 |
+| 独立复审 | sol-loop 四轮，`gpt-6.1-sol`，xhigh。S1 冷启动查询空数据、S2 提前报告执行成功均修复，第二、三轮 APPROVE。用量未暴露。第三轮覆盖界面动画闭包结果修正，第四轮覆盖惰性资源查找与元数据文件路径。批准不替代快照和真实设备验收。CI 后续发现 Swift 6.3.3 的动画闭包结果类型冲突，界面调用已显式丢弃控制 Task，关联 20 项本机测试通过，待新 CI。 |
 
 ## 本轮修复
 
