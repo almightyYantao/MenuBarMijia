@@ -3,12 +3,14 @@
 ## 未发布
 
 ### 安全与隐私
-- **应用内更新有了独立的信任链（[#17](https://github.com/jryang1997/MenuBarMijia/issues/17)）**：发布 DMG 时用离线 Ed25519 私钥生成 `<DMG>.ed25519.sig`，公钥编进 App；下载后先校验 SHA-256，再验证签名，缺失或不匹配一律中止安装。代码签名要求从只认 Bundle ID 改为钉住固定证书的 SHA-1（构建时写入 `Info.plist` 的 `MijiaCodeSignCertSHA1`），同 Bundle ID 的 ad-hoc 包不再通过。只有非 Apple 锚定的本地构建才会去掉 `com.apple.quarantine`，正式构建保留隔离属性交给 Gatekeeper。发布工作流缺少签名私钥时直接失败，不再发布未签名更新；离线签名见 `scripts/sign_update.swift`。
+- **应用内更新有了独立的信任链，发布拆成草稿 → 离线签名 → Finalize（[#17](https://github.com/jryang1997/MenuBarMijia/issues/17)）**：更新包用离线 Ed25519 私钥签名，生成 `<DMG>.ed25519.sig`，公钥编进 App（`UpdateChecker.updateSigningPublicKeyBase64`，没有可配置公钥）；下载后先校验 SHA-256，再验证签名，缺失或不匹配一律中止安装。私钥不进 CI：`release.yml` 打标签只生成**草稿**（恰好 6 个构建附件，缺 `.sig` 时提示「等待离线签名」），维护者在本机用 `scripts/sign_update.swift` 签名并显式上传公有 `.sig`，再由 `.github/workflows/finalize.yml`（手动 `workflow_dispatch`）校验 tag/版本四处一致、远程 tag 指向、草稿状态、7 个附件字节与服务端 digest，并用内置公钥验签，最后只做 `gh release edit --draft=false`——不重编译、不上传、不 `--clobber`；缺 `.sig` 或验签失败（包括 DMG 重建后仍挂旧签名）直接失败，两个工作流都不读取 `MENUBARMIJIA_UPDATE_SIGNING_KEY`。代码签名要求从只认 Bundle ID 改为钉住固定证书的 SHA-1（`Info.plist` 的 `MijiaCodeSignCertSHA1`）；pin 缺失或不是 40 位十六进制时要求退化为 `identifier … and never`，同 Bundle ID 的 ad-hoc 包同样被拒，不会退回 bundle-ID-only——本机 ad-hoc 开发包能运行，但装不了应用内更新，发布包必须用固定证书签名并带正确 pin。只有非 Apple 锚定的本地构建才会去掉 `com.apple.quarantine`，正式构建保留隔离属性交给 Gatekeeper。离线签名 CLI 见 `scripts/sign_update.swift`。
 - **AI 服务商改为精确域名识别（[#19](https://github.com/jryang1997/MenuBarMijia/issues/19)）**：`openrouter.ai.evil.com`、`notopenrouter.ai` 这类仿冒地址不再被当成 OpenRouter，也拿不到你保存的 Key。自定义地址的 Key 只发给保存时的那台服务器；换地址要重新填。非 https 的公网地址一律不发送（本机和局域网除外）。macOS 与 Windows 共用 `Tests/Fixtures/provider_golden.json` 校验。
 - **不再自动读取 CodexBar / 环境变量里的 Key（[#20](https://github.com/jryang1997/MenuBarMijia/issues/20)）**：改为设置里的「从 CodexBar / 环境变量导入 Key」按钮，点了才读取并复制到本机钥匙串；设置里显示来源，可一键撤销。第一次要把指令发给某个云端 AI 服务前，会先问你一次（说明发送什么、发给谁），之后可在隐私设置里撤销授权。本机/局域网模型不用确认。升级后如果之前靠 CodexBar 自动接入，需要点一次导入。
 - **AI 没把握时不再自己动手（[#21](https://github.com/jryang1997/MenuBarMijia/issues/21)）**：Jev 等 AI 给出的动作，只有把握 ≥ 80% 才直接执行；低于 80%、或没给出把握度的，变成建议胶囊，点一下才执行。打开电暖器、开关插座、启动扫地机即使 AI 很有把握也要点一下（关电暖器不用）。聊天类模型（DeepSeek 等）同样适用，回执不再声称已经开了还没开的设备。macOS 与 Windows 同步。
 - **Home Assistant 断线后不再自己换地址（[#18](https://github.com/jryang1997/MenuBarMijia/issues/18)）**：以前连不上时会扫描局域网，把访问令牌直接发给扫到的第一台“Home Assistant”（可能是别人伪装的）。现在只在面板顶部提示「发现了 xxx，要切换过去吗？」，点「切换」才换；点「不切换」本次不再问。和你上次选的那台实例标识（uuid）不一致的直接忽略。连续断两次才扫描，最多 10 分钟一次。设置和新手引导里的「扫描」只填地址，点保存才连接。
 - **凭证只存钥匙串，不再明文回退（[#16](https://github.com/jryang1997/MenuBarMijia/issues/16)）**：上一版为了绕开升级后的钥匙串弹窗，把米家会话、HA 令牌、AI API Key 和 LG 电视配对密钥都明文镜像到了 `UserDefaults`（`defaults read com.jryang1997.MenuBarMijia` 就能读到）。现在钥匙串是唯一存储：读取不再先看明文，读到钥匙串后也不再回写；保存空值即删除。升级后首次启动会自动把旧明文键（`ha_fallback_token`、`mi_session_fallback_v1`、`keychain_fallback_*`、`lg_webos_client_key`）迁入钥匙串并删除原键，钥匙串写入失败时保留明文等下次重试。由于 App 是 ad-hoc 自签名构建，升级后系统可能询问一次钥匙串访问；拒绝授权则需重新登录一次。Windows 版保持凭据管理器存储，不受影响。
+- **演示模式严格离线，不再有任何外发请求（[#47](https://github.com/jryang1997/MenuBarMijia/issues/47)）**：演示模式的「检查更新」「下载更新」「测试 AI 连接」「主动建议」以及局域网 HA 扫描、LAN 电视连接等入口都先判断后端，一旦处于演示模式就直接返回本地结果或提示，不发起任何网络请求。切回演示模式时会停止正在运行的 LAN 电视链路、取消更新任务并清理已暂存的更新包，避免上一个后端遗留的网络活动继续跑；离开演示模式后再恢复 LAN 电视连接。设置页与面板会提示「演示模式不联网，请切换数据源后…」。
+- **LG 电视连接固定证书，HA 明文地址会提示（[#30](https://github.com/jryang1997/MenuBarMijia/issues/30)）**：首次连接 webOS 电视时把该次 TLS 叶证书的 SHA-256 按电视 host 存进钥匙串；之后证书变化就直接拒绝连接、停止重试并在面板弹出提示，不会再默默信任新证书。设置里新增「重新信任电视」，二次确认后清除旧证书与配对密钥，并要求在电视上重新确认配对；已保存的指纹读不出来或写入失败时同样按失败关闭处理，不会降级成「信任任何证书」。另外，HA 地址如果是 `http://` 且不是本机回环地址，设置页与新手引导会显示橙色提示（令牌将明文传输），占位符改为推荐 `https://` 或 Nabu Casa 地址。
 - **米家会话不再保存账号级 `passToken`（[#27](https://github.com/jryang1997/MenuBarMijia/issues/27)）**：`passToken` 全仓库没有一处使用，会话过期一直是提示重新扫码，所以登录成功后不再持久化它；迁移旧会话时会解码后重新编码，把已存的 `passToken` 一并去掉，不需要重新登录。决策见 `docs/adr/0004-no-pass-token-storage.md`。
 
 ### 防误操作
@@ -17,6 +19,15 @@
 ### 可靠性
 - **米家云不再全天每 6 秒拉一次数据（[#26](https://github.com/jryang1997/MenuBarMijia/issues/26)）**：面板打开时 6 秒刷新；面板关着改成 1 分钟一次（低电量模式 3 分钟）；电脑睡眠、显示器睡眠、锁屏、切换用户时完全不请求，醒来或解锁后马上刷新一次。选了某个家庭时只拉这个家庭的设备。米家云提示请求太频繁（HTTP 429）时至少等 1 分钟再试、最长 15 分钟，并在面板上提示。想核对请求量，可在「控制台」App 搜 `Mi cloud polling`，每次切换都会记下之前拉了几次。Windows：面板打开 12 秒、收在托盘里 1 分钟。
 - **合盖睡眠后，错过的定时不再一开盖就执行（[#22](https://github.com/jryang1997/MenuBarMijia/issues/22)）**：定时到点时如果已经晚了 1 分钟以上（通常是电脑在睡眠），不会自动执行，而是和“启动时发现过期”一样进入「已错过」提示并发通知，由你决定立即执行或忽略。晚几秒的照常执行。Windows 同步。
+
+### 交互、数据与工程
+- **菜单栏改用公开 AppKit 接口（#56）**：自建 NSStatusItem 与 NSPanel，保留图标状态、悬停摘要、全局热键和按住说话，移除私有 KVC 与私有选择器。
+- **拼音搜索（#60）**：输入或 ⌘F 搜设备名、房间与拼音首字母；方向键选择、回车切换、右箭头展开，Esc 先清空再收起。
+- **语言资源与温度单位（#52）**：新增繁体中文资源和可扩展语言表；界面按区域显示摄氏/华氏，设备协议仍使用摄氏；Windows 新增中英切换及跟随界面的语音语言。
+- **本地用电记录（#62）**：按插座累计电表读数记录增量，显示七日用电与设备排行，支持电价和清除；无电表读数不估算，首次记录不回填历史。
+- **快捷指令、URL 与 Mac 自动化（#57/#59）**：复用现有控制与撤销路径，URL 默认确认；自动化默认无规则，一分钟去重且不训练习惯。打包必须包含 App Intents 元数据。
+- **HomeStore 按职责拆分（#48）**：主文件降到 439 行，连接、控制、指标、提醒、撤销、界面状态分别维护。
+- **发布与 Mac 验收**：补充严格附件门禁、离线签名后的手动 Finalize 和 Mac 交接清单；Homebrew cask 与同步工作流已备妥，公开 tap 与跨仓库凭据尚未配置。上述新增 macOS 交互仍需 CI 和真机验证，详见 `docs/qa/mac-handover.md`。
 
 ## 1.0.6
 

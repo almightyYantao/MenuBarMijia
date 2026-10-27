@@ -9,8 +9,8 @@
 <h1 align="center">MenuBarMijia</h1>
 
 <p align="center">
-  <b>Native macOS menu-bar & Windows 11 tray controller for Xiaomi Mi Home (Mijia) and Home Assistant.</b><br>
-  Hold the menu-bar icon, speak a command, release to execute across multiple devices in ~0.2s — or run the entire panel from the keyboard.
+  <b>Native macOS menu-bar controller for Xiaomi Mi Home (Mijia) and Home Assistant, plus a Windows 11 tray app for Mi Home.</b><br>
+  Hold the menu-bar icon, speak a command, release to execute across multiple devices — or run the entire panel from the keyboard.
 </p>
 
 <p align="center">
@@ -22,7 +22,7 @@
   <img src="https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Windows_11-Tauri_v2-0078D4?logo=windows11&logoColor=white" alt="Windows 11 Tauri v2">
   <img src="https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white" alt="Swift 6">
-  <img src="https://img.shields.io/badge/Backends-Mi_Cloud_QR_%7C_Home_Assistant-30D158" alt="Dual Backends">
+  <img src="https://img.shields.io/badge/Backends-Mi_Cloud_QR_%7C_Home_Assistant-30D158" alt="Dual Backends on macOS">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License"></a>
 </p>
 
@@ -57,13 +57,9 @@ The Swift package has no third-party Swift dependencies and uses Swift 6 strict 
 
 Releases: <https://github.com/jryang1997/MenuBarMijia/releases>
 
-**v1.0.6** is the latest. It includes `MenuBarMijia-1.0.6.dmg` for macOS 14+ (with full English & Simplified Chinese UI, voice commands, multi-provider AI presets, and persistent scheduled timers) and Windows installers.
+**v1.0.6** is the latest release, and it ships **macOS only**: `MenuBarMijia-1.0.6.dmg` for macOS 14+ (English & Simplified Chinese UI, voice commands, multi-provider AI presets, and persistent scheduled timers). The most recent release that includes Windows installers is **v1.0.5** (`MenuBarMijia-1.0.5-windows-x64-setup.exe` and `MenuBarMijia-1.0.5-windows-x64.msi`, plus SHA-256 files); Windows installers are also on v1.0.4, v1.0.3, v1.0.1, and v1.0.0 (the v1.0.0 files are named `MenuMijia-1.0.0-*`).
 
-The macOS app is ad-hoc signed and not notarized. On first launch, open **System Settings → Privacy & Security** and choose **Open Anyway**, or run:
-
-```bash
-xattr -cr /Applications/MenuBarMijia.app
-```
+The macOS app is ad-hoc signed and not notarized. On first launch, macOS may block it. The safer fix is **System Settings → Privacy & Security → Open Anyway**, which clears the block for this one app only. Running `xattr -cr /Applications/MenuBarMijia.app` also works, but it strips every extended attribute from the bundle and skips the quarantine check entirely, so use it only if you downloaded the file from this repository's Releases page. The command will be removed once signing and notarization are in place.
 
 **v1.0.0** macOS assets were named `MenuMijia-1.0.0.dmg`.
 
@@ -88,22 +84,36 @@ bash scripts/release.sh
 
 Store notary credentials first with `xcrun notarytool store-credentials menumijia-notary`. `SKIP_NOTARIZE=1` packs a local DMG without notarization. The version string is the `VERSION` file. The build number is the git commit count.
 
-In-app updates additionally require a detached Ed25519 signature. Sign the DMG with the offline private key and upload the `.ed25519.sig` alongside it:
+In-app updates additionally require a detached Ed25519 signature, and release publishing is split in two phases so the private key never reaches CI.
+
+**Phase 1 — tag build (CI).** Pushing a `v*` tag (or running `.github/workflows/release.yml` manually with a `tag` input) runs `verify-tag` → `macos-release` / `windows-release` → `stage-draft`. The two build jobs only upload artifacts; `stage-draft` creates or refreshes an **unpublished draft** holding exactly six build assets (DMG, `.dmg.sha256`, EXE, `.exe.sha256`, MSI, `.msi.sha256`) and finishes with “⏳ waiting for the offline signature”. `release.yml` never contains `--draft=false`, so a tag push can never publish.
+
+**Phase 2 — offline signature (maintainer's machine).** Download the draft DMG, sign it with the offline key, and upload only the public signature:
 
 ```bash
-MENUBARMIJIA_UPDATE_SIGNING_KEY="<base64 32-byte seed>" \
+gh release download <tag> --pattern "MenuBarMijia-<version>.dmg" --dir dist
+MENUBARMIJIA_UPDATE_SIGNING_KEY="<base64 32-byte seed or PKCS#8 PEM>" \
   swift scripts/sign_update.swift dist/MenuBarMijia-<version>.dmg
+gh release upload <tag> "dist/MenuBarMijia-<version>.dmg.ed25519.sig"
 ```
 
-The app refuses to install a package whose signature is missing or does not match. Pushing a `v*` tag runs `.github/workflows/release.yml`: it signs with the pinned certificate when `MACOS_SIGNING_P12` is configured, and fails the release job when `MENUBARMIJIA_UPDATE_SIGNING_KEY` is absent. Set `MACOS_SIGNING_IDENTITY` and `MACOS_CERT_SHA1` when building to pin the certificate hash in `Info.plist`; without them the build falls back to ad-hoc. See [`docs/adr/0005-update-signing-trust-chain.md`](docs/adr/0005-update-signing-trust-chain.md).
+**Phase 3 — Finalize (CI, manual).** Run `.github/workflows/finalize.yml` (`workflow_dispatch`, input `tag`). It requires the tag to equal `v$(VERSION)`, all four version files to agree, the remote tag to still point at the checked-out commit, and the target to be an unpublished draft. It downloads **exactly seven** assets, compares each download's bytes against the draft's server-side `sha256:` digest and size, and verifies the DMG signature with the public key compiled into `UpdateChecker.updateSigningPublicKeyBase64` (there is no configurable public key; rotating it requires a source change and a new release). Only then does it run `gh release edit --draft=false`: no rebuild, no upload, no `--clobber`. A missing `.sig` prints the offline commands and exits non-zero; a signature that no longer matches rebuilt bytes fails hard, so a release can never quietly ship without a valid signature.
+
+Neither `release.yml` nor `finalize.yml` reads `MENUBARMIJIA_UPDATE_SIGNING_KEY`, so **CI holds no Ed25519 update key** — only the code-signing credentials (`MACOS_SIGNING_P12` for macOS, `WINDOWS_CERTIFICATE` for Authenticode).
+
+The app refuses to install a package whose Ed25519 signature is missing or does not match. It then verifies the staged bundle's code signature with the requirement `identifier "<bundle id>" and certificate leaf = H"<pinned SHA-1>"`: the leaf certificate hash is the anchor, and the packaged `Info.plist` must carry `MijiaCodeSignCertSHA1`. If that pin is missing or is not a 40-character hex string, the requirement becomes `identifier "<bundle id>" and never`, so **every** update fails verification — including a package with the same bundle ID, so the check never falls back to bundle-ID-only.
+
+A local ad-hoc build (`scripts/build_app.sh`) still launches normally, but it has no valid pin and therefore **cannot install in-app updates**. Release builds must be signed with a fixed certificate and carry that certificate's SHA-1: `scripts/release.sh` refuses to produce a DMG without a non-ad-hoc signing identity and a matching pin. See [`docs/adr/0005-update-signing-trust-chain.md`](docs/adr/0005-update-signing-trust-chain.md).
 
 ## Connect devices
 
 Open the menu-bar icon, then the settings button.
 
-**Mi Cloud (no Home Assistant).** Choose **Mi Cloud direct**, then **Scan to sign in to Mi Home**, and confirm the QR code in the phone Mi Home app. Homes, rooms, and devices sync from your account. The client speaks Miot-Spec over Xiaomi’s RC4-signed `api.io.mi.com` API. `serviceToken` and `ssecurity` are stored only in the macOS Keychain. Note: `api.io.mi.com` is an undocumented private client API, and Xiaomi has restricted accounts that use unofficial clients in the past. Use the Home Assistant backend below if you want Xiaomi's official open-source `xiaomi_home` integration.
+**Mi Cloud (no Home Assistant).** Choose **Mi Cloud direct**, then **Scan to sign in to Mi Home**, and confirm the QR code in the phone Mi Home app. Homes, rooms, and devices sync from your account. The client speaks Miot-Spec over Xiaomi’s `api.io.mi.com` private API. RC4 there is the **transport** cipher and signing scheme of that endpoint (`MIOT-ENCRYPT-ALGORITHM: ENCRYPT-RC4`), not end-to-end encryption: commands and states pass through Xiaomi’s servers, which can read them, and RC4 itself is a deprecated weak cipher kept only for compatibility. `serviceToken` and `ssecurity` are stored in the macOS Keychain. Note: `api.io.mi.com` is an undocumented private client API, and Xiaomi has restricted accounts that use unofficial clients in the past. Use the Home Assistant backend below if you want Xiaomi's official open-source `xiaomi_home` integration.
 
 **Home Assistant (optional).** Choose **Home Assistant**, enter the base URL and a long-lived access token (created on your HA profile page). The default URL is `http://homeassistant.local:8123`. Use the LAN IP if that hostname does not resolve. The Mac app subscribes to `state_changed` over the LAN WebSocket. It works with [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) and [midea_ac_lan](https://github.com/wuwentao/midea_ac_lan). Separate HA entities (switch, power, energy, child lock, gateway light, and similar) are folded into one card per physical device.
+
+An `http://` HA address outside this machine sends the access token unencrypted across the network. Settings and onboarding show an orange warning for exactly that case and suggest an `https://` or Nabu Casa address; the LAN default stays plain `http` for local setups.
 
 <p align="center">
   <img src="docs/assets/dual-backend-settings.png" width="860" alt="Mi Cloud QR login and Home Assistant settings">
@@ -137,17 +147,17 @@ The menu bar can show a room temperature, temperature and humidity, total plug p
 
 Device drawers cover lights (brightness, 2700–6500 K color temperature, and the device’s own scene modes such as daylight, moonlight, reading, and computer), climate (0.5°C steps, mode, fan, swing), fans, plugs (watts, today’s kWh, child lock), fridges, robot vacuums, Xiaoai speakers (volume, mute, playback, TTS or a silent command), and TVs.
 
-**All off** turns off lights, air conditioners, heaters, fans, and plugs that are on. Shortcuts also include whole-home lights off, a dim night-light scene, and climate plus fans off.
+**All off** turns off lights, air conditioners, heaters, and fans that are on, for the devices currently on screen. Smart plugs and vacuums are **excluded by default** and can be added per device from the context menu (the current unreleased Windows sources also expose that choice in Settings; shipped Windows builds predate it). Shortcuts also include whole-home lights off, a dim night-light scene, and climate plus fans off.
 
 ### Skins, custom groups, and multi-home switching
 
 - **Multiple Mi Homes & split Mesh panels**: When your Xiaomi account has multiple homes, click the home title in the header to switch between them or view all homes together. Multi-key Mesh wall panels (split keys with IDs like `<parent>.s2`, `<parent>.s3`) are automatically unpacked into individual switch cards.
-- **9 visual skins & adjustable height**: Switch between **Classic**, **Warm Paper**, **Bento Grid**, **Swiss Grid**, **Soft Clay**, **Terminal**, **Playful Pop**, **E-Ink**, and **Translucent Glass** in Settings, along with four panel height presets.
+- **9 visual skins & adjustable height**: Switch between **Classic**, **Frost**, **Night Flight**, **Liquid Glass**, **Soft Mist**, **Bento**, **Neon**, **Capsule**, and **Dawn** in Settings, along with four panel height presets.
 - **Drag-to-reorder & custom groups**: Long-press any device card (or right-click → **Edit Layout**) to drag cards across positions and sections, cycle card sizes (`½ Width`, `Full Width`, or `Panel` for inline climate controls), and organize devices into collapsible custom groups.
 
 ## Spoken commands
 
-The local parser accepts both Chinese and English commands offline in 0 ms.
+The local parser accepts both Chinese and English commands offline, without a network round trip.
 
 | Goal | Chinese example | English example |
 | --- | --- | --- |
@@ -161,13 +171,13 @@ The local parser accepts both Chinese and English commands offline in 0 ms.
 
 A nudge that does not name a device applies only to devices that are already on. Timers persist to `UserDefaults` across app restarts. Future timers resume their countdown on launch. Timers that expired while the app was closed, or that came due while the Mac was asleep (more than a minute late), are not executed automatically; the app surfaces a missed-timer prompt and notification so you can run or dismiss them.
 
-Phrases the local parser does not understand can be sent to an optional cloud or local AI model. Settings includes one-click presets for **OpenRouter (`~typesafe/jev-latest`)**, **Native TypeSafe Jev (`https://api.typesafe.ai/v1`)**, **DeepSeek (`deepseek-chat`)**, **Qwen**, **Zhipu GLM**, **Moonshot Kimi**, **SiliconFlow**, **OpenAI**, **Groq**, **Ollama (local)**, and custom OpenAI-compatible endpoints. Provide your own API key in Settings, or on macOS click **Import key from CodexBar / environment** (the CodexBar file and environment variables are only read when you click it). The first time a phrase would go to a cloud model, the app asks once and shows what will be sent. Without an API key, ambiguous commands fail while clear commands continue to run offline in 0 ms on the local parser. AI actions only run by themselves when the model is at least 80% sure; anything less shows up as a suggestion you tap to run. Turning on a heater, switching a smart plug, or starting a vacuum always waits for your tap.
+Phrases the local parser does not understand can be sent to an optional cloud or local AI model. Settings includes one-click presets for **OpenRouter (`~typesafe/jev-latest`)**, **Native TypeSafe Jev (`https://api.typesafe.ai/v1`)**, **DeepSeek (`deepseek-chat`)**, **Qwen**, **Zhipu GLM**, **Moonshot Kimi**, **SiliconFlow**, **OpenAI**, **Groq**, **Ollama (local)**, and custom OpenAI-compatible endpoints. Provide your own API key in Settings, or on macOS click **Import key from CodexBar / environment** (the CodexBar file and environment variables are only read when you click it). The first time a phrase would go to a cloud model, the app asks once and shows what will be sent. Without an API key, ambiguous commands fail while clear commands still run on the local parser. AI actions only run by themselves when the model is at least 80% sure; anything less shows up as a suggestion you tap to run. Turning on a heater, switching a smart plug, or starting a vacuum always waits for your tap.
 
 The app also stores, on this Mac, time-of-day habits and short phrases you repeat (for example a phrase you use when you start working or go to sleep) and can attach a short habit summary to those cloud requests. Turn off **Learn my habits** in Settings to stop recording and stop sending that summary. You can delete stored habits one by one.
 
 ## Undo
 
-A multi-device change raises an undo bar for 10 seconds. **All Off** needs a 0.6 s hold in every skin and only affects what is on screen (the selected room, no hidden devices); smart plugs and vacuums are left out unless you include them from the device menu (Windows: in Settings). Choosing **Undo** restores the previous state of the devices that changed, including brightness, color temperature, light mode, and air-conditioner setpoint.
+A multi-device change raises an undo bar: **10 seconds for one or two devices, 15 seconds from three devices up**, and resting the pointer on the bar pauses the countdown. **All Off** needs a 0.6 s hold in every skin and only affects what is on screen (the selected room, no hidden devices); smart plugs and vacuums are left out unless you include them from the device menu (shipped Windows builds lack that control; the unreleased Windows sources put it in Settings). Choosing **Undo** restores the previous state of the devices that changed device by device, including brightness, color temperature, light mode, and air-conditioner setpoint. Once the bar disappears, an **Undo** entry stays in the panel for the assistant’s last action, valid for 10 minutes.
 
 Saying 「撤销」 within 10 minutes rolls back the assistant’s last action.
 
@@ -175,18 +185,20 @@ Saying 「撤销」 within 10 minutes rolls back the assistant’s last action.
 
 When safety alerts are on, macOS notifications fire for:
 
-- Any plug left on for 45 minutes. The notification can turn it off.
+- A plug left on for 45 minutes **while reporting live power above 300 W**. A plug that reports no power reading never triggers this alert. The notification can turn it off.
 - A climate device (air conditioner or heater) left running for 4 hours. The notification can turn it off.
-- Battery under 15% on a sensor or lock. The same device is not notified again for 24 hours.
+- Battery under 15% on a sensor or lock. The same device is not notified again for 24 hours; the cooldown is stored, so relaunching the app does not reset it.
 - A starred device going offline.
 
 ## Windows 11 tray app
 
-`windows/` is a separate Tauri v2 tray app (Rust, TypeScript, WebView2). It is not the Mac app.
+`windows/` is a separate Tauri v2 tray app (Rust, TypeScript, WebView2). It is not the Mac app, and it is a **separate implementation** of the same ideas rather than a port of `MijiaCore`: the Mi Cloud protocol, device synthesis, local parsing, and AI request shape are written twice. ADR-0006 ([`docs/adr/0006-dual-platform-implementation.md`](docs/adr/0006-dual-platform-implementation.md)) records that decision and the shared fixtures (`Tests/Fixtures/intent_golden.json`, `miot_golden.json`, `provider_golden.json`, `region_golden.json`, `ai_request_golden.json`) that both test suites assert against.
 
-It supports Mi Cloud QR login and a demo mode. It does not connect to Home Assistant. It has no menu-bar press-and-hold speech and no safety alerts. Speech uses the WebView `SpeechRecognition` API. The global hotkey is `Alt+M`.
+In the current unreleased sources it supports Mi Cloud QR login (including a region picker) and a demo mode. It does **not** connect to Home Assistant. It has no menu-bar press-and-hold speech and no safety alerts. Speech uses the WebView `SpeechRecognition` API. The global hotkey is `Alt+M`.
 
 Device cards update after the cloud call succeeds. A failure shows an error. A batch reports partial failure. Undo restores only properties that succeeded, and it keeps the original on/off state. A failed undo can be retried. If the original property value is missing or the action cannot be reversed, there is no undo button. Light mode buttons appear only when the device supports them.
+
+**What is in a shipped Windows installer, and what is still under development:** the Windows builds on GitHub Releases (latest with Windows assets: v1.0.5) predate the current unreleased sources. The region picker (#37) and the update check (#39) are implemented on the development branch but ship with no Windows installer yet; the credential store / strict CSP work (#28) and the safer 全关 that excludes plugs and vacuums by default (#23) are likewise development-branch only. Windows installers are Authenticode-signed only when the release workflow has a signing certificate configured; otherwise they ship unsigned and SmartScreen may warn on first launch.
 
 ```bash
 cd windows
@@ -198,13 +210,17 @@ npx tauri build   # on Windows: NSIS .exe and .msi
 
 Packaging needs Visual Studio “Desktop development with C++”, the Windows SDK, and the MSVC Rust toolchain. Build from an x64 Native Tools prompt. If `CC` or `CXX` points at another compiler, set them to `cl.exe` in that prompt.
 
-Pushes to `main` run core tests, then GitHub Actions builds the Windows installers and uploads them as the `MenuBarMijia-Windows-x64` artifact. Release assets and SHA-256 files are attached to GitHub Releases. Ordinary pushes do not replace a published installer. The latest release is [v1.0.6](https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.6), which includes the macOS DMG and Windows installers.
+Pushes to `main` run core tests, then GitHub Actions builds the Windows installers and uploads them as the `MenuBarMijia-Windows-x64` artifact; pushes never publish. A `v*` tag only produces a **draft** with six build assets: a maintainer signs the DMG offline and then triggers `finalize.yml` to publish. The resulting release carries the macOS DMG with its SHA-256 file and the Windows installers with theirs. In practice the asset set differs per release: [v1.0.6](https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.6) contains **only** `MenuBarMijia-1.0.6.dmg` and its `.sha256` file, so Windows installers come from [v1.0.5](https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.5) (also v1.0.4, v1.0.3, v1.0.1, and v1.0.0, whose files are named `MenuMijia-1.0.0-*`).
 
 ## Privacy
 
-Habits, repeated phrases, and pending timers stay on your Mac in plain-text local `UserDefaults` (`~/Library/Preferences/`, keys `assistant_user_habit_memory_v1` and `assistant_scheduled_commands_v1`). Mi Home login material, the Home Assistant token, AI API keys, and the LG TV pairing key live only in the macOS Keychain: there is no plain-text copy in `UserDefaults`, and the Mi Home session no longer stores the account-level `passToken`. Upgrading from a build that mirrored credentials into plain text moves them into the Keychain and deletes those keys on first launch. Builds are ad-hoc signed, so macOS may ask once for Keychain access after an update; if access is denied, sign in (or pair the TV) again. On Windows, the Mi Home session, HA token, and AI key go to the Windows Credential Manager; WebView `localStorage` only keeps UI settings. Upgrading from an older Windows build moves any plain-text credentials into the credential manager and removes them from `localStorage`. The Windows WebView also runs under a strict CSP, and its network bridge only reaches Xiaomi’s cloud, your configured AI endpoint, and your HA address.
+Habits, repeated phrases, and pending timers stay on your Mac in plain-text local `UserDefaults` (`~/Library/Preferences/`, keys `assistant_user_habit_memory_v1` and `assistant_scheduled_commands_v1`). Mi Home login material, the Home Assistant token, AI API keys, and the LG TV pairing key live in the macOS Keychain, and the Mi Home session no longer stores the account-level `passToken`. Upgrading from a build that mirrored credentials into plain text moves them into the Keychain, but **the plain-text key is deleted only after the Keychain accepted the value**: if that write fails, the plain-text copy survives and the migration retries on the next launch, so you are never silently logged out. (A legacy session blob that no longer decodes cannot be migrated; it is dropped and you sign in again.) Builds are ad-hoc signed, so macOS may ask once for Keychain access after an update; if access is denied, sign in (or pair the TV) again. On Windows, the current unreleased sources keep the Mi Home session, HA token, and AI key in the Windows Credential Manager and limit WebView `localStorage` to UI settings. The upgrade rewrites the settings copy without credentials *first*, then writes to the credential manager, so a refused write cannot leave a token in `localStorage`; the session then lives only in memory and you sign in again after a restart. **None of this is in a published Windows installer yet**: shipped Windows builds (up to v1.0.5) still persist those credentials in WebView `localStorage`. The strict CSP that restricts the WebView to Xiaomi’s cloud, your configured AI endpoint, and your HA address is likewise unreleased.
 
-Only utterances the local parser does not handle are sent to the model endpoint you configured. The payload is that utterance, device names, rooms, and states, the time of day, room temperature, and, if enabled, a habit summary. The API key and Mi Home credentials are not included. Settings states this on the configuration page.
+Only utterances the local parser does not handle are sent to the model endpoint you configured. The request body carries that utterance, device names, rooms, and states, the time of day, an environment summary, and, if enabled, a habit summary. Your API key is not part of that prompt text, but it **is** transmitted — as an `Authorization: Bearer` header — to the endpoint you configured (for a local Ollama or other self-hosted endpoint, that endpoint is the recipient). Mi Home credentials and the Home Assistant token are never part of this request. Settings states what will be sent on the configuration page.
+
+**LG TV connections are pinned.** The first TLS connection to a webOS TV saves that leaf certificate's SHA-256 under the TV's host name in the Keychain. If the certificate later changes, the client refuses the connection, stops retrying, and shows a toast instead of silently trusting the new identity. **Trust TV Again** in Settings asks for confirmation, clears the saved certificate and pairing key, and requires the on-screen pairing prompt again. If the saved fingerprint cannot be read, the client fails closed.
+
+**Demo mode stays offline.** With the demo backend selected, update checks and update downloads, the AI connection test, and proactive AI suggestions return local results or a "switch the data source first" hint instead of sending a request; the same rule covers LAN Home Assistant discovery and the LAN TV link. Switching back to demo stops any running TV connection, cancels update work, and discards a staged installer.
 
 **On-device speech recognition** keeps audio off Apple’s servers when the system has an offline model for the language.
 
@@ -215,7 +231,7 @@ bash scripts/check.sh            # secret scan, style checks, swift test
 bash scripts/linux-check/run.sh  # build and test MijiaCore on Linux (Swift 6.1)
 ```
 
-Domain types, the Mi Cloud client, the local parser, and the model client live in `MijiaCore` (macOS 14+ and Linux) and can be imported as a standalone SwiftPM library or tested without the UI. Cross-platform intent, delay, and undo rules share the golden corpus in `Tests/Fixtures/intent_golden.json` across `swift test` and `windows/tests/core.test.ts`. Read `CODING_STANDARDS.md` before submitting changes. Terms are in `GLOSSARY.md`. Architecture notes are in `docs/adr/`.
+Domain types, the Mi Cloud client, the local parser, and the model client live in `MijiaCore` (macOS 14+ and Linux) and can be imported as a standalone SwiftPM library or tested without the UI. The Windows app is a **separate implementation**; the two codebases stay aligned through the five shared fixtures in `Tests/Fixtures/` (`intent_golden.json`, `miot_golden.json`, `provider_golden.json`, `region_golden.json`, `ai_request_golden.json`), which `swift test` and `windows/tests/core.test.ts` each assert against. See [`docs/adr/0006-dual-platform-implementation.md`](docs/adr/0006-dual-platform-implementation.md). Read `CODING_STANDARDS.md` before submitting changes. Terms are in `GLOSSARY.md`. Architecture notes are in `docs/adr/`.
 
 ## Third-party components
 
