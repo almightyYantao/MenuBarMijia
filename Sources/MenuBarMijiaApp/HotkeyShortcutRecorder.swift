@@ -1,10 +1,19 @@
 import AppKit
+import Carbon
 import MijiaCore
 import Observation
 import SwiftUI
 import UserNotifications
 
 // MARK: - Global Hotkey Settings State (#43)
+
+/// Primitives extracted from an `NSEvent` so the recording can cross the monitor
+/// handler's `@Sendable` boundary (`NSEvent` itself is not Sendable).
+private struct RecordedKeyPayload: Sendable {
+    var keyCode: UInt16
+    var label: String
+    var modifiers: HotkeyModifiers
+}
 
 /// Mirrors the Carbon registration result so Settings can show "快捷键已被占用" instead of failing
 /// silently. The manager owns the registration; this type is only the UI-facing state.
@@ -126,8 +135,14 @@ final class HotkeyRecorderController {
         guard monitor == nil else { return }
         isRecording = true
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
-            guard let self else { return event }
-            return MainActor.assumeIsolated { self.handle(event) }
+            guard let self, self.isRecording else { return event }
+            // NSEvent 不能跨 Sendable 边界：先把需要的原语提出来（本地监视器保证主线程）。
+            let payload = RecordedKeyPayload(
+                keyCode: event.keyCode,
+                label: Self.label(for: event),
+                modifiers: Self.modifiers(from: event.modifierFlags)
+            )
+            return MainActor.assumeIsolated { self.apply(payload) }
         }
     }
 
@@ -139,17 +154,18 @@ final class HotkeyRecorderController {
         isRecording = false
     }
 
-    private func handle(_ event: NSEvent) -> NSEvent? {
+    @MainActor
+    private func apply(_ key: RecordedKeyPayload) -> NSEvent? {
         // Esc cancels instead of closing the Settings window.
-        if Int(event.keyCode) == kVK_Escape {
+        if key.keyCode == UInt16(kVK_Escape) {
             stop()
             return nil
         }
 
         let shortcut = HotkeyShortcut(
-            keyCode: event.keyCode,
-            keyLabel: Self.label(for: event),
-            modifiers: Self.modifiers(from: event.modifierFlags)
+            keyCode: key.keyCode,
+            keyLabel: key.label,
+            modifiers: key.modifiers
         )
         // A plain letter would be swallowed system-wide; keep listening for a usable chord.
         guard shortcut.isValid else {
@@ -171,7 +187,7 @@ final class HotkeyRecorderController {
         return modifiers(from: event.modifierFlags) == shortcut.modifiers
     }
 
-    static func modifiers(from flags: NSEvent.ModifierFlags) -> HotkeyModifiers {
+    nonisolated static func modifiers(from flags: NSEvent.ModifierFlags) -> HotkeyModifiers {
         var modifiers: HotkeyModifiers = []
         if flags.contains(.command) { modifiers.insert(.command) }
         if flags.contains(.option) { modifiers.insert(.option) }
@@ -181,7 +197,7 @@ final class HotkeyRecorderController {
     }
 
     /// Non-printable keys keep a readable label; letters/digits use the current keyboard layout.
-    private static func label(for event: NSEvent) -> String {
+    nonisolated private static func label(for event: NSEvent) -> String {
         if let special = specialLabels[event.keyCode] {
             return special
         }
@@ -192,40 +208,44 @@ final class HotkeyRecorderController {
         return raw.uppercased()
     }
 
-    private static let specialLabels: [UInt16: String] = [
-        UInt16(kVK_Space): "Space",
-        UInt16(kVK_Tab): "Tab",
-        UInt16(kVK_Return): "Return",
-        UInt16(kVK_Delete): "Delete",
-        UInt16(kVK_LeftArrow): "←",
-        UInt16(kVK_RightArrow): "→",
-        UInt16(kVK_UpArrow): "↑",
-        UInt16(kVK_DownArrow): "↓",
-        UInt16(kVK_Home): "Home",
-        UInt16(kVK_End): "End",
-        UInt16(kVK_PageUp): "PgUp",
-        UInt16(kVK_PageDown): "PgDn",
-        UInt16(kVK_F1): "F1",
-        UInt16(kVK_F2): "F2",
-        UInt16(kVK_F3): "F3",
-        UInt16(kVK_F4): "F4",
-        UInt16(kVK_F5): "F5",
-        UInt16(kVK_F6): "F6",
-        UInt16(kVK_F7): "F7",
-        UInt16(kVK_F8): "F8",
-        UInt16(kVK_F9): "F9",
-        UInt16(kVK_F10): "F10",
-        UInt16(kVK_F11): "F11",
-        UInt16(kVK_F12): "F12",
-        UInt16(kVK_F13): "F13",
-        UInt16(kVK_F14): "F14",
-        UInt16(kVK_F15): "F15",
-        UInt16(kVK_F16): "F16",
-        UInt16(kVK_F17): "F17",
-        UInt16(kVK_F18): "F18",
-        UInt16(kVK_F19): "F19",
-        UInt16(kVK_F20): "F20",
-    ]
+    private static let specialLabels: [UInt16: String] = {
+        // 分步构建：单个巨型字面量会让类型检查器超时。
+        let pairs: [(UInt16, String)] = [
+            (UInt16(kVK_Space), "Space"),
+            (UInt16(kVK_Tab), "Tab"),
+            (UInt16(kVK_Return), "Return"),
+            (UInt16(kVK_Delete), "Delete"),
+            (UInt16(kVK_LeftArrow), "←"),
+            (UInt16(kVK_RightArrow), "→"),
+            (UInt16(kVK_UpArrow), "↑"),
+            (UInt16(kVK_DownArrow), "↓"),
+            (UInt16(kVK_Home), "Home"),
+            (UInt16(kVK_End), "End"),
+            (UInt16(kVK_PageUp), "PgUp"),
+            (UInt16(kVK_PageDown), "PgDn"),
+            (UInt16(kVK_F1), "F1"),
+            (UInt16(kVK_F2), "F2"),
+            (UInt16(kVK_F3), "F3"),
+            (UInt16(kVK_F4), "F4"),
+            (UInt16(kVK_F5), "F5"),
+            (UInt16(kVK_F6), "F6"),
+            (UInt16(kVK_F7), "F7"),
+            (UInt16(kVK_F8), "F8"),
+            (UInt16(kVK_F9), "F9"),
+            (UInt16(kVK_F10), "F10"),
+            (UInt16(kVK_F11), "F11"),
+            (UInt16(kVK_F12), "F12"),
+            (UInt16(kVK_F13), "F13"),
+            (UInt16(kVK_F14), "F14"),
+            (UInt16(kVK_F15), "F15"),
+            (UInt16(kVK_F16), "F16"),
+            (UInt16(kVK_F17), "F17"),
+            (UInt16(kVK_F18), "F18"),
+            (UInt16(kVK_F19), "F19"),
+            (UInt16(kVK_F20), "F20"),
+        ]
+        return Dictionary(pairs, uniquingKeysWith: { first, _ in first })
+    }()
 }
 
 // MARK: - Recorder Row

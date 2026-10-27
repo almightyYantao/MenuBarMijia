@@ -5,6 +5,30 @@ import Observation
 
 // MARK: - On-demand "unsupported devices" scan (#45)
 
+/// Why an on-demand scan could not run. Localized so the settings row can show the reason.
+enum UnsupportedDeviceScanError: LocalizedError {
+    case notSignedIn
+    case invalidURL
+    case invalidResponse
+    case unauthorized
+    case rejected
+
+    var errorDescription: String? {
+        switch self {
+        case .notSignedIn:
+            return L10n.tr("尚未登录对应账号，无法扫描", "Sign in first to scan")
+        case .invalidURL:
+            return L10n.tr("地址无效", "Invalid address")
+        case .invalidResponse:
+            return L10n.tr("服务端返回了无法识别的数据", "The server returned unrecognized data")
+        case .unauthorized:
+            return L10n.tr("令牌被拒绝", "The token was rejected")
+        case .rejected:
+            return L10n.tr("请求被服务端拒绝", "The request was rejected by the server")
+        }
+    }
+}
+
 /// Reads the raw device registry of the current backend *on demand* and reports what the panel
 /// skipped. It is deliberately a separate read-only path: the live providers are untouched, so
 /// opening Settings cannot change what the dashboard shows.
