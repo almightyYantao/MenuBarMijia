@@ -263,6 +263,7 @@ extension HomeStore {
 
     public func undoTurnAllOff() {
         guard let banner = undoBanner else { return }
+        lastAssistantUndo = nil
         undoTimerTask?.cancel()
         self.undoBanner = nil
         let currentMap = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0) })

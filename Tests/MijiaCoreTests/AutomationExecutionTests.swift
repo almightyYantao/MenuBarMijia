@@ -88,6 +88,32 @@ struct AutomationExecutionTests {
         #expect(store.userHabitMemory.entries.isEmpty)
     }
 
+    @Test("Banner undo consumes the command so a second undo cannot overwrite a later manual change")
+    @MainActor
+    func bannerUndoIsConsumed() async throws {
+        let (store, mock) = try await makeStore()
+        await store.runAutomation(
+            intents: [DeviceIntent(targetId: Self.studyLight.id, operation: .power(false))],
+            title: "锁屏关灯"
+        )
+        store.undoTurnAllOff()
+        #expect(store.lastAssistantActionAt == nil)
+        for _ in 0..<50 {
+            if await mock.executedCommands.count >= 2 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let light = try #require(store.devices.first(where: { $0.id == Self.studyLight.id }))
+        let task = try #require(store.togglePrimary(light))
+        #expect(await task.value)
+        await store.runAssistantCommand("撤销")
+        #expect(store.devices.first(where: { $0.id == Self.studyLight.id })?.isActiveOn == false)
+        #expect(await mock.executedCommands == [
+            .setLightPower(entityId: "light.study", isOn: false),
+            .setLightPower(entityId: "light.study", isOn: true),
+            .setLightPower(entityId: "light.study", isOn: false)
+        ])
+    }
+
     @Test("External entry points only see visible, online, primary-toggleable devices")
     @MainActor
     func controllableDevices() async throws {
