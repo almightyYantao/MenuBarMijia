@@ -622,16 +622,6 @@ struct MiCloudProviderTests {
     @MainActor
     @Test("HomeStore persists homeBackend, formats serverHostSummary for both modes, and handles login/logout")
     func backendSwitchingAndSummary() {
-        let priorSession = MiSessionStore.load()
-        defer {
-            if let priorSession {
-                MiSessionStore.save(priorSession)
-            } else {
-                MiSessionStore.clear()
-            }
-        }
-        MiSessionStore.clear()
-
         let suite = "com.jryang1997.MenuBarMijia.backend-test.\(UUID().uuidString)"
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
 

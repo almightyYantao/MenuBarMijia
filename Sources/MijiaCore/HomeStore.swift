@@ -160,7 +160,7 @@ public final class HomeStore {
         guard !hasCompletedOnboarding, devices.isEmpty else { return false }
         if case .connected = connectionStatus { return false }
         let hasMiSession = (miSessionMaskedUserId != nil)
-        let hasHAToken = !KeychainHelper.loadToken().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasHAToken = !KeychainHelper.loadToken(defaults: userDefaults).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return !hasMiSession && !hasHAToken
     }
 
@@ -327,7 +327,7 @@ public final class HomeStore {
         }
         self.allOffOverrides = ud.dictionary(forKey: "all_off_overrides") as? [String: Bool] ?? [:]
 
-        let initialHAToken = (provider == nil && initialBackend == .homeAssistant) ? KeychainHelper.loadToken() : ""
+        let initialHAToken = (provider == nil && initialBackend == .homeAssistant) ? KeychainHelper.loadToken(defaults: ud) : ""
         if let provider {
             self.provider = provider
         } else if initialBackend == .xiaomiCloud {
@@ -429,6 +429,7 @@ public final class HomeStore {
         at: Date,
         habitReceipt: UserHabitMemory.RecordingReceipt?
     )?
+    public var lastAssistantActionAt: Date? { lastAssistantUndo?.at }
     /// How long a spoken "撤销" can still reach back.
     static let voiceUndoWindow: TimeInterval = 10 * 60
     /// Test seam for the delay before a scheduled command fires.

@@ -36,7 +36,10 @@ public enum KeychainHelper {
     public static let defaultNASURL = "http://homeassistant.local:8123"
     public static let defaultSeededToken = ""
 
-    public static func loadToken() -> String {
+    public static func loadToken(defaults: UserDefaults = .standard) -> String {
+        guard defaults === UserDefaults.standard else {
+            return loadSecret(account: account, defaults: defaults)
+        }
         if let envToken = ProcessInfo.processInfo.environment["HA_ACCESS_TOKEN"],
            !envToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return envToken.trimmingCharacters(in: .whitespacesAndNewlines)

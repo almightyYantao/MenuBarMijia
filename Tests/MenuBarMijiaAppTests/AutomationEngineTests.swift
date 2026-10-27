@@ -92,6 +92,40 @@ struct AutomationEngineTests {
         #expect(store.devices.first(where: { $0.id == Self.studyLight.id })?.isActiveOn == false)
     }
 
+    @Test("A panel created after automation can offer undo without observing the execution")
+    func undoAvailableAfterAutomation() async throws {
+        let (store, mock) = try await makeStore()
+        await store.runAutomation(
+            intents: [DeviceIntent(targetId: Self.studyLight.id, operation: .power(false))],
+            title: "关闭书房台灯"
+        )
+
+        let tracker = UndoAvailabilityTracker()
+        tracker.syncAction(at: store.lastAssistantActionAt)
+        #expect(tracker.isAvailable)
+        #expect(store.devices.first?.isActiveOn == false)
+        await tracker.performUndo(store: store)
+        #expect(store.devices.first?.isActiveOn == true)
+        #expect(!tracker.isAvailable)
+        #expect(store.lastAssistantActionAt == nil)
+        #expect(await mock.executedCommands == [
+            .setLightPower(entityId: "light.study", isOn: false),
+            .setLightPower(entityId: "light.study", isOn: true)
+        ])
+        #expect(store.userHabitMemory.entries.isEmpty)
+    }
+
+    @Test("Reopening the panel preserves the original ten-minute undo deadline", arguments: [360.0, 601.0])
+    func undoKeepsOriginalDeadline(elapsed: TimeInterval) {
+        let date = Date().addingTimeInterval(-elapsed)
+        let tracker = UndoAvailabilityTracker()
+        tracker.syncAction(at: date)
+        #expect(tracker.isAvailable == (elapsed < 600))
+        #expect(tracker.lastActionAt == (elapsed < 600 ? date : nil))
+        tracker.syncAction(at: nil)
+        #expect(!tracker.isAvailable)
+    }
+
     @Test("Disabled rules and non-matching triggers do nothing")
     func disabledRuleIgnored() async throws {
         let (defaults, suite) = try makeDefaults()

@@ -4,10 +4,7 @@ import Observation
 
 /// Keeps the "撤销上一步" entry alive after the undo banner expires (#53).
 ///
-/// The store keeps its own `lastAssistantUndo` for ten minutes, but it is internal and there is no
-/// public "is undo available" flag. This tracker mirrors the *UI-visible* signal: an assistant
-/// action finished successfully. The actual window is still enforced by the store, so a stale entry
-/// only ever answers "没有可以撤销的操作".
+/// The store's timestamp remains authoritative when an action finishes before the panel exists.
 @Observable
 @MainActor
 final class UndoAvailabilityTracker {
@@ -18,43 +15,30 @@ final class UndoAvailabilityTracker {
 
     private(set) var lastActionAt: Date?
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
-    @ObservationIgnored private var suppressNotesUntil: Date = .distantPast
-
-    private init() {}
+    init() {}
 
     var isAvailable: Bool {
         lastActionAt != nil
     }
 
-    /// Called when the assistant reports a completed command. Executing "撤销" itself also ends in
-    /// `.done`, so the note is suppressed while (and just after) an undo runs.
-    func noteAssistantAction() {
-        guard Date() >= suppressNotesUntil else { return }
-        lastActionAt = Date()
+    func syncAction(at date: Date?) {
         expiryTask?.cancel()
+        lastActionAt = nil
+        guard let date else { return }
+        let remaining = Self.window - Date().timeIntervalSince(date)
+        guard remaining > 0 else { return }
+        lastActionAt = date
         expiryTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Self.window))
+            try? await Task.sleep(for: .seconds(remaining))
             guard !Task.isCancelled else { return }
             self?.lastActionAt = nil
         }
     }
 
-    func beginUndo() {
-        suppressNotesUntil = Date().addingTimeInterval(1.5)
-        expiryTask?.cancel()
-        expiryTask = nil
-        lastActionAt = nil
-    }
-
-    func finishUndo() {
-        suppressNotesUntil = Date().addingTimeInterval(1.5)
-        lastActionAt = nil
-    }
-
     /// Shared button action for the AI bar and the panel footer.
     func performUndo(store: HomeStore) async {
-        beginUndo()
+        syncAction(at: nil)
         _ = await store.runAssistantCommand(L10n.tr("撤销", "undo"))
-        finishUndo()
+        syncAction(at: store.lastAssistantActionAt)
     }
 }

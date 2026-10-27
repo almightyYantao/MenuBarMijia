@@ -84,6 +84,8 @@ struct KeychainCredentialTests {
         #expect(defaults.string(forKey: KeychainHelper.secretFallbackKey(for: account)) == "suite-value")
         #expect(KeychainHelper.readKeychainSecret(account: account) == nil)
         #expect(KeychainHelper.loadSecret(account: account, defaults: defaults) == "suite-value")
+        #expect(KeychainHelper.saveSecret("suite-ha-token", account: "ha_access_token", defaults: defaults))
+        #expect(KeychainHelper.loadToken(defaults: defaults) == "suite-ha-token")
 
         #expect(KeychainHelper.saveSecret("", account: account, defaults: defaults))
         #expect(defaults.string(forKey: KeychainHelper.secretFallbackKey(for: account)) == nil)

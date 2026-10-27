@@ -322,7 +322,7 @@ extension HomeStore {
 
         switch backend {
         case .homeAssistant:
-            self.provider = makeHAProvider(baseURLString: serverURLString, token: KeychainHelper.loadToken())
+            self.provider = makeHAProvider(baseURLString: serverURLString, token: KeychainHelper.loadToken(defaults: userDefaults))
         case .xiaomiCloud:
             nonisolated(unsafe) let ud = userDefaults
             self.provider = MiCloudProvider(sessionLoader: { MiSessionStore.load(defaults: ud) })
@@ -428,7 +428,7 @@ extension HomeStore {
         guard normalizedCurrent != instance.baseURL else { return }
         self.serverURLString = instance.baseURL
         if reconnectProvider, let haProvider = provider as? HAWebSocketProvider {
-            let token = KeychainHelper.loadToken()
+            let token = KeychainHelper.loadToken(defaults: userDefaults)
             Task {
                 await haProvider.updateCredentials(baseURLString: instance.baseURL, token: token)
             }
@@ -459,7 +459,7 @@ extension HomeStore {
             let normalizedCurrent = HAWebSocketProvider.normalizeBaseURL(serverURLString)
             let isDefaultURL = (normalizedCurrent == KeychainHelper.defaultNASURL)
                 || (userDefaults.string(forKey: "ha_server_url") == nil)
-            let hasToken = !KeychainHelper.loadToken().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let hasToken = !KeychainHelper.loadToken(defaults: userDefaults).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             if isDefaultURL && !hasToken && first.baseURL != normalizedCurrent {
                 applyDiscoveredHAInstance(first, reconnectProvider: false)
             }

@@ -117,11 +117,12 @@ public struct ControlCenterPanel: View {
         .frame(width: Self.panelWidth, height: panelHeight)
         .onChange(of: skinRaw) { _, _ in syncMenuBarWindowSize() }
         .onChange(of: panelHeightRaw) { _, _ in syncMenuBarWindowSize() }
-        // #53: remember a successful assistant action so "撤销上一步" outlives the banner.
+        .onChange(of: store.lastAssistantActionAt) { _, date in
+            UndoAvailabilityTracker.shared.syncAction(at: date)
+        }
         .onChange(of: store.assistantState) { _, state in
             switch state {
             case .done:
-                UndoAvailabilityTracker.shared.noteAssistantAction()
                 SoundFeedback.playSuccess()
             case .failed:
                 SoundFeedback.playFailure()
@@ -143,9 +144,11 @@ public struct ControlCenterPanel: View {
         .opacity(isPresented || reduceMotion ? 1 : 0)
         .blur(radius: isPresented || reduceMotion ? 0 : 6)
         .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didShowNotification)) { _ in
+            UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
             withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true }
         }
         .onAppear {
+            UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
             SettingsWindowOpener.shared.open = { openSettings() }
             syncMenuBarWindowSize()
             withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true }
