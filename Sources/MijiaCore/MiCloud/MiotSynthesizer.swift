@@ -84,7 +84,12 @@ public enum MiotSynthesizer {
             }
         }
 
-        return DeviceSynthesizer.assembleHome(devices: smartDevices, readings: readings, scenes: [])
+        return DeviceSynthesizer.assembleHome(
+            devices: smartDevices,
+            readings: readings,
+            scenes: [],
+            roomNameOrder: DeviceSynthesizer.roomNameOrder(from: rooms.map(\.name))
+        )
     }
 
     /// The (did, siid, piid) triples the synthesizer reads for this device; poll exactly these.

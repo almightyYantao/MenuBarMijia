@@ -3,6 +3,7 @@ import type {
   AssistantSuggestion,
   DeviceCommand,
   DeviceIntent,
+  EnvironmentReading,
   HomeScene,
   IntentOperation,
   IntentPlan,
@@ -73,12 +74,12 @@ export const DelayPhrase = {
       const m = /^半小时(?:以)?后(.+)$/.exec(trimmed);
       return buildDelay(1800, 1, m?.[1] ?? "");
     }
-    const regex = /^(?:过|等)?([0-9]+|[一二两三四五六七八九十]+)(秒钟?|分钟?|小时|钟头)(?:以)?后?[，,\s]*(.+)$/;
+    const regex = /^(?:过|等)?([0-9]+|[一二两三四五六七八九十]+)\s*(秒钟?|分钟?|小时|钟头)(?:以)?后?[，,\s]*(.+)$/;
     const front = regex.exec(trimmed);
     if (front) {
       return buildDelay(parseCnOrArabicNumber(front[1] ?? ""), chineseUnitMultiplier(front[2] ?? ""), front[3] ?? "");
     }
-    const backRegex = /^(.+?)[，,\s]*(?:过|等)?([0-9]+|[一二两三四五六七八九十]+)(秒钟?|分钟?|小时|钟头)(?:以)?后$/;
+    const backRegex = /^(.+?)[，,\s]*(?:过|等)?([0-9]+|[一二两三四五六七八九十]+)\s*(秒钟?|分钟?|小时|钟头)(?:以)?后$/;
     const back = backRegex.exec(trimmed);
     if (back) {
       return buildDelay(parseCnOrArabicNumber(back[2] ?? ""), chineseUnitMultiplier(back[3] ?? ""), back[1] ?? "");
@@ -358,7 +359,9 @@ const CONSUMED_MARKER = "\u001f";
 
 function deviceCategory(dev: SmartDevice): IntentCategory {
   if (dev.kind.kind === "light") return "light";
-  if (dev.kind.kind === "climate") return dev.name.includes("暖") ? "heater" : "climate";
+  if (dev.kind.kind === "climate") {
+    return dev.model.includes("heater") || dev.name.includes("暖") ? "heater" : "climate";
+  }
   if (dev.kind.kind === "fan") return "fan";
   if (dev.kind.kind === "plug") return "plug";
   if (dev.kind.kind === "vacuum") return "vacuum";
@@ -927,6 +930,101 @@ export const LocalIntentParser = {
   },
 };
 
+// MARK: - When AI actions may run by themselves (#21)
+
+function readProbability(raw: unknown): number | null {
+  let value: number | null = null;
+  if (typeof raw === "number") {
+    value = raw;
+  } else if (typeof raw === "string" && raw.trim() !== "") {
+    const text = raw.trim();
+    value = text.endsWith("%") ? Number(text.slice(0, -1).trim()) / 100 : Number(text);
+  }
+  if (value === null || !Number.isFinite(value)) return null;
+  if (value > 1) value /= 100;
+  return Math.min(Math.max(value, 0), 1);
+}
+
+/** Mirrors MijiaCore.ModelActionPolicy: guesses below 80% and risky actions wait for a tap. */
+export const ModelActionPolicy = {
+  AUTO_RUN_THRESHOLD: 0.8,
+  SUGGESTION_FLOOR: 0.2,
+
+  /** probabilities[choice], else confidence, else 0 — a missing number means "not sure". */
+  probabilityOf(answer: Record<string, unknown> | undefined, choice: string): number {
+    if (!answer) return 0;
+    const probs = answer["probabilities"];
+    if (probs && typeof probs === "object") {
+      const value = readProbability((probs as Record<string, unknown>)[choice]);
+      if (value !== null) return value;
+    }
+    return readProbability(answer["confidence"]) ?? 0;
+  },
+
+  /** Heater on, any plug switch, or a vacuum start needs a tap even when the model is sure. */
+  needsConfirmation(intent: DeviceIntent, devices: readonly SmartDevice[]): boolean {
+    const dev = devices.find((d) => d.id === intent.targetId);
+    if (!dev) return false;
+    const op = intent.operation;
+    switch (deviceCategory(dev)) {
+      case "heater":
+        if (op.kind === "power") return op.isOn;
+        if (op.kind === "hvacMode") return op.mode !== "off";
+        return true;
+      case "plug":
+        return op.kind === "power";
+      case "vacuum":
+        return op.kind === "power" && op.isOn;
+      default:
+        return false;
+    }
+  },
+
+  partition(
+    intents: readonly DeviceIntent[],
+    devices: readonly SmartDevice[]
+  ): { run: DeviceIntent[]; confirm: DeviceIntent[] } {
+    const run: DeviceIntent[] = [];
+    const confirm: DeviceIntent[] = [];
+    for (const intent of intents) {
+      (this.needsConfirmation(intent, devices) ? confirm : run).push(intent);
+    }
+    return { run, confirm };
+  },
+
+  /** One chip per device, or one chip for the whole group when `grouped`. */
+  chips(
+    intents: readonly DeviceIntent[],
+    probability: number | null,
+    idPrefix: string,
+    devices: readonly SmartDevice[],
+    scenes: readonly HomeScene[],
+    grouped = false
+  ): AssistantSuggestion[] {
+    if (intents.length === 0) return [];
+    const percent = probability !== null && probability > 0 ? Math.max(20, Math.min(99, Math.round(probability * 100))) : null;
+    const title = (group: readonly DeviceIntent[]) => IntentReply.describe(group, devices, scenes).replace(/^已/, "");
+    if (grouped) {
+      return [{ id: idPrefix, title: title(intents), confidencePercent: percent, intents: [...intents] }];
+    }
+    const byTarget = new Map<string, DeviceIntent[]>();
+    for (const intent of intents) {
+      byTarget.set(intent.targetId, [...(byTarget.get(intent.targetId) ?? []), intent]);
+    }
+    return [...byTarget.entries()].map(([targetId, group]) => ({
+      id: `${idPrefix}:${targetId}`,
+      title: title(group),
+      confidencePercent: percent,
+      intents: group,
+    }));
+  },
+
+  confirmationReply(ranReply: string | null): string {
+    if (!ranReply) return "没把握直接执行，点下面的建议再执行";
+    return `${ranReply}；下面的建议要点一下才执行`;
+  },
+};
+
 // MARK: - Jev /v1/systemone & /v1/chat/completions Resolver
 
 export interface AssistantProviderPresetInfo {
@@ -1037,20 +1135,121 @@ export const ASSISTANT_PROVIDER_PRESETS: ReadonlyArray<AssistantProviderPresetIn
   },
 ];
 
+export interface AssistantEndpoint {
+  readonly scheme: "http" | "https";
+  /** Lowercased host without IPv6 brackets or a trailing dot. */
+  readonly host: string;
+  readonly port: number | null;
+}
+
+/** Parses a user-typed endpoint. A missing scheme means https (`api.deepseek.com/v1`). Mirrors macOS `AssistantEndpoint`. */
+export function parseAssistantEndpoint(raw: string): AssistantEndpoint | null {
+  let text = raw.trim();
+  if (!text) return null;
+  if (!text.includes("://")) text = `https://${text}`;
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return null;
+  }
+  const scheme = url.protocol.replace(/:$/, "").toLowerCase();
+  if (scheme !== "http" && scheme !== "https") return null;
+  let host = url.hostname.toLowerCase();
+  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+  host = host.replace(/\.+$/, "");
+  if (!host) return null;
+  return { scheme, host, port: url.port ? Number(url.port) : null };
+}
+
+/** `domain` itself or one of its subdomains: `api.openrouter.ai` matches, `openrouter.ai.evil.com` does not. */
+export function endpointHostMatches(endpoint: AssistantEndpoint, domain: string): boolean {
+  return endpoint.host === domain || endpoint.host.endsWith(`.${domain}`);
+}
+
+/** Four dotted decimal octets, or null when `host` is not an IPv4 literal (so `10.evil.com` is not a LAN address). */
+export function ipv4Octets(host: string): number[] | null {
+  const parts = host.split(".");
+  if (parts.length !== 4) return null;
+  const octets: number[] = [];
+  for (const part of parts) {
+    if (!/^[0-9]{1,3}$/.test(part)) return null;
+    const value = Number(part);
+    if (value > 255) return null;
+    octets.push(value);
+  }
+  return octets;
+}
+
+/** Loopback, private LAN, link-local, CGNAT/Tailscale, IPv6 ULA/link-local, or mDNS `.local` names. */
+export function isLocalNetworkEndpoint(endpoint: AssistantEndpoint): boolean {
+  const host = endpoint.host;
+  if (host === "localhost" || host === "::1" || host.endsWith(".local")) return true;
+  const octets = ipv4Octets(host);
+  if (octets) {
+    const [a, b] = octets as [number, number, number, number];
+    return (
+      a === 127 ||
+      a === 10 ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 100 && b >= 64 && b <= 127)
+    );
+  }
+  if (host.includes(":")) {
+    return /^(fc|fd|fe[89ab])/.test(host);
+  }
+  return false;
+}
+
+/** API keys only travel over https, or over plain http that stays on the local network. */
+export function endpointAllowsSendingSecrets(baseURL: string): boolean {
+  const endpoint = parseAssistantEndpoint(baseURL);
+  if (!endpoint) return false;
+  return endpoint.scheme === "https" || isLocalNetworkEndpoint(endpoint);
+}
+
+/** True when the endpoint may run without an API key (this computer or the local network). */
+export function isLocalAssistantEndpoint(baseURL: string): boolean {
+  const endpoint = parseAssistantEndpoint(baseURL);
+  return endpoint ? isLocalNetworkEndpoint(endpoint) : false;
+}
+
+/** Host plus explicit port; a saved key is bound to this value. */
+export function assistantEndpointIdentity(baseURL: string): string | null {
+  const endpoint = parseAssistantEndpoint(baseURL);
+  if (!endpoint) return null;
+  if (endpoint.port === null) return endpoint.host;
+  return endpoint.host.includes(":") ? `[${endpoint.host}]:${endpoint.port}` : `${endpoint.host}:${endpoint.port}`;
+}
+
+function presetById(id: string): AssistantProviderPresetInfo {
+  return ASSISTANT_PROVIDER_PRESETS.find((p) => p.id === id) ?? ASSISTANT_PROVIDER_PRESETS[ASSISTANT_PROVIDER_PRESETS.length - 1]!;
+}
+
+/**
+ * Maps an endpoint to its provider by exact host (or a subdomain of a provider-owned domain).
+ * Substring checks would also match `openrouter.ai.evil.com`. Shared cases: Tests/Fixtures/provider_golden.json.
+ */
 export function inferAssistantPreset(baseURL: string): AssistantProviderPresetInfo {
-  const lower = baseURL.trim().toLowerCase();
-  if (lower.includes("openrouter.ai")) return ASSISTANT_PROVIDER_PRESETS[0]!;
-  if (lower.includes("typesafe.ai")) return ASSISTANT_PROVIDER_PRESETS[1]!;
-  if (lower.includes("deepseek.com")) return ASSISTANT_PROVIDER_PRESETS[2]!;
-  if (lower.includes("siliconflow.cn")) return ASSISTANT_PROVIDER_PRESETS[3]!;
-  if (lower.includes("aliyuncs.com")) return ASSISTANT_PROVIDER_PRESETS[4]!;
-  if (lower.includes("bigmodel.cn")) return ASSISTANT_PROVIDER_PRESETS[5]!;
-  if (lower.includes("moonshot.cn") || lower.includes("moonshot.ai")) return ASSISTANT_PROVIDER_PRESETS[6]!;
-  if (lower.includes("openai.com")) return ASSISTANT_PROVIDER_PRESETS[7]!;
-  if (lower.includes("googleapis.com")) return ASSISTANT_PROVIDER_PRESETS[8]!;
-  if (lower.includes("groq.com")) return ASSISTANT_PROVIDER_PRESETS[9]!;
-  if (lower.includes(":11434")) return ASSISTANT_PROVIDER_PRESETS[10]!;
-  return ASSISTANT_PROVIDER_PRESETS[11]!;
+  const endpoint = parseAssistantEndpoint(baseURL);
+  if (!endpoint) return presetById("custom");
+  const host = endpoint.host;
+  const is = (domain: string) => endpointHostMatches(endpoint, domain);
+  if (is("openrouter.ai")) return presetById("openrouter_jev");
+  if (is("typesafe.ai")) return presetById("native_jev");
+  if (is("deepseek.com")) return presetById("deepseek");
+  if (is("siliconflow.cn")) return presetById("siliconflow");
+  // aliyuncs.com and googleapis.com also serve customer-owned buckets, so only the API hosts count.
+  if (host === "dashscope.aliyuncs.com" || host === "dashscope-intl.aliyuncs.com") return presetById("dashscope");
+  if (is("bigmodel.cn")) return presetById("zhipu_glm");
+  if (is("moonshot.cn") || is("moonshot.ai")) return presetById("moonshot_kimi");
+  if (is("openai.com")) return presetById("openai");
+  if (host === "generativelanguage.googleapis.com") return presetById("gemini");
+  if (is("groq.com")) return presetById("groq");
+  if (endpoint.port === 11434 && isLocalNetworkEndpoint(endpoint)) return presetById("ollama");
+  return presetById("custom");
 }
 
 export interface AssistantConfig {
@@ -1064,6 +1263,408 @@ export const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
   model: "~typesafe/jev-latest",
   apiKey: "",
 };
+
+/** Shown when a plain-http public endpoint would receive the API key and the user's words unencrypted (#19). */
+export const INSECURE_ENDPOINT_MESSAGE =
+  "AI 服务地址不是 https。为保护 API Key，只有本机或局域网地址可以用 http。";
+
+// MARK: - Ambient Context & Jev SystemOne Request (#38)
+
+/**
+ * Ambient context sent with Jev `/v1/systemone` requests. Field names and empty-value
+ * semantics match macOS `AssistantContext` (Sources/MijiaCore/UserHabitMemory.swift),
+ * so both ends send the same `state` keys for the same home (#38).
+ */
+export interface AssistantContext {
+  readonly timeSummary: string;
+  readonly environmentSummary: string;
+  readonly activeDevicesSummary: string;
+  readonly habitSummary: string;
+}
+
+export const EMPTY_ASSISTANT_CONTEXT: AssistantContext = {
+  timeSummary: "",
+  environmentSummary: "",
+  activeDevicesSummary: "",
+  habitSummary: "",
+};
+
+/** The part of `learnedShortcuts` the habit summary reads. */
+export interface HabitPhraseSummary {
+  readonly phrase: string;
+  readonly reply: string;
+}
+
+/** Time-of-day buckets, identical to macOS `UserHabitMemory.TimeBucket`. */
+export function timeBucketLabel(hour: number): string {
+  if (hour >= 6 && hour < 11) return "清晨";
+  if (hour >= 11 && hour < 14) return "午间";
+  if (hour >= 14 && hour < 18) return "下午";
+  if (hour >= 18 && hour < 23) return "夜晚";
+  return "深夜";
+}
+
+/** `下午 15:07`, matching HomeStore.buildAssistantContext on macOS. */
+export function buildTimeSummary(now: Date): string {
+  const hours = String(now.getHours()).padStart(2, "0");
+  const minutes = String(now.getMinutes()).padStart(2, "0");
+  return `${timeBucketLabel(now.getHours())} ${hours}:${minutes}`;
+}
+
+/** `客厅 25.5°C 52%，卧室 23.0°C`, matching the macOS environment summary. */
+export function buildEnvironmentSummary(readings: readonly EnvironmentReading[]): string {
+  return readings
+    .map((reading) => {
+      let text = reading.roomName;
+      if (reading.temperature !== null) text += ` ${reading.temperature.toFixed(1)}°C`;
+      if (reading.humidity !== null) text += ` ${Math.round(reading.humidity)}%`;
+      return text;
+    })
+    .join("，");
+}
+
+/**
+ * Windows' habit memory only stores phrase → action pairs (`learnedShortcuts`), not the
+ * macOS time-bucket/frequency entries. TODO-#38: replace this with a full habit summary
+ * once Windows tracks per-bucket counts; the `user_habits` field name must stay aligned
+ * with macOS.
+ */
+export function buildHabitSummary(
+  enabled: boolean,
+  shortcuts: readonly HabitPhraseSummary[]
+): string {
+  if (!enabled || shortcuts.length === 0) return "";
+  const top = shortcuts.slice(0, 4).map((shortcut) => `「${shortcut.phrase}」→${shortcut.reply}`);
+  return `个人口头禅：${top.join("；")}`;
+}
+
+/** Builds the ambient context macOS sends: time, indoor readings, running devices, habits. */
+export function buildAssistantContext(options: {
+  readonly now: Date;
+  readonly readings: readonly EnvironmentReading[];
+  readonly devices: readonly SmartDevice[];
+  readonly habitSummary?: string;
+}): AssistantContext {
+  const active = options.devices
+    .filter((device) => device.isOnline && isDeviceActiveOn(device))
+    .map((device) => `${device.name}(${catalogStateSummary(device)})`);
+  return {
+    timeSummary: buildTimeSummary(options.now),
+    environmentSummary: buildEnvironmentSummary(options.readings),
+    activeDevicesSummary: active.length > 0 ? active.join("、") : "全屋设备均关闭",
+    habitSummary: options.habitSummary ?? "",
+  };
+}
+
+/** `light`/`climate`/`fan`/`plug`/`vacuum`; `null` for sensors (not assistant-controllable). */
+export function assistantDeviceCategory(device: SmartDevice): string | null {
+  switch (device.kind.kind) {
+    case "light":
+    case "climate":
+    case "fan":
+    case "plug":
+    case "vacuum":
+      return device.kind.kind;
+    case "sensor":
+      return null;
+  }
+}
+
+function formatTemperatureValue(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+/**
+ * One-line state summary inside the catalog, mirroring macOS `IntentCatalog.stateSummary`.
+ * Kept byte-for-byte compatible in shape (Chinese words and separators) so a prompt built
+ * on either platform means the same thing to the model.
+ */
+export function catalogStateSummary(device: SmartDevice): string {
+  if (!device.isOnline) return "离线";
+  const kind = device.kind;
+  switch (kind.kind) {
+    case "light": {
+      const effects = kind.availableEffects.length > 0 ? ` 可用模式:${kind.availableEffects.join("/")}` : "";
+      if (!kind.isOn) return `关${effects}`;
+      let text = "开";
+      if (kind.brightnessPercent !== null) text += ` 亮度${kind.brightnessPercent}%`;
+      if (kind.currentEffect) text += ` 当前:${kind.currentEffect}`;
+      return text + effects;
+    }
+    case "climate": {
+      const modes = kind.availableModes.join("/");
+      const range = `${formatTemperatureValue(kind.minTemp)}-${formatTemperatureValue(kind.maxTemp)}°C`;
+      const current = kind.isOn && kind.hvacMode !== "off"
+        ? `${kind.hvacMode} ${formatTemperatureValue(kind.targetTemperature)}°C`
+        : "关";
+      const fan = kind.availableFanModes.length > 0 ? ` 可选风速:${kind.availableFanModes.join("/")}` : "";
+      return `${current} 可用模式:${modes} 温度范围:${range}${fan}`;
+    }
+    case "fan": {
+      let text = kind.isOn ? "开" : "关";
+      if (kind.isOn && kind.presetMode) text += ` 风速:${kind.presetMode}`;
+      if (kind.availablePresetModes.length > 0) text += ` 可选风速:${kind.availablePresetModes.join("/")}`;
+      if (kind.isOscillating !== null) text += ` 摇头:${kind.isOscillating ? "开" : "关"}`;
+      return text;
+    }
+    case "plug":
+      return kind.isOn ? "开" : "关";
+    case "vacuum":
+      // macOS VacuumSpec.isCleaning treats both "cleaning" and "on" as 清扫中 (#38).
+      return kind.status === "cleaning" || kind.status === "on" ? "清扫中" : "待机";
+    case "sensor":
+      return "";
+  }
+}
+
+export interface IntentCatalog {
+  /** Two-section prompt text: controllable devices then scenes, exactly like macOS. */
+  readonly text: string;
+  readonly aliasDevices: ReadonlyArray<{ readonly alias: string; readonly device: SmartDevice }>;
+  readonly criteriaByAlias: Readonly<Record<string, string>>;
+  readonly aliasToIds: ReadonlyMap<string, readonly string[]>;
+}
+
+/**
+ * Short aliases for controllable devices (d1…dN, never truncated) plus scene aliases and
+ * the room/all-light/whole-home shortcuts macOS offers the model (#33 / #38).
+ */
+export function buildIntentCatalog(
+  devices: readonly SmartDevice[],
+  scenes: readonly HomeScene[]
+): IntentCatalog {
+  const lines: string[] = [];
+  const sceneLines: string[] = [];
+  const aliasDevices: Array<{ alias: string; device: SmartDevice }> = [];
+  const aliasToIds = new Map<string, string[]>();
+  const criteriaByAlias: Record<string, string> = {};
+  const allLightIds: string[] = [];
+  const allDeviceIds: string[] = [];
+  const roomLights = new Map<string, string[]>();
+
+  for (const device of devices) {
+    const category = assistantDeviceCategory(device);
+    if (category === null) continue;
+    const alias = `d${aliasDevices.length + 1}`;
+    const summary = catalogStateSummary(device);
+    aliasDevices.push({ alias, device });
+    aliasToIds.set(alias, [device.id]);
+    aliasToIds.set(device.id, [device.id]);
+    if (!aliasToIds.has(device.name)) aliasToIds.set(device.name, [device.id]);
+    criteriaByAlias[alias] = `${device.name} (${device.roomName}, ${category}, ${summary})`;
+    lines.push([alias, device.name, device.roomName, category, summary].join("|"));
+    allDeviceIds.push(device.id);
+    if (category === "light") {
+      allLightIds.push(device.id);
+      if (device.roomName) {
+        const ids = roomLights.get(device.roomName) ?? [];
+        ids.push(device.id);
+        roomLights.set(device.roomName, ids);
+      }
+    }
+  }
+
+  for (const [room, ids] of roomLights.entries()) {
+    if (ids.length < 2) continue;
+    const alias = `room_lights:${room}`;
+    aliasToIds.set(alias, ids);
+    criteriaByAlias[alias] = `${room}所有灯具 (${ids.length}盏)`;
+  }
+  if (allLightIds.length >= 2) {
+    aliasToIds.set("all_lights", allLightIds);
+    criteriaByAlias["all_lights"] = `全屋所有灯具 (${allLightIds.length}盏)`;
+  }
+  if (allDeviceIds.length >= 2) {
+    aliasToIds.set("all_devices", allDeviceIds);
+    criteriaByAlias["all_devices"] = `全屋所有可控设备 (${allDeviceIds.length}台)`;
+  }
+
+  scenes.forEach((scene, index) => {
+    const alias = `s${index + 1}`;
+    aliasToIds.set(alias, [scene.id]);
+    aliasToIds.set(scene.id, [scene.id]);
+    if (!aliasToIds.has(scene.name)) aliasToIds.set(scene.name, [scene.id]);
+    criteriaByAlias[alias] = `场景：${scene.name}`;
+    sceneLines.push(`${alias}|${scene.name}`);
+  });
+
+  let text = "设备(id|名称|房间|类型|当前状态):\n" + lines.join("\n");
+  if (sceneLines.length > 0) {
+    text += "\n场景(id|名称):\n" + sceneLines.join("\n");
+  }
+
+  return { text, aliasDevices, criteriaByAlias, aliasToIds };
+}
+
+/** Operations offered to the model, matching macOS `opCriteria` (#38). */
+export function systemOneOpCriteria(): Record<string, string> {
+  return {
+    power_on: "打开设备电源",
+    power_off: "关闭设备电源",
+    effect_night: "切换月光/夜灯模式 (Night)",
+    effect_day: "切换日光模式 (Day)",
+    bri_20: "调暗灯光 (亮度 20%)",
+    bri_50: "中等亮度 (亮度 50%)",
+    bri_100: "调亮/最亮灯光 (亮度 100%)",
+    bri_down_20: "相对调暗一点 (-20%)",
+    bri_up_20: "相对调亮一点 (+20%)",
+    ct_2700: "暖光/黄光 (色温 2700K)",
+    ct_4000: "自然光 (色温 4000K)",
+    ct_6500: "白光/冷光 (色温 6500K)",
+    hvac_cool: "空调制冷模式",
+    hvac_heat: "空调制热模式",
+    hvac_dry: "空调除湿模式",
+    hvac_fan: "空调送风模式",
+    hvac_auto: "空调自动模式",
+    temp: "仅调节空调温度",
+    temp_up_2: "空调温度相对调高 2°C",
+    temp_down_2: "空调温度相对调低 2°C",
+    fan_low: "风速调为低档/一档",
+    fan_medium: "风速调为中档/二档",
+    fan_high: "风速调为高档/三档",
+    fan_auto: "风速调为自动档",
+    osc_on: "开启风扇摇头/摆风",
+    osc_off: "停止风扇摇头/摆风",
+    scene: "执行智能场景",
+  };
+}
+
+export function systemOneTempCriteria(): Record<string, string> {
+  const criteria: Record<string, string> = { none: "不指定具体温度" };
+  for (let celsius = 18; celsius <= 28; celsius += 1) {
+    criteria[String(celsius)] = `${celsius}°C`;
+  }
+  return criteria;
+}
+
+/** Per-device decision head choices, mirroring macOS `deviceSpecificCriteria` (#38). */
+export function deviceSpecificCriteria(device: SmartDevice): Record<string, string> {
+  const criteria: Record<string, string> = {
+    none: `保持不变，不操作${device.name}`,
+    power_on: `打开${device.name}`,
+    power_off: `关闭${device.name}`,
+  };
+  const kind = device.kind;
+  switch (kind.kind) {
+    case "light": {
+      if (kind.availableEffects.some((effect) => effect.toLowerCase() === "day")) {
+        criteria["effect_day"] = "切换为日光模式（专注照明）";
+      }
+      if (kind.availableEffects.some((effect) => effect.toLowerCase() === "night")) {
+        criteria["effect_night"] = "切换为月光/夜灯模式（柔和助眠）";
+      }
+      criteria["bri_20"] = "调暗灯光 (20%)";
+      criteria["bri_100"] = "调亮灯光 (100%)";
+      if (kind.isOn) {
+        criteria["bri_down_20"] = "再暗一点 (-20%)";
+        criteria["bri_up_20"] = "再亮一点 (+20%)";
+      }
+      break;
+    }
+    case "climate": {
+      if (kind.availableModes.includes("cool")) {
+        criteria["cool_24"] = "开启制冷 24°C（快速降温）";
+        criteria["cool_25"] = "开启制冷 25°C";
+        criteria["cool_26"] = "开启制冷 26°C（舒适恒温）";
+      }
+      if (kind.availableModes.includes("heat")) {
+        criteria["heat_22"] = "开启制热 22°C";
+        criteria["heat_24"] = "开启制热 24°C";
+      }
+      if (kind.availableModes.includes("dry")) {
+        criteria["hvac_dry"] = "开启除湿模式";
+      }
+      if (kind.isOn) {
+        criteria["temp_up_2"] = "温度相对调高 2°C";
+        criteria["temp_down_2"] = "温度相对调低 2°C";
+      }
+      break;
+    }
+    case "fan": {
+      if (kind.availablePresetModes.length > 0) {
+        criteria["fan_low"] = "风速调为低档";
+        criteria["fan_medium"] = "风速调为中档";
+        criteria["fan_high"] = "风速调为高档";
+      }
+      criteria["osc_on"] = "开启摇头";
+      criteria["osc_off"] = "停止摇头";
+      break;
+    }
+    case "plug":
+    case "vacuum":
+    case "sensor":
+      break;
+  }
+  return criteria;
+}
+
+export interface SystemOneRequest {
+  readonly body: {
+    readonly model: string;
+    readonly state: Record<string, unknown>;
+    readonly questions: Record<string, unknown>;
+  };
+  readonly catalog: IntentCatalog;
+}
+
+/**
+ * Builds the Jev `/v1/systemone` body with the same keys and per-device heads as macOS
+ * `ModelIntentResolver.makeSystemOneRequest` (#38). Shared fixture:
+ * Tests/Fixtures/ai_request_golden.json.
+ */
+export function buildSystemOneRequestBody(options: {
+  readonly model: string;
+  readonly utterance: string;
+  readonly devices: readonly SmartDevice[];
+  readonly scenes: readonly HomeScene[];
+  readonly context?: AssistantContext;
+}): SystemOneRequest {
+  const catalog = buildIntentCatalog(options.devices, options.scenes);
+  const context = options.context ?? EMPTY_ASSISTANT_CONTEXT;
+
+  const targetCriteria: Record<string, string> = { ...catalog.criteriaByAlias, none: "无匹配设备或场景" };
+  const questions: Record<string, unknown> = {
+    target: {
+      type: "choice",
+      instructions: "Select the primary target device, room light group, or scene id for the command",
+      criteria: targetCriteria,
+    },
+    op: {
+      type: "choice",
+      instructions: "Select the primary operation to perform on the target",
+      criteria: systemOneOpCriteria(),
+    },
+    temp: {
+      type: "choice",
+      instructions: "If the command sets an air-conditioner temperature, select the degree in Celsius; otherwise none",
+      criteria: systemOneTempCriteria(),
+    },
+  };
+
+  for (const { alias, device } of catalog.aliasDevices) {
+    questions[`dev_${alias}`] = {
+      type: "choice",
+      instructions:
+        `What action should be taken on ${device.name} (room: ${device.roomName}) for this command? ` +
+        "Choose none if unrelated.",
+      criteria: deviceSpecificCriteria(device),
+    };
+  }
+
+  const state: Record<string, unknown> = {
+    catalog: catalog.text,
+    command: options.utterance,
+  };
+  if (context.timeSummary) state["time"] = context.timeSummary;
+  if (context.environmentSummary) state["environment"] = context.environmentSummary;
+  if (context.activeDevicesSummary) state["active_devices"] = context.activeDevicesSummary;
+  if (context.habitSummary) state["user_habits"] = context.habitSummary;
+
+  return {
+    body: { model: options.model, state, questions },
+    catalog,
+  };
+}
 
 export class ModelIntentResolver {
   private readonly config: AssistantConfig;
@@ -1119,10 +1720,11 @@ export class ModelIntentResolver {
   async resolve(
     utterance: string,
     devices: readonly SmartDevice[],
-    scenes: readonly HomeScene[]
+    scenes: readonly HomeScene[],
+    context: AssistantContext = EMPTY_ASSISTANT_CONTEXT
   ): Promise<IntentPlan> {
     if (this.usesSystemOne) {
-      return this.resolveViaSystemOne(utterance, devices, scenes);
+      return this.resolveViaSystemOne(utterance, devices, scenes, context);
     }
     return this.resolveViaChatCompletions(utterance, devices, scenes);
   }
@@ -1134,18 +1736,20 @@ export class ModelIntentResolver {
         base = base.slice(0, -suffix.length).replace(/\/+$/, "");
       }
     }
-    try {
-      const parsed = new URL(base);
-      const host = parsed.hostname.toLowerCase();
-      const pathname = parsed.pathname.replace(/\/+$/, "");
-      if (host.includes("openrouter.ai")) {
-        if (pathname === "") base += "/api/v1";
-        else if (pathname === "/api") base += "/v1";
-      } else if (pathname === "") {
-        base += "/v1";
-      }
-    } catch {
-      // Keep original trimmed base if URL parsing fails
+    if (base && !base.includes("://")) base = `https://${base}`;
+    const endpoint = parseAssistantEndpoint(base);
+    if (!endpoint) {
+      throw new Error(`AI 服务地址无效：${this.config.baseURL}`);
+    }
+    if (!endpointAllowsSendingSecrets(base)) {
+      throw new Error(INSECURE_ENDPOINT_MESSAGE);
+    }
+    const pathname = new URL(base).pathname.replace(/\/+$/, "");
+    if (endpointHostMatches(endpoint, "openrouter.ai")) {
+      if (pathname === "") base += "/api/v1";
+      else if (pathname === "/api") base += "/v1";
+    } else if (pathname === "") {
+      base += "/v1";
     }
     return `${base}${path}`;
   }
@@ -1153,7 +1757,8 @@ export class ModelIntentResolver {
   private resolvedSystemOneModel(url: string): string {
     const trimmed = this.config.model.trim();
     const lower = trimmed.toLowerCase();
-    if (url.toLowerCase().includes("openrouter.ai")) {
+    const endpoint = parseAssistantEndpoint(url);
+    if (endpoint && endpointHostMatches(endpoint, "openrouter.ai")) {
       if (lower.includes("jev") && !trimmed.startsWith("~")) {
         return lower.startsWith("typesafe/") ? `~${trimmed}` : `~typesafe/${trimmed}`;
       }
@@ -1179,73 +1784,12 @@ export class ModelIntentResolver {
   private async resolveViaSystemOne(
     utterance: string,
     devices: readonly SmartDevice[],
-    scenes: readonly HomeScene[]
+    scenes: readonly HomeScene[],
+    context: AssistantContext
   ): Promise<IntentPlan> {
     const url = this.endpointURL("/systemone");
     const model = this.resolvedSystemOneModel(url);
-
-    const targetCriteria: Record<string, string> = { none: "无匹配设备或场景" };
-    const aliasToIds = new Map<string, string[]>();
-    const controllable = devices.filter((d) => d.kind.kind !== "sensor");
-
-    controllable.forEach((d, idx) => {
-      const alias = `d${idx + 1}`;
-      aliasToIds.set(alias, [d.id]);
-      targetCriteria[alias] = `${d.name} (${d.roomName}, ${d.isOnline ? "在线" : "离线"})`;
-    });
-
-    const roomLights = new Map<string, string[]>();
-    for (const d of controllable) {
-      if (d.kind.kind === "light") {
-        const prev = roomLights.get(d.roomName) ?? [];
-        prev.push(d.id);
-        roomLights.set(d.roomName, prev);
-      }
-    }
-    for (const [room, ids] of roomLights.entries()) {
-      const key = `room_lights:${room}`;
-      aliasToIds.set(key, ids);
-      targetCriteria[key] = `${room}的所有灯`;
-    }
-
-    scenes.forEach((s, idx) => {
-      const alias = `s${idx + 1}`;
-      aliasToIds.set(alias, [s.id]);
-      targetCriteria[alias] = `场景：${s.name}`;
-    });
-
-    const opCriteria: Record<string, string> = {
-      power_on: "打开设备电源",
-      power_off: "关闭设备电源",
-      effect_night: "切换月光/夜灯模式 (Night)",
-      effect_day: "切换日光模式 (Day)",
-      bri_20: "调暗灯光 (20%)",
-      bri_50: "中等亮度 (50%)",
-      bri_100: "调亮灯光 (100%)",
-      bri_down_20: "相对调暗一点 (-20%)",
-      bri_up_20: "相对调亮一点 (+20%)",
-      ct_2700: "暖光 (2700K)",
-      ct_4000: "自然光 (4000K)",
-      ct_6500: "冷白光 (6500K)",
-      hvac_cool: "空调制冷模式",
-      hvac_heat: "空调制热模式",
-      hvac_dry: "空调除湿模式",
-      hvac_fan: "空调送风模式",
-      hvac_auto: "空调自动模式",
-      temp_up_2: "空调温度相对调高 2°C",
-      temp_down_2: "空调温度相对调低 2°C",
-      fan_low: "风速低档",
-      fan_medium: "风速中档",
-      fan_high: "风速高档",
-      osc_on: "开启摇头",
-      osc_off: "停止摇头",
-      scene: "执行智能场景",
-    };
-
-    const tempCriteria: Record<string, string> = {
-      none: "不指定具体温度",
-      "18": "18°C", "20": "20°C", "22": "22°C", "24": "24°C", "25": "25°C", "26": "26°C", "27": "27°C", "28": "28°C",
-    };
+    const request = buildSystemOneRequestBody({ model, utterance, devices, scenes, context });
 
     const resp = await this.transport({
       url,
@@ -1254,22 +1798,14 @@ export class ModelIntentResolver {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.effectiveAPIKey()}`,
       },
-      body: JSON.stringify({
-        model,
-        state: { command: utterance },
-        questions: {
-          target: { type: "choice", instructions: "Select primary target", criteria: targetCriteria },
-          op: { type: "choice", instructions: "Select primary operation", criteria: opCriteria },
-          temp: { type: "choice", instructions: "Select temperature in Celsius or none", criteria: tempCriteria },
-        },
-      }),
+      body: JSON.stringify(request.body),
     });
 
     if (resp.status !== 200) {
       throw new Error(this.friendlyHttpError(resp.status));
     }
 
-    return ModelIntentResolver.planFromSystemOne(resp.body, aliasToIds, devices, scenes);
+    return ModelIntentResolver.planFromSystemOne(resp.body, request.catalog.aliasToIds, devices, scenes);
   }
 
   static planFromSystemOne(
@@ -1287,20 +1823,36 @@ export class ModelIntentResolver {
     const targetIds = aliasToIds.get(targetChoice) ?? [];
     const raw: DeviceIntent[] = [];
     const primaryOp = this.decodeSystemOneOp(opChoice);
+    const hasTemp = tempChoice !== "none" && Number.isFinite(Number(tempChoice));
+
+    // Runs by itself only when every answer involved is at least 80% sure (#21).
+    let confidence = ModelActionPolicy.probabilityOf(answers["target"], targetChoice);
+    if (primaryOp) confidence = Math.min(confidence, ModelActionPolicy.probabilityOf(answers["op"], opChoice));
+    if (hasTemp) confidence = Math.min(confidence, ModelActionPolicy.probabilityOf(answers["temp"], tempChoice));
 
     for (const id of targetIds) {
       if (primaryOp) raw.push({ targetId: id, operation: primaryOp });
-      if (tempChoice !== "none" && Number.isFinite(Number(tempChoice))) {
+      if (hasTemp) {
         raw.push({ targetId: id, operation: { kind: "targetTemperature", celsius: Number(tempChoice) } });
       }
     }
 
-    const intents = IntentValidator.sanitize(raw, devices, scenes);
+    const sanitized = IntentValidator.sanitize(raw, devices, scenes);
+    const confident = confidence >= ModelActionPolicy.AUTO_RUN_THRESHOLD;
+    const split = ModelActionPolicy.partition(sanitized, devices);
+    const intents = confident ? split.run : [];
+    const waiting = confident ? split.confirm : sanitized;
+    // Below the auto-run threshold everything waits for a tap, including answers with no
+    // probability at all (#21: 低于门槛的一律进候选胶囊, never silently dropped).
+    const suggestions = ModelActionPolicy.chips(waiting, confidence, `jev:primary:${targetChoice}:${opChoice}`, devices, scenes, true);
+    const described = IntentReply.describe(intents, devices, scenes);
     return {
       intents,
-      reply: IntentReply.describe(intents, devices, scenes),
+      reply: suggestions.length > 0
+        ? ModelActionPolicy.confirmationReply(intents.length > 0 ? described : null)
+        : described,
       source: "model",
-      suggestions: [],
+      suggestions,
     };
   }
 
@@ -1323,11 +1875,13 @@ export class ModelIntentResolver {
       case "hvac_dry": return { kind: "hvacMode", mode: "dry" };
       case "hvac_fan": return { kind: "hvacMode", mode: "fan_only" };
       case "hvac_auto": return { kind: "hvacMode", mode: "auto" };
+      case "temp": return null; // the temperature itself arrives through the `temp` question
       case "temp_up_2": return { kind: "temperatureStep", delta: 2 };
       case "temp_down_2": return { kind: "temperatureStep", delta: -2 };
       case "fan_low": return { kind: "fanSpeed", speed: "low" };
       case "fan_medium": return { kind: "fanSpeed", speed: "medium" };
       case "fan_high": return { kind: "fanSpeed", speed: "high" };
+      case "fan_auto": return { kind: "fanSpeed", speed: "auto" };
       case "osc_on": return { kind: "oscillation", enabled: true };
       case "osc_off": return { kind: "oscillation", enabled: false };
       case "scene": return { kind: "activateScene" };
@@ -1410,9 +1964,15 @@ export class ModelIntentResolver {
         }
       }
     }
-    const intents = IntentValidator.sanitize(raw, devices, scenes);
-    const reply = String(payload["reply"] ?? "").trim() || IntentReply.describe(intents, devices, scenes);
-    return { intents, reply, source: "model", suggestions: [] };
+    // Heaters, plugs and vacuums wait for a tap even when the model asks for them directly (#21).
+    const { run: intents, confirm } = ModelActionPolicy.partition(IntentValidator.sanitize(raw, devices, scenes), devices);
+    const suggestions = ModelActionPolicy.chips(confirm, null, "confirm", devices, scenes);
+    const described = IntentReply.describe(intents, devices, scenes);
+    // The model's own reply may claim the waiting actions already happened.
+    const reply = suggestions.length > 0
+      ? ModelActionPolicy.confirmationReply(intents.length > 0 ? described : null)
+      : String(payload["reply"] ?? "").trim() || described;
+    return { intents, reply, source: "model", suggestions };
   }
 
   private decodeChatOp(name: string, val: unknown): IntentOperation | null {

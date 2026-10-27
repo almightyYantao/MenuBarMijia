@@ -5,16 +5,19 @@ import MijiaCore
 /// Compact (half row) stacks temperature over a humidity bar; full row lays them out side by side.
 struct SensorCardView: View {
     @Environment(\.appSkin) private var skin
+    @Environment(\.skinPalette) private var palette
     @Environment(\.colorScheme) private var colorScheme
+    /// Observed so a temperature-unit change in Settings re-renders open cards (#52).
+    @AppStorage(TemperatureUnitPreference.storageKey) private var temperatureUnitRaw = TemperatureUnitPreference.system.rawValue
 
     let device: SmartDevice
     let spec: SensorSpec
     let isCompact: Bool
     let showRoomBadge: Bool
 
-    private var fg: Color { skin.isClassic ? .primary : skin.palette.fg }
-    private var muted: Color { skin.isClassic ? .secondary : skin.palette.muted }
-    private var track: Color { skin.isClassic ? Color.primary.opacity(0.08) : skin.palette.chip }
+    private var fg: Color { skin.isClassic ? .primary : palette.fg }
+    private var muted: Color { skin.isClassic ? .secondary : palette.muted }
+    private var track: Color { skin.isClassic ? Color.primary.opacity(0.08) : palette.chip }
 
     var body: some View {
         Group {
@@ -23,6 +26,26 @@ struct SensorCardView: View {
         .frame(minHeight: isCompact ? (skin.isClassic ? 50 : 60) : nil, maxHeight: .infinity)
         .glassTile(isActive: false, accent: .teal, cornerRadius: 14)
         .opacity(device.isOnline ? 1 : 0.58)
+        // Display-only card: VoiceOver reads one sentence instead of five loose labels (#41).
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(accessibilitySummary))
+    }
+
+    private var accessibilitySummary: String {
+        guard device.isOnline else {
+            return L10n.tr("\(device.name)，离线", "\(device.name), offline")
+        }
+        var parts: [String] = [device.name]
+        if let t = spec.temperature {
+            parts.append(L10n.format("温度 %@", "temperature %@", L10n.temperature(t, fractionDigits: 1)))
+        }
+        if let h = spec.humidity {
+            parts.append(String(format: L10n.tr("湿度 %.0f%%", "humidity %.0f%%"), h))
+        }
+        if let b = spec.battery {
+            parts.append(L10n.tr("电量 \(b)%", "battery \(b)%"))
+        }
+        return parts.joined(separator: "，")
     }
 
     // MARK: Layouts
@@ -55,7 +78,7 @@ struct SensorCardView: View {
             }
             humidityBar
         }
-        .padding(.horizontal, !skin.isClassic && skin.palette.capsuleTiles ? 15 : (skin.isClassic ? 9 : 11))
+        .padding(.horizontal, !skin.isClassic && palette.capsuleTiles ? 15 : (skin.isClassic ? 9 : 11))
         .padding(.vertical, skin.isClassic ? 6 : 7.5)
     }
 
@@ -69,7 +92,7 @@ struct SensorCardView: View {
                         .lineLimit(1)
                     if showRoomBadge {
                         Text(L10n.displayRoomName(device.roomName))
-                            .font(.system(size: 9.5, weight: .semibold))
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(muted)
                     }
                 }
@@ -95,12 +118,12 @@ struct SensorCardView: View {
 
     private func temperatureText(size: CGFloat) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 1) {
-            Text(spec.temperature.map { String(format: "%.1f", $0) } ?? "--")
+            Text(spec.temperature.map { L10n.temperatureValue($0, fractionDigits: 1) } ?? "--")
                 .font(.system(size: size, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .contentTransition(.numericText(value: spec.temperature ?? 0))
                 .foregroundStyle(fg)
-            Text("°C")
+            Text(L10n.temperatureSymbol)
                 .font(.system(size: size * 0.42, weight: .semibold, design: .rounded))
                 .foregroundStyle(muted)
         }
@@ -151,7 +174,7 @@ struct SensorCardView: View {
     private var comfortChip: some View {
         let c = comfort
         return Text(c.label)
-            .font(.system(size: isCompact ? 9 : 9.5, weight: .semibold))
+            .font(.system(size: isCompact ? 10 : 10.5, weight: .semibold))
             .foregroundStyle(c.color)
             .padding(.horizontal, isCompact ? 5.5 : 6)
             .padding(.vertical, isCompact ? 1.5 : 2)

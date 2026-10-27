@@ -99,7 +99,7 @@ struct MijiaCoreTests {
         )
 
         let mock = MockHomeProvider(snapshot: snapshot)
-        let store = HomeStore(provider: mock)
+        let store = HomeStore(provider: mock, defaultsSuiteName: "test.toggle.undo.\(UUID().uuidString)")
 
         // Allow initial stream event to arrive
         for _ in 0..<50 where store.devices.isEmpty {
@@ -113,7 +113,10 @@ struct MijiaCoreTests {
         store.togglePrimary(current)
         #expect(store.activeDeviceCount == 1)
 
-        try await Task.sleep(for: .milliseconds(40))
+        for _ in 0..<200 {
+            if !(await mock.executedCommands).isEmpty { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
         let cmds = await mock.executedCommands
         #expect(cmds.last == .setLightPower(entityId: "light.bed", isOn: true))
 
@@ -379,7 +382,9 @@ struct MijiaCoreTests {
 
         // 1. Dynamic menu bar target: temp+humidity and total power
         store.menuBarTargetId = "temp_hum:dev_sensor_study"
-        #expect(store.menuBarText == "24.8° 52%")
+        L10n.$overrideTemperatureUnit.withValue(.celsius) {
+            #expect(store.menuBarText == "24.8°C 52%")
+        }
 
         store.menuBarTargetId = "power:total"
         #expect(store.totalPowerWatts == 1150)

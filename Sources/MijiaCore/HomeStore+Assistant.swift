@@ -86,9 +86,19 @@ extension HomeStore {
     /// from current room temp/humidity, time of day, active devices, and the user's learned habit memory.
     public func requestProactiveJevSuggestions() async {
         guard !isProactiveRecommending else { return }
+        guard homeBackend != .demo else {
+            // 演示模式完全离线（#47）：只给基于本地习惯记忆的建议。
+            assistantSuggestions = userHabitMemory.topSuggestions(devices: devices, scenes: scenes, limit: 3)
+            setAssistantState(.done(L10n.tr("演示模式建议基于内置虚拟设备", "Demo suggestions are based on the built-in virtual home")))
+            return
+        }
         let config = assistantConfig
         if shouldRejectMissingAPIKey(for: config) {
             setAssistantState(.failed(AssistantError.userMessage(for: AssistantError.missingAPIKey)))
+            return
+        }
+        if let consent = cloudConsentNeeded(for: config, utterance: nil) {
+            pendingCloudConsent = consent
             return
         }
         isProactiveRecommending = true
@@ -119,6 +129,9 @@ extension HomeStore {
     /// Persists and verifies the given AI configuration against the live endpoint using the same reloaded `assistantConfig` as normal command execution.
     public func verifyAssistantConfig(_ draftConfig: AssistantConfig) async -> (isSuccess: Bool, message: String) {
         assistantConfig = draftConfig
+        guard homeBackend != .demo else {
+            return (false, L10n.tr("演示模式不联网，请切换数据源后测试连接", "Demo mode is offline; switch the data source to test this connection"))
+        }
         let resolved = assistantConfig
         if shouldRejectMissingAPIKey(for: resolved) {
             return (false, AssistantError.userMessage(for: AssistantError.missingAPIKey))
@@ -139,6 +152,57 @@ extension HomeStore {
         }
     }
 
+    // MARK: - Cloud consent (#20)
+
+    static let cloudConsentKey = "assistant_cloud_consent_v1"
+
+    /// AI services (host[:port]) the user has allowed to receive commands. Local endpoints never need this.
+    public var consentedCloudEndpoints: [String] {
+        userDefaults.stringArray(forKey: Self.cloudConsentKey) ?? []
+    }
+
+    /// The consent request to show before the first cloud call to this service, or nil when sending is already allowed.
+    func cloudConsentNeeded(for config: AssistantConfig, utterance: String?) -> PendingCloudConsent? {
+        guard assistantResolverOverride == nil, !config.isLoopbackEndpoint,
+              let endpoint = AssistantEndpoint(config.baseURL)?.identity,
+              !consentedCloudEndpoints.contains(endpoint) else {
+            return nil
+        }
+        return PendingCloudConsent(utterance: utterance, endpoint: endpoint, providerTitle: config.preset.shortTitle)
+    }
+
+    /// Remembers the user's OK for the waiting service, then runs what was waiting.
+    @discardableResult
+    public func allowPendingCloudRequest() async -> IntentPlan? {
+        guard let pending = pendingCloudConsent else { return nil }
+        pendingCloudConsent = nil
+        var endpoints = consentedCloudEndpoints
+        if !endpoints.contains(pending.endpoint) {
+            endpoints.append(pending.endpoint)
+        }
+        userDefaults.set(endpoints, forKey: Self.cloudConsentKey)
+        guard let utterance = pending.utterance else {
+            await requestProactiveJevSuggestions()
+            return nil
+        }
+        return await runAssistantCommand(utterance)
+    }
+
+    public func declinePendingCloudRequest() {
+        guard pendingCloudConsent != nil else { return }
+        pendingCloudConsent = nil
+        setAssistantState(.failed(L10n.tr(
+            "没有发送。「打开书房灯」这类简单指令不用联网",
+            "Not sent. Direct commands like \"turn on study light\" work offline."
+        )))
+    }
+
+    /// Forgets every allowed AI service; the next cloud request asks again.
+    public func revokeCloudConsent() {
+        userDefaults.removeObject(forKey: Self.cloudConsentKey)
+        pendingCloudConsent = nil
+    }
+
     private func shouldRejectMissingAPIKey(for config: AssistantConfig) -> Bool {
         assistantResolverOverride == nil && !config.hasAPIKey && !config.isLoopbackEndpoint
     }
@@ -151,7 +215,7 @@ extension HomeStore {
         assistantSuggestions.removeAll { $0.id == suggestion.id }
         let reply = IntentReply.describe(suggestion.intents, devices: devices, scenes: scenes)
         let plan = IntentPlan(intents: suggestion.intents, reply: reply, source: .model)
-        _ = await executeIntentPlan(plan, recordedUtterance: nil)
+        _ = await executeIntentPlan(plan, recordedUtterance: nil, origin: .userInitiated)
     }
 
     /// Resolves a natural-language command (local parser first, model fallback) and applies it.
@@ -179,10 +243,22 @@ extension HomeStore {
         let plan: IntentPlan
         if let local = LocalIntentParser.parse(utterance, devices: devices, scenes: scenes) {
             plan = local
+        } else if homeBackend == .demo {
+            // 演示模式完全离线（#47）：本地解析不了的指令绝不送云端。
+            setAssistantState(.failed(L10n.tr(
+                "演示模式只在本机解析。试试「打开客厅灯」「空调调到 26 度」这类说法",
+                "Demo mode parses locally. Try phrases like \"Turn on the living room light\" or \"Set the AC to 26\""
+            )))
+            return nil
         } else {
             let config = assistantConfig
             if shouldRejectMissingAPIKey(for: config) {
                 setAssistantState(.failed(AssistantError.userMessage(for: AssistantError.missingAPIKey)))
+                return nil
+            }
+            if let consent = cloudConsentNeeded(for: config, utterance: spoken) {
+                pendingCloudConsent = consent
+                setAssistantState(.idle)
                 return nil
             }
             let resolver = makeAssistantResolver(config: config)
@@ -197,6 +273,10 @@ extension HomeStore {
         guard !plan.intents.isEmpty else {
             if !plan.suggestions.isEmpty {
                 assistantSuggestions = plan.suggestions
+                setAssistantState(.awaitingChoice(plan.reply.isEmpty
+                    ? ModelActionPolicy.confirmationReply(ranReply: nil)
+                    : plan.reply))
+                return plan
             }
             setAssistantState(.failed(plan.reply.isEmpty ? L10n.tr("没有找到可执行的设备操作", "No matching device actions found") : plan.reply))
             return plan
@@ -205,7 +285,10 @@ extension HomeStore {
         if let delayed {
             return schedule(plan, after: delayed.delay)
         }
-        return await executeIntentPlan(plan, recordedUtterance: utterance)
+        // A locally parsed command is the user's explicit ask. A model plan is the AI filling in
+        // devices/actions the user never spelled out, so it does not train habits (#34).
+        let origin: AssistantExecutionOrigin = plan.source == .local ? .userInitiated : .aiAutomatic
+        return await executeIntentPlan(plan, recordedUtterance: utterance, origin: origin)
     }
 
     // MARK: - Voice Undo
@@ -224,6 +307,11 @@ extension HomeStore {
             guard let idx = devices.firstIndex(where: { $0.id == previous.id }) else { continue }
             devices[idx] = previous
             lockOptimistic(previous.id, duration: .seconds(3.0))
+        }
+        if let receipt = last.habitReceipt {
+            var memory = userHabitMemory
+            memory.unrecord(receipt)
+            userHabitMemory = memory
         }
         for cmd in last.restore {
             try? await executeDeviceCommand(cmd)
@@ -263,13 +351,30 @@ extension HomeStore {
         scheduledTasks[entry.id] = Task { [weak self] in
             do { try await sleep(.seconds(waitSeconds)) } catch { return }
             guard let self, !Task.isCancelled else { return }
+            // Task.sleep keeps counting while the Mac sleeps, so after a closed lid it returns the moment
+            // the Mac wakes. A timer that is more than a minute late is not run silently (#22).
+            if self.assistantNow().timeIntervalSince(entry.fireDate) > Self.lateTimerGrace {
+                self.moveToMissed(entry)
+                return
+            }
             await self.waitForInitialSnapshotIfNeeded()
             guard !Task.isCancelled else { return }
-            _ = await self.executeIntentPlan(entry.plan, recordedUtterance: nil)
+            _ = await self.executeIntentPlan(entry.plan, recordedUtterance: nil, origin: .scheduled)
             self.scheduledCommands.removeAll { $0.id == entry.id }
             self.scheduledTasks[entry.id] = nil
             self.persistAllScheduledCommands()
         }
+    }
+
+    private func moveToMissed(_ entry: ScheduledCommand) {
+        scheduledTasks[entry.id] = nil
+        scheduledCommands.removeAll { $0.id == entry.id }
+        if !missedScheduledCommands.contains(where: { $0.id == entry.id }) {
+            missedScheduledCommands.append(entry)
+        }
+        isShowingAssistantBar = true
+        notifyMissedScheduledCommandsIfNeeded()
+        persistAllScheduledCommands()
     }
 
     private func waitForInitialSnapshotIfNeeded() async {
@@ -280,6 +385,7 @@ extension HomeStore {
 
     /// Restores persisted timers on launch. Future timers resume their countdown; expired timers move to
     /// `missedScheduledCommands` so an overdue heater or light timer never fires silently hours later.
+    /// Timers the Mac sleeps through take the same path when they wake up late (see `startScheduledTask`).
     public func restoreScheduledCommands(now: Date = Date()) {
         for task in scheduledTasks.values {
             task.cancel()
@@ -333,7 +439,7 @@ extension HomeStore {
         notifiedMissedTimerIds.remove(id)
         persistAllScheduledCommands()
         await waitForInitialSnapshotIfNeeded()
-        return await executeIntentPlan(entry.plan, recordedUtterance: nil)
+        return await executeIntentPlan(entry.plan, recordedUtterance: nil, origin: .scheduled)
     }
 
     public func dismissMissedScheduledCommand(id: UUID) {
@@ -360,7 +466,25 @@ extension HomeStore {
         return targets.count + missedTargets.count
     }
 
-    private func executeIntentPlan(_ plan: IntentPlan, recordedUtterance: String?) async -> IntentPlan {
+    /// Where an executed plan came from; only explicit user actions train habits (#34).
+    enum AssistantExecutionOrigin: Equatable, Sendable {
+        /// Local plan from a typed/spoken command, or a suggestion the user tapped.
+        case userInitiated
+        /// The model inferred device actions the user did not spell out.
+        case aiAutomatic
+        /// A scheduled command fired (including a missed timer the user confirmed).
+        case scheduled
+        /// A Mac-state automation rule fired (lock, sleep, display change); never trains habits (#59).
+        case automation
+
+        var recordsHabits: Bool { self == .userInitiated }
+    }
+
+    func executeIntentPlan(
+        _ plan: IntentPlan,
+        recordedUtterance: String?,
+        origin: AssistantExecutionOrigin
+    ) async -> IntentPlan {
         let previousSnapshot = devices
         var groupOrder: [String] = []
         var intentsByTarget: [String: [DeviceIntent]] = [:]
@@ -404,20 +528,34 @@ extension HomeStore {
             }
         }
 
+        // Only explicit user actions become habits; AI-inferred and timer executions do not (#34).
+        var habitReceipt: UserHabitMemory.RecordingReceipt?
+        if origin.recordsHabits, isHabitLearningEnabled, failedNames.isEmpty, !appliedDeviceIds.isEmpty {
+            var memory = userHabitMemory
+            habitReceipt = memory.record(utterance: recordedUtterance, intents: plan.intents, devices: devices, scenes: scenes)
+            userHabitMemory = memory
+        }
+
         if !appliedDeviceIds.isEmpty {
             lastAssistantUndo = (
                 reply: plan.reply,
                 restore: restoreCommands.reversed(),
                 previous: previousSnapshot.filter { appliedDeviceIds.contains($0.id) },
-                at: Date()
+                at: Date(),
+                habitReceipt: habitReceipt
             )
         }
 
-        if appliedDeviceIds.count > 1 {
+        // Automation rules always offer undo, even for one device, and keep the banner long enough
+        // to survive a lock/sleep round trip (#59). The panel keeps its 2+ device rule (#53).
+        if !appliedDeviceIds.isEmpty, appliedDeviceIds.count > 1 || origin == .automation {
             scheduleUndoBanner(
                 title: plan.reply.isEmpty ? L10n.tr("已执行 AI 指令", "Executed AI command") : plan.reply,
                 restoreCommands: restoreCommands.reversed(),
-                previousDevices: previousSnapshot
+                previousDevices: previousSnapshot,
+                deviceCount: appliedDeviceIds.count,
+                habitReceipt: habitReceipt,
+                duration: origin == .automation ? AutomationPolicy.undoWindow : nil
             )
         }
 
@@ -431,14 +569,10 @@ extension HomeStore {
                 : L10n.tr("\(offlineNames.joined(separator: sep)) 当前离线", "\(offlineNames.joined(separator: sep)) offline")
             setAssistantState(.failed(reason))
         } else {
-            var memory = userHabitMemory
-            memory.record(utterance: recordedUtterance, intents: plan.intents, devices: devices, scenes: scenes)
-            if isHabitLearningEnabled { userHabitMemory = memory }
-
             if !plan.suggestions.isEmpty {
                 assistantSuggestions = plan.suggestions
             } else {
-                assistantSuggestions = memory.topSuggestions(devices: devices, scenes: scenes, limit: 3)
+                assistantSuggestions = userHabitMemory.topSuggestions(devices: devices, scenes: scenes, limit: 3)
             }
             setAssistantState(.done(plan.reply))
         }
@@ -644,9 +778,11 @@ extension HomeStore {
         assistantState = state
         assistantResetTask?.cancel()
         switch state {
-        case .done, .failed:
+        case .done, .failed, .awaitingChoice:
+            // A "tap a suggestion" hint stays longer so it can be read next to the chips.
+            let delay: Double = if case .awaitingChoice = state { 8 } else { 3.2 }
             assistantResetTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(3.2))
+                try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled, let self, self.assistantState == state else { return }
                 self.assistantState = .idle
             }

@@ -1,39 +1,44 @@
 import type { MiRoom } from "../core/miCloudClient.js";
 import type { SmartDevice } from "../core/models.js";
+import { t } from "../core/i18n.js";
 
 // Panel personalisation shared with the macOS app: skins, per-page card sizes, custom order,
 // user groups and local device names. Pure functions only, so they can be unit tested.
 
 export type AppSkin = "classic" | "frost" | "night" | "glass" | "soft" | "bento" | "neon" | "capsule" | "dawn";
 
+/**
+ * Skin ids stay stable (they are persisted); `title` is a getter so it is translated in whatever
+ * language is active when the panel renders, not at module load (#52).
+ */
 export const SKINS: ReadonlyArray<{ readonly id: AppSkin; readonly title: string }> = [
-  { id: "classic", title: "经典" },
-  { id: "frost", title: "霜白" },
-  { id: "night", title: "夜航" },
-  { id: "glass", title: "液态玻璃" },
-  { id: "soft", title: "柔雾" },
-  { id: "bento", title: "便当格" },
-  { id: "neon", title: "霓虹夜" },
-  { id: "capsule", title: "胶囊" },
-  { id: "dawn", title: "晨光" },
+  { id: "classic", get title() { return t("经典"); } },
+  { id: "frost", get title() { return t("霜白"); } },
+  { id: "night", get title() { return t("夜航"); } },
+  { id: "glass", get title() { return t("液态玻璃"); } },
+  { id: "soft", get title() { return t("柔雾"); } },
+  { id: "bento", get title() { return t("便当格"); } },
+  { id: "neon", get title() { return t("霓虹夜"); } },
+  { id: "capsule", get title() { return t("胶囊"); } },
+  { id: "dawn", get title() { return t("晨光"); } },
 ];
 
 export type PanelHeight = "compact" | "standard" | "tall" | "max";
 
 export const PANEL_HEIGHTS: ReadonlyArray<{ readonly id: PanelHeight; readonly title: string; readonly px: number }> = [
-  { id: "compact", title: "紧凑", px: 520 },
-  { id: "standard", title: "标准", px: 620 },
-  { id: "tall", title: "加高", px: 740 },
-  { id: "max", title: "最大", px: 0 },
+  { id: "compact", get title() { return t("紧凑"); }, px: 520 },
+  { id: "standard", get title() { return t("标准"); }, px: 620 },
+  { id: "tall", get title() { return t("加高"); }, px: 740 },
+  { id: "max", get title() { return t("最大"); }, px: 0 },
 ];
 
 export type TileSize = "auto" | "half" | "full" | "panel";
 
 export const TILE_SIZES: ReadonlyArray<{ readonly id: TileSize; readonly title: string }> = [
-  { id: "auto", title: "自动" },
-  { id: "half", title: "半行" },
-  { id: "full", title: "整行" },
-  { id: "panel", title: "展开面板" },
+  { id: "auto", get title() { return t("自动"); } },
+  { id: "half", get title() { return t("半行"); } },
+  { id: "full", get title() { return t("整行"); } },
+  { id: "panel", get title() { return t("展开面板"); } },
 ];
 
 export interface DeviceGroup {
@@ -146,7 +151,7 @@ export function pageSections(prefs: LayoutPrefs, devices: readonly SmartDevice[]
   }
   const rest = devices.filter((d) => groupOf(d.id) === null);
   if (rest.length > 0) {
-    const title = sections.length === 0 ? null : isAllPage ? "更多设备" : "其他";
+    const title = sections.length === 0 ? null : isAllPage ? t("更多设备") : t("其他");
     sections.push({ id: "rest", title, devices: rest, groupId: null });
   }
   return sections;
@@ -179,13 +184,13 @@ export function homeOptions(rooms: readonly MiRoom[]): HomeOption[] {
 export type ComfortLevel = "warm" | "cool" | "dry" | "humid" | "comfy";
 
 export function comfort(temperature: number | null, humidity: number | null): { level: ComfortLevel; label: string } {
-  const t = temperature ?? 24;
+  const t0 = temperature ?? 24;
   const h = humidity ?? 50;
-  if (t >= 28) return { level: "warm", label: "偏热" };
-  if (t <= 16) return { level: "cool", label: "偏冷" };
-  if (h < 35) return { level: "dry", label: "偏干" };
-  if (h > 70) return { level: "humid", label: "偏湿" };
-  return { level: "comfy", label: "舒适" };
+  if (t0 >= 28) return { level: "warm", label: t("偏热") };
+  if (t0 <= 16) return { level: "cool", label: t("偏冷") };
+  if (h < 35) return { level: "dry", label: t("偏干") };
+  if (h > 70) return { level: "humid", label: t("偏湿") };
+  return { level: "comfy", label: t("舒适") };
 }
 
 const EFFECT_NAMES: Record<string, string> = {
@@ -194,14 +199,16 @@ const EFFECT_NAMES: Record<string, string> = {
 };
 
 export function localizeEffect(effect: string): string {
-  return EFFECT_NAMES[effect] ?? effect;
+  const key = EFFECT_NAMES[effect];
+  return key === undefined ? effect : t(key);
 }
 
 const FAN_NAMES: Record<string, string> = { auto: "自动", low: "低", silent: "低", quiet: "低", medium: "中", middle: "中", high: "高" };
 
 export function localizeFanMode(raw: string): string {
   const lower = raw.toLowerCase();
-  if (FAN_NAMES[lower]) return FAN_NAMES[lower] as string;
+  const key = FAN_NAMES[lower];
+  if (key !== undefined) return t(key);
   const m = /^level\s*(\d+)$/.exec(lower);
-  return m ? `${m[1]} 档` : raw;
+  return m ? t("{level} 档", { level: m[1] ?? "" }) : raw;
 }

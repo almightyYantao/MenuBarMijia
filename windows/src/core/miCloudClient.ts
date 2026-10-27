@@ -46,6 +46,39 @@ export function maskedMiUserId(userId: string): string {
   return `${userId.slice(0, 2)}****${userId.slice(-2)}`;
 }
 
+export interface MiCloudRegionOption {
+  /** Xiaomi cloud region code, used as the API subdomain (`<code>.api.io.mi.com`). */
+  readonly code: string;
+  /** Label shown in the region dropdown. */
+  readonly label: string;
+}
+
+/**
+ * Xiaomi cloud regions offered by both apps (#37). Order and membership are shared with
+ * macOS: Tests/Fixtures/region_golden.json is the single source of truth and both ends'
+ * tests assert against it (macOS `MiCloudRegion.allCases`, Windows `MI_CLOUD_REGIONS`).
+ */
+export const MI_CLOUD_REGIONS: ReadonlyArray<MiCloudRegionOption> = [
+  { code: "cn", label: "中国大陆 (cn)" },
+  { code: "de", label: "欧洲 (de)" },
+  { code: "i2", label: "印度 (i2)" },
+  { code: "ru", label: "俄罗斯 (ru)" },
+  { code: "sg", label: "新加坡 / 国际 (sg)" },
+  { code: "us", label: "美区 (us)" },
+];
+
+/** Falls back to China Mainland for unknown/missing values coming from older settings. */
+export function normalizeMiCloudRegion(raw: unknown): string {
+  if (typeof raw !== "string") return "cn";
+  const code = raw.trim().toLowerCase();
+  return MI_CLOUD_REGIONS.some((region) => region.code === code) ? code : "cn";
+}
+
+export function miCloudRegionLabel(code: string): string {
+  const normalized = normalizeMiCloudRegion(code);
+  return MI_CLOUD_REGIONS.find((region) => region.code === normalized)?.label ?? normalized;
+}
+
 export function miApiBaseURL(region = "cn"): string {
   const r = region.trim().toLowerCase();
   return r === "" || r === "cn" ? "https://api.io.mi.com/app" : `https://${r}.api.io.mi.com/app`;

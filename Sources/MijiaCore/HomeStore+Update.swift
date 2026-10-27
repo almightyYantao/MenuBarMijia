@@ -38,6 +38,12 @@ extension HomeStore {
     }
 
     private func performUpdateCheck(userInitiated: Bool, now: Date) async {
+        guard homeBackend != .demo else {
+            if userInitiated {
+                showToast(L10n.tr("演示模式不联网，请切换数据源后检查更新", "Demo mode is offline; switch the data source to check for updates"))
+            }
+            return
+        }
         switch updateState {
         case .checking, .downloading, .verifying, .installing:
             return
@@ -79,6 +85,10 @@ extension HomeStore {
     }
 
     public func startUpdateInstallation() async {
+        guard homeBackend != .demo else {
+            showToast(L10n.tr("演示模式不联网，请切换数据源后下载更新", "Demo mode is offline; switch the data source to download updates"))
+            return
+        }
         let release: AppRelease
         switch updateState {
         case .available(let availableRelease):
@@ -159,7 +169,9 @@ extension HomeStore {
     public func confirmRelaunchForUpdate() {
         guard case .readyToRelaunch(let staged) = updateState else { return }
         updateState = .installing(staged.release)
-        KeychainHelper.synchronizeFallbackCredentialsBeforeUpdate(defaults: userDefaults)
+        // Nothing is mirrored into `UserDefaults` any more, so there is no snapshot to take before the binary is
+        // replaced; the plaintext migration is idempotent and gets one last chance to run (#16).
+        KeychainHelper.migratePlaintextCredentialsToKeychain(defaults: userDefaults)
         do {
             try updater.installStagedUpdateAndRelaunch(staged)
             onTerminateForUpdate?()

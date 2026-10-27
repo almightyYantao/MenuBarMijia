@@ -13,15 +13,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     private var eventHandlerRef: EventHandlerRef?
     private var localKeyMonitor: Any?
     private var localFlagsMonitor: Any?
-    private var localMouseDownMonitor: Any?
-    private var localMouseUpMonitor: Any?
-    private var globalMouseDownMonitor: Any?
     private var windowBecomeKeyObserver: NSObjectProtocol?
-    private var windowResignKeyObserver: NSObjectProtocol?
-    private var statusBarHoldTimer: Timer?
-    private var statusBarHoldStartTime: TimeInterval = 0
-    private var statusBarHoldTriggered: Bool = false
-    private var suppressNextStatusBarMouseUpUntil: TimeInterval = 0
     private var safetyTimerTask: Task<Void, Never>?
     private var pendingAlertsById: [String: SafetyAlert] = [:]
 
@@ -43,67 +35,120 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             self?.syncGlobalHotKeyRegistration(enabled: enabled)
         }
         syncGlobalHotKeyRegistration(enabled: store.enableGlobalHotkey)
+        MenuBarPanelController.shared.install(with: store)
         setupLocalKeyboardMonitors()
         setupNotificationsIfBundled()
         startSafetyTimer()
+        // The status item exists as soon as `install` returns, but the first launch has no window to
+        // host yet; give SwiftUI one run-loop turn before an onboarding panel is requested.
         Task { @MainActor [weak self] in
-            for (idx, delayMs) in [350, 900].enumerated() {
-                try? await Task.sleep(for: .milliseconds(delayMs))
-                _ = self?.findAnyStatusBarItem()
-                if idx == 0, let self, let store = self.store, store.shouldShowOnboarding {
-                    self.ensureMenuBarExtraWindowVisible()
-                }
-            }
+            try? await Task.sleep(for: .milliseconds(350))
+            guard let self, let store = self.store, store.shouldShowOnboarding else { return }
+            self.ensureMenuBarExtraWindowVisible()
         }
     }
 
-    // MARK: - 1. Global Hotkey (Option + M) via Carbon RegisterEventHotKey
+    // MARK: - 1. Global Hotkey (user-recorded, ⌥M by default) via Carbon RegisterEventHotKey
 
     private func syncGlobalHotKeyRegistration(enabled: Bool) {
         if enabled {
-            setupGlobalHotKey()
+            applyHotkeyPreference()
         } else {
-            if let ref = hotKeyRef {
-                UnregisterEventHotKey(ref)
-                hotKeyRef = nil
-            }
+            unregisterGlobalHotKey()
+            HotkeySettingsState.shared.markDisabled()
         }
     }
 
-    private func setupGlobalHotKey() {
-        guard hotKeyRef == nil else { return }
+    /// Re-registers with the stored shortcut. Called when the toggle flips (#43 rule 3) and after
+    /// the recorder saves a new combination.
+    public func applyHotkeyPreference() {
+        guard let store, store.enableGlobalHotkey else {
+            unregisterGlobalHotKey()
+            HotkeySettingsState.shared.markDisabled()
+            return
+        }
+        let shortcut = HotkeyPreferences.load()
+        HotkeySettingsState.shared.reload()
+        registerGlobalHotKey(shortcut)
+    }
 
-        if eventHandlerRef == nil {
-            var eventType = EventTypeSpec(
-                eventClass: OSType(kEventClassKeyboard),
-                eventKind: UInt32(kEventHotKeyPressed)
-            )
+    /// Retry button next to the registration error.
+    public func retryHotkeyRegistration() {
+        applyHotkeyPreference()
+    }
 
-            let status = InstallEventHandler(
-                GetApplicationEventTarget(),
-                { _, _, _ -> OSStatus in
-                    Task { @MainActor in
-                        HotkeyAndNotificationManager.shared.handleGlobalHotKeyTriggered()
-                    }
-                    return noErr
-                },
-                1,
-                &eventType,
-                nil,
-                &eventHandlerRef
-            )
-            guard status == noErr else { return }
+    private func unregisterGlobalHotKey() {
+        if let ref = hotKeyRef {
+            UnregisterEventHotKey(ref)
+            hotKeyRef = nil
+        }
+    }
+
+    private func registerGlobalHotKey(_ shortcut: HotkeyShortcut) {
+        unregisterGlobalHotKey()
+        guard installHotKeyHandler() else {
+            reportHotkeyFailure(shortcut, status: OSStatus(-1))
+            return
         }
 
+        var ref: EventHotKeyRef?
         let hotKeyID = EventHotKeyID(signature: OSType(0x4D49_4A41), id: 1) // 'MIJA'
-        RegisterEventHotKey(
-            UInt32(kVK_ANSI_M),
-            UInt32(optionKey),
+        let status = RegisterEventHotKey(
+            UInt32(shortcut.keyCode),
+            Self.carbonModifiers(shortcut.modifiers),
             hotKeyID,
             GetApplicationEventTarget(),
             0,
-            &hotKeyRef
+            &ref
         )
+        if status == noErr, let ref {
+            hotKeyRef = ref
+            HotkeySettingsState.shared.markRegistered(shortcut)
+        } else {
+            reportHotkeyFailure(shortcut, status: status)
+        }
+    }
+
+    /// Never let a shortcut fail silently (#43): Settings shows the error and, when the panel is
+    /// visible, a toast says why the hotkey does nothing.
+    private func reportHotkeyFailure(_ shortcut: HotkeyShortcut, status: OSStatus) {
+        HotkeySettingsState.shared.markFailed(shortcut, status: status)
+        if let message = HotkeySettingsState.shared.registrationError {
+            store?.showToast(message, isError: true)
+        }
+    }
+
+    private func installHotKeyHandler() -> Bool {
+        if eventHandlerRef != nil { return true }
+
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+
+        let status = InstallEventHandler(
+            GetApplicationEventTarget(),
+            { _, _, _ -> OSStatus in
+                Task { @MainActor in
+                    HotkeyAndNotificationManager.shared.handleGlobalHotKeyTriggered()
+                }
+                return noErr
+            },
+            1,
+            &eventType,
+            nil,
+            &eventHandlerRef
+        )
+        return status == noErr
+    }
+
+    private static func carbonModifiers(_ modifiers: HotkeyModifiers) -> UInt32 {
+        var mask: UInt32 = 0
+        if modifiers.contains(.command) { mask |= UInt32(cmdKey) }
+        if modifiers.contains(.option) { mask |= UInt32(optionKey) }
+        if modifiers.contains(.control) { mask |= UInt32(controlKey) }
+        if modifiers.contains(.shift) { mask |= UInt32(shiftKey) }
+        return mask
     }
 
     private func handleGlobalHotKeyTriggered() {
@@ -111,183 +156,24 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         toggleMenuBarExtraWindow()
     }
 
+    /// Opens the control center, or closes it when it is already on screen.
+    ///
+    /// The name predates #56: the panel is an app-owned `NSPanel` now, not a `MenuBarExtra` window.
+    /// Other app files (Settings, URL scheme, App Intents) call it, so the seam is kept.
     public func toggleMenuBarExtraWindow() {
-        if let panelWindow = findMenuBarExtraPanelWindow(), panelWindow.isVisible {
-            let endSel = NSSelectorFromString("_endExpandedInterfaceSession:animate:")
-            if let item = findAnyStatusBarItem(), item.responds(to: endSel) {
-                _ = item.perform(endSel, with: nil, with: nil)
-            }
-            panelWindow.orderOut(nil)
-            return
-        }
-
-        ensureMenuBarExtraWindowVisible()
+        MenuBarPanelController.shared.togglePanel()
     }
 
+    /// Brings the control center on screen without toggling, e.g. to show an onboarding guide or an
+    /// undo banner. Same legacy name as `toggleMenuBarExtraWindow()`.
     public func ensureMenuBarExtraWindowVisible() {
-        if let panelWindow = findMenuBarExtraPanelWindow(), panelWindow.isVisible {
-            NSApp.activate(ignoringOtherApps: true)
-            panelWindow.makeKeyAndOrderFront(nil)
-            return
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        let requestSel = NSSelectorFromString("_requestExpandedInterfaceSession")
-        if let item = findAnyStatusBarItem(), item.responds(to: requestSel) {
-            if item.responds(to: NSSelectorFromString("_lastExpandedInterfaceDismissTimestamp"))
-                || Self.hasIvar("_lastExpandedInterfaceDismissTimestamp", on: item) {
-                item.setValue(0.0, forKey: "_lastExpandedInterfaceDismissTimestamp")
-            }
-            _ = item.perform(requestSel)
-        } else if let button = findAnyStatusBarButton() {
-            button.performClick(nil)
-        }
-        if let panelWindow = findMenuBarExtraPanelWindow() {
-            panelWindow.makeKeyAndOrderFront(nil)
-        }
+        MenuBarPanelController.shared.showPanel()
     }
 
-    private static func hasIvar(_ name: String, on object: AnyObject) -> Bool {
-        var cls: AnyClass? = object_getClass(object)
-        while let current = cls, current != NSObject.self {
-            var count: UInt32 = 0
-            if let ivars = class_copyIvarList(current, &count) {
-                defer { free(ivars) }
-                for idx in 0..<Int(count) {
-                    if let ivarName = ivar_getName(ivars[idx]), String(cString: ivarName) == name {
-                        return true
-                    }
-                }
-            }
-            cls = class_getSuperclass(current)
-        }
-        return false
-    }
+    // MARK: - 2. Local Keyboard Monitors
 
-    private func isStatusBarWindow(_ window: NSWindow) -> Bool {
-        if String(describing: type(of: window)).contains("StatusBar") {
-            return true
-        }
-        return findStatusBarButton(in: window.contentView) != nil
-            || findStatusBarButton(in: window.contentView?.superview) != nil
-    }
-
-    private func findActiveStatusBarWindow() -> NSWindow? {
-        for window in NSApp.windows where isStatusBarWindow(window) {
-            if findStatusBarButton(in: window.contentView) != nil
-                || findStatusBarButton(in: window.contentView?.superview) != nil {
-                return window
-            }
-        }
-        return NSApp.windows.first(where: { isStatusBarWindow($0) && $0.frame.origin.y >= 0 })
-    }
-
-    private func findAnyStatusBarItem() -> NSStatusItem? {
-        for window in NSApp.windows where isStatusBarWindow(window) {
-            if Self.hasIvar("_statusItem", on: window),
-               let item = window.value(forKey: "_statusItem") as? NSStatusItem,
-               item.button != nil {
-                configureNativeLongPressIfNeeded(on: item)
-                return item
-            }
-        }
-        return nil
-    }
-
-    private func configureNativeLongPressIfNeeded(on item: NSStatusItem) {
-        let setLongSel = NSSelectorFromString("setLongPressAction:")
-        guard item.responds(to: setLongSel) else { return }
-        if item.target !== self {
-            item.target = self
-        }
-        if let method = class_getInstanceMethod(type(of: item), setLongSel) {
-            typealias SetSelFn = @convention(c) (AnyObject, Selector, Selector) -> Void
-            let imp = unsafeBitCast(method_getImplementation(method), to: SetSelFn.self)
-            imp(item, setLongSel, #selector(handleStatusBarNativeLongPress(_:)))
-        }
-    }
-
-    @objc private func handleStatusBarNativeLongPress(_ sender: Any?) {
-        statusBarHoldTriggered = true
-        activateStatusBarHoldToTalk()
-        if (NSEvent.pressedMouseButtons & 0x3) != 0 {
-            beginStatusBarHoldDetection(statusWindow: findActiveStatusBarWindow(), eventLocationInWindow: nil)
-        } else if let store {
-            SpeechInputController.shared.finishHoldToTalk(store: store)
-        }
-    }
-
-    private func isMouseInStatusBarItem() -> Bool {
-        let mouse = NSEvent.mouseLocation
-        for window in NSApp.windows where isStatusBarWindow(window) {
-            let frame = window.frame
-            guard frame.width > 4, frame.height > 4, frame.origin.y >= 0 else { continue }
-            if frame.insetBy(dx: -8, dy: -8).contains(mouse) {
-                return true
-            }
-        }
-        if let panel = findMenuBarExtraPanelWindow(),
-           let screen = panel.screen ?? NSScreen.main {
-            let menuBarMinY = screen.frame.maxY - 42
-            if mouse.y >= menuBarMinY,
-               mouse.x >= panel.frame.minX - 40,
-               mouse.x <= panel.frame.maxX + 40 {
-                return true
-            }
-        }
-        return false
-    }
-
-    private func isMouseInMenuBarStrip() -> Bool {
-        let mouse = NSEvent.mouseLocation
-        for screen in NSScreen.screens {
-            if screen.frame.insetBy(dx: -4, dy: -4).contains(mouse),
-               mouse.y >= screen.frame.maxY - 44 {
-                return true
-            }
-        }
-        return isMouseInStatusBarItem()
-    }
-
-    private func findMenuBarExtraPanelWindow() -> NSWindow? {
-        NSApp.windows.first { win in
-            !isStatusBarWindow(win) && (
-                String(describing: type(of: win)).contains("MenuBarExtra")
-                || String(describing: type(of: win)).contains("Popover")
-                || win.level == .popUpMenu
-                || win.level == .statusBar
-                || win.level == .floating
-            )
-        }
-    }
-
-    private func findAnyStatusBarButton() -> NSStatusBarButton? {
-        if let itemButton = findAnyStatusBarItem()?.button {
-            return itemButton
-        }
-        for window in NSApp.windows {
-            if let button = findStatusBarButton(in: window.contentView)
-                ?? findStatusBarButton(in: window.contentView?.superview) {
-                return button
-            }
-        }
-        return nil
-    }
-
-    private func findStatusBarButton(in view: NSView?) -> NSStatusBarButton? {
-        guard let view else { return nil }
-        if let button = view as? NSStatusBarButton {
-            return button
-        }
-        for sub in view.subviews {
-            if let found = findStatusBarButton(in: sub) {
-                return found
-            }
-        }
-        return nil
-    }
-
-    // MARK: - 2. Local Keyboard & Menu Bar Hold-to-Talk Monitors
-
+    /// ⌥-state tracking and panel shortcuts. Mouse handling for the status item lives in
+    /// `MenuBarPanelController`, which owns the item (#56).
     private func setupLocalKeyboardMonitors() {
         if localFlagsMonitor == nil {
             localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
@@ -306,173 +192,46 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             }
         }
 
-        if localMouseDownMonitor == nil {
-            localMouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-                guard let self, let window = event.window, self.isStatusBarWindow(window) else {
-                    return event
-                }
-                self.beginStatusBarHoldDetection(statusWindow: window, eventLocationInWindow: event.locationInWindow)
-                return event
-            }
-        }
-
-        if localMouseUpMonitor == nil {
-            localMouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp]) { [weak self] event in
-                guard let self, let window = event.window, self.isStatusBarWindow(window) else {
-                    return event
-                }
-                if ProcessInfo.processInfo.systemUptime < self.suppressNextStatusBarMouseUpUntil {
-                    self.suppressNextStatusBarMouseUpUntil = 0
-                    return nil
-                }
-                return event
-            }
-        }
-
-        if globalMouseDownMonitor == nil {
-            globalMouseDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    guard let self, self.isMouseInStatusBarItem() else { return }
-                    self.beginStatusBarHoldDetection(statusWindow: self.findActiveStatusBarWindow(), eventLocationInWindow: nil)
-                }
-            }
-        }
-
+        // Opening any window of our own (Settings, the panel) is a chance to run the daily update
+        // check. Menu-bar gestures are handled by the status item controller.
         if windowBecomeKeyObserver == nil {
             windowBecomeKeyObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.didBecomeKeyNotification,
                 object: nil,
                 queue: .main
-            ) { [weak self] notification in
-                guard let win = notification.object as? NSWindow else { return }
+            ) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    guard let self, !self.isStatusBarWindow(win) else { return }
+                    guard let self else { return }
                     Task { @MainActor [weak self] in
                         await self?.store?.checkForUpdatesIfNeeded()
                     }
-                    guard (NSEvent.pressedMouseButtons & 0x3) != 0, self.isMouseInMenuBarStrip() else { return }
-                    self.beginStatusBarHoldDetection(statusWindow: self.findActiveStatusBarWindow(), eventLocationInWindow: nil)
-                }
-            }
-        }
-
-        if windowResignKeyObserver == nil {
-            windowResignKeyObserver = NotificationCenter.default.addObserver(
-                forName: NSWindow.didResignKeyNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] notification in
-                guard let win = notification.object as? NSWindow else { return }
-                MainActor.assumeIsolated {
-                    guard let self, !self.isStatusBarWindow(win) else { return }
-                    guard (NSEvent.pressedMouseButtons & 0x3) != 0, self.isMouseInStatusBarItem() else { return }
-                    self.beginStatusBarHoldDetection(statusWindow: self.findActiveStatusBarWindow(), eventLocationInWindow: nil)
                 }
             }
         }
     }
 
-    private weak var statusBarHoldTargetWindow: NSWindow?
-    private var statusBarHoldEventLocation: NSPoint = NSPoint(x: 16, y: 16)
-
-    private func beginStatusBarHoldDetection(statusWindow: NSWindow?, eventLocationInWindow: NSPoint?) {
-        // Avoid resetting the timer if another monitor/notification already started tracking this same press.
-        if statusBarHoldTimer != nil {
-            return
-        }
-        guard (NSEvent.pressedMouseButtons & 0x3) != 0 else { return }
-
-        statusBarHoldStartTime = ProcessInfo.processInfo.systemUptime
-        statusBarHoldTriggered = false
-        statusBarHoldTargetWindow = statusWindow ?? findActiveStatusBarWindow()
-        statusBarHoldEventLocation = eventLocationInWindow ?? NSPoint(x: 16, y: 16)
-
-        // Schedule in RunLoop.Mode.common so the timer fires even while NSStatusBarButtonCell.trackMouse
-        // blocks RunLoop.main inside NSEventTrackingRunLoopMode.
-        let timer = Timer(
-            timeInterval: 0.03,
-            target: self,
-            selector: #selector(handleStatusBarHoldTimerTick(_:)),
-            userInfo: nil,
-            repeats: true
-        )
-        statusBarHoldTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
-    }
-
-    @objc private func handleStatusBarHoldTimerTick(_ timer: Timer) {
-        let isMouseDown = (NSEvent.pressedMouseButtons & 0x3) != 0
-        let elapsed = ProcessInfo.processInfo.systemUptime - statusBarHoldStartTime
-
-        if !statusBarHoldTriggered {
-            if !isMouseDown {
-                stopStatusBarHoldTimer()
-                return
-            }
-            if elapsed >= 0.20 {
-                statusBarHoldTriggered = true
-                suppressNextStatusBarMouseUpUntil = ProcessInfo.processInfo.systemUptime + 10.0
-
-                if RunLoop.main.currentMode == .eventTracking, let win = statusBarHoldTargetWindow {
-                    if let upEvent = NSEvent.mouseEvent(
-                        with: .leftMouseUp,
-                        location: statusBarHoldEventLocation,
-                        modifierFlags: [],
-                        timestamp: ProcessInfo.processInfo.systemUptime,
-                        windowNumber: win.windowNumber,
-                        context: nil,
-                        eventNumber: 0,
-                        clickCount: 1,
-                        pressure: 0.0
-                    ) {
-                        NSApp.postEvent(upEvent, atStart: true)
-                    }
-                }
-
-                activateStatusBarHoldToTalk()
-            }
-        } else {
-            if !isMouseDown {
-                stopStatusBarHoldTimer()
-                suppressNextStatusBarMouseUpUntil = ProcessInfo.processInfo.systemUptime + 0.25
-                if let store {
-                    SpeechInputController.shared.finishHoldToTalk(store: store)
-                    ensureMenuBarExtraWindowVisible()
-                    Task { @MainActor [weak self] in
-                        try? await Task.sleep(for: .milliseconds(70))
-                        guard let self, let store = self.store, store.isShowingAssistantBar else { return }
-                        self.ensureMenuBarExtraWindowVisible()
-                    }
-                }
-            }
-        }
-    }
-
-    private func stopStatusBarHoldTimer() {
-        statusBarHoldTimer?.invalidate()
-        statusBarHoldTimer = nil
-        statusBarHoldTargetWindow = nil
-    }
-
-    private func activateStatusBarHoldToTalk() {
-        guard let store else { return }
-        ensureMenuBarExtraWindowVisible()
-        store.presentAssistantBar(startVoice: false)
-        SpeechInputController.shared.startHoldToTalk(store: store)
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(70))
-            guard let self, let store = self.store, store.isShowingAssistantBar else { return }
-            self.ensureMenuBarExtraWindowVisible()
-        }
-    }
+    // MARK: - 3. Local Keyboard Shortcuts
 
     private func handleKeyDown(_ event: NSEvent, store: HomeStore) -> Bool {
         let code = Int(event.keyCode)
+
+        // Settings is a separate scene; the panel has no app menu of its own (agent app).
+        if code == kVK_ANSI_Comma, event.modifierFlags.contains(.command) {
+            SettingsWindowOpener.shared.show()
+            return true
+        }
+
+        // #60: an open search owns ↑↓ / Return / → / Esc / typing. With no search it returns false for
+        // every key, so the shortcuts below — and the text-field guard right after this — are unchanged.
+        if PanelSearchKeyboard.handle(event, store: store) {
+            return true
+        }
+
         // Do not intercept typing when a text field (e.g., XiaoAi input or Settings URL) is first responder
         if let responder = NSApp.keyWindow?.firstResponder,
            responder is NSTextView || responder is NSTextField {
             if code == kVK_Escape {
-                if store.isShowingAssistantBar && !store.isShowingSettings {
+                if store.isShowingAssistantBar {
                     store.dismissAssistantBar()
                 }
                 NSApp.keyWindow?.makeFirstResponder(nil)
@@ -481,20 +240,16 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             return false
         }
 
-        // Option+M inside open window closes it
-        if event.modifierFlags.contains(.option),
-           event.charactersIgnoringModifiers?.lowercased() == "m",
-           store.enableGlobalHotkey {
-            NSApp.keyWindow?.orderOut(nil)
-            return true
+        // Arrow/space/digit shortcuts belong to the menu-bar panel. The Settings window (⌘,) keeps
+        // normal AppKit control behavior instead of triggering device actions (#42).
+        if !MenuBarPanelController.shared.isPanelWindow(NSApp.keyWindow) {
+            return false
         }
 
-        if store.isShowingSettings {
-            if code == kVK_Escape {
-                store.isShowingSettings = false
-                return true
-            }
-            return false
+        // The configured global shortcut also closes an open panel instead of being re-triggered.
+        if store.enableGlobalHotkey, HotkeyRecorderController.matches(event) {
+            MenuBarPanelController.shared.hidePanel()
+            return true
         }
 
         if event.charactersIgnoringModifiers == "/",
@@ -537,7 +292,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             } else if store.focusedDeviceId != nil {
                 store.focusedDeviceId = nil
             } else {
-                NSApp.keyWindow?.orderOut(nil)
+                MenuBarPanelController.shared.hidePanel()
             }
             return true
         default:
@@ -555,7 +310,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         return false
     }
 
-    // MARK: - 3. Native macOS Safety Alerts (UNUserNotificationCenter)
+    // MARK: - 4. Native macOS Safety Alerts (UNUserNotificationCenter)
 
     private func setupNotificationsIfBundled() {
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
@@ -586,10 +341,8 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         )
         center.setNotificationCategories([category, missedCategory])
 
-        Task {
-            _ = try? await center.requestAuthorization(options: [.alert, .sound])
-        }
-
+        // Permission is requested on demand (#55): first time 守护提醒 is enabled or a timer is set,
+        // after an in-app explanation. Nothing is asked at launch.
         store?.onSafetyAlert = { [weak self] alert in
             self?.deliverNotification(for: alert)
         }
@@ -597,6 +350,50 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             self?.deliverMissedTimerNotification(for: entry)
         }
         store?.notifyMissedScheduledCommandsIfNeeded()
+        Task { [weak self] in
+            await self?.refreshNotificationPermission()
+        }
+    }
+
+    // MARK: - Notification Permission on Demand (#55)
+
+    /// Set the first time the user is asked, so a denial is not re-prompted in-app forever.
+    public static let notificationPromptedKey = "notification_permission_prompted"
+
+    public static var hasRequestedNotificationAuthorization: Bool {
+        UserDefaults.standard.bool(forKey: notificationPromptedKey)
+    }
+
+    /// Shows the macOS prompt only when it can still be shown. Returns whether banners are allowed.
+    public func requestNotificationAuthorization() async -> Bool {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return false }
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        if settings.authorizationStatus == .notDetermined {
+            UserDefaults.standard.set(true, forKey: Self.notificationPromptedKey)
+            let granted = (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
+            await refreshNotificationPermission()
+            return granted
+        }
+        await refreshNotificationPermission()
+        return settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+    }
+
+    /// Mirrors the system state into the settings UI (authorized / denied / not asked yet).
+    public func refreshNotificationPermission() async {
+        let state = NotificationPermissionState.shared
+        guard Bundle.main.bundleURL.pathExtension == "app" else {
+            state.update(.notDetermined, canRequest: false)
+            return
+        }
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        state.update(settings.authorizationStatus, canRequest: settings.authorizationStatus == .notDetermined)
+    }
+
+    /// "打开系统设置" next to a denied state.
+    public func openNotificationSystemSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private struct MissedTimerNotificationIdentifier {
@@ -654,14 +451,33 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         UNUserNotificationCenter.current().add(request)
     }
 
+    /// Banner for actions invoked from outside the panel (URL Scheme / App Intents, #57).
+    ///
+    /// This never asks for permission: if the user has not allowed notifications, it silently does
+    /// nothing and the in-panel toast / intent dialog remains the feedback. The bundle check keeps
+    /// `swift test` from touching `UNUserNotificationCenter` (#55).
+    public func deliverExternalActionNotification(title: String, body: String) {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        let request = UNNotificationRequest(
+            identifier: "external-action-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
     private func deliverMissedTimerNotification(for entry: ScheduledCommand) {
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
 
         let content = UNMutableNotificationContent()
         content.title = L10n.tr("已错过定时任务", "Missed Scheduled Command")
         content.body = L10n.tr(
-            "应用关闭期间已过期的定时：「\(entry.reply)」。可点击通知按钮立即补执行。",
-            "Expired while the app was closed: \"\(entry.reply)\". Click Run Now to execute it."
+            "应用关闭或电脑睡眠时错过的定时：「\(entry.reply)」。没有自动执行，可点通知按钮立即补执行。",
+            "Missed while the app was closed or the Mac was asleep: \"\(entry.reply)\". It did not run. Click Run Now to run it."
         )
         content.sound = .default
         content.categoryIdentifier = Self.missedTimerCategoryId

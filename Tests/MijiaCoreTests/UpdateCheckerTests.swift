@@ -139,7 +139,7 @@ struct UpdateCheckerTests {
         return appURL
     }
 
-    @Test("AppUpdater stages verified bundle and rejects checksum, bundle ID, or codesign failures")
+    @Test("AppUpdater stages verified bundle and rejects checksum, bundle ID, signature, or codesign failures")
     func appUpdaterStageAndRejections() async throws {
         let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent("updater-test-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
@@ -151,6 +151,10 @@ struct UpdateCheckerTests {
 
         let archiveBytes = Data("verified-dmg-content".utf8)
         let validDigest = SHA256Digest.hash(archiveBytes)
+        let signingKey = Curve25519.Signing.PrivateKey()
+        let signingPublicKey = signingKey.publicKey.rawRepresentation.base64EncodedString()
+        let packageSignature = try signingKey.signature(for: archiveBytes).base64EncodedString()
+        let sidecarText = "\(validDigest.hex)  MenuBarMijia-1.2.0.dmg\n"
         let release = AppRelease(
             version: "1.2.0",
             pageURL: URL(string: "https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.2.0")!,
@@ -164,32 +168,40 @@ struct UpdateCheckerTests {
             )
         )
 
+        func makeUpdater(driver: UpdateSystemDriver) -> AppUpdater {
+            AppUpdater(
+                currentVersion: "1.0.0",
+                targetBundleURL: targetAppURL,
+                stagingBaseDirectory: stagingParent,
+                updateSigningPublicKeyBase64: signingPublicKey,
+                driver: driver
+            )
+        }
+
         let happyDriver = UpdateSystemDriver(
             downloadFile: { _, destination, onProgress in
                 try archiveBytes.write(to: destination)
                 onProgress(DownloadProgress(receivedBytes: Int64(archiveBytes.count), totalBytes: Int64(archiveBytes.count)))
             },
             fetchData: { req in
-                let sidecar = "\(validDigest.hex)  MenuBarMijia-1.2.0.dmg\n"
                 let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-                return (Data(sidecar.utf8), resp)
+                if req.url?.path.hasSuffix(".ed25519.sig") == true {
+                    #expect(req.url?.absoluteString == "https://example.com/MenuBarMijia-1.2.0.dmg.ed25519.sig")
+                    return (Data(packageSignature.utf8), resp)
+                }
+                return (Data(sidecarText.utf8), resp)
             },
             unpackArchive: { _, _, destinationDir in
                 try Self.makeFakeAppBundle(in: destinationDir, shortVersion: "1.2.0")
             },
-            verifyCodeSignature: { _ in },
+            verifyCodeSignature: { _, _ in },
             launchDetachedSwapAndRelaunch: { _, _, _ in }
         )
 
         let staleDir = stagingParent.appendingPathComponent("com.jryang1997.MenuBarMijia.update-stale", isDirectory: true)
         try FileManager.default.createDirectory(at: staleDir, withIntermediateDirectories: true)
 
-        let updater = AppUpdater(
-            currentVersion: "1.0.0",
-            targetBundleURL: targetAppURL,
-            stagingBaseDirectory: stagingParent,
-            driver: happyDriver
-        )
+        let updater = makeUpdater(driver: happyDriver)
         let staged = try await updater.stageUpdate(for: release) { _ in }
         #expect(!FileManager.default.fileExists(atPath: staleDir.path))
         #expect(FileManager.default.fileExists(atPath: staged.stagedBundleURL.path))
@@ -202,28 +214,16 @@ struct UpdateCheckerTests {
             try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: targetAppURL)
             return symlinkURL
         }
-        let symlinkUpdater = AppUpdater(
-            currentVersion: "1.0.0",
-            targetBundleURL: targetAppURL,
-            stagingBaseDirectory: stagingParent,
-            driver: symlinkDriver
-        )
         await #expect(throws: UpdateInstallError.unpackFailed("App bundle cannot be a symbolic link")) {
-            _ = try await symlinkUpdater.stageUpdate(for: release) { _ in }
+            _ = try await makeUpdater(driver: symlinkDriver).stageUpdate(for: release) { _ in }
         }
 
         var corruptedDriver = happyDriver
         corruptedDriver.downloadFile = { _, destination, _ in
             try Data("tampered-dmg-content".utf8).write(to: destination)
         }
-        let corruptedUpdater = AppUpdater(
-            currentVersion: "1.0.0",
-            targetBundleURL: targetAppURL,
-            stagingBaseDirectory: stagingParent,
-            driver: corruptedDriver
-        )
         await #expect(throws: UpdateInstallError.self) {
-            _ = try await corruptedUpdater.stageUpdate(for: release) { _ in }
+            _ = try await makeUpdater(driver: corruptedDriver).stageUpdate(for: release) { _ in }
         }
         let remainingAfterChecksumFail = try FileManager.default.contentsOfDirectory(atPath: stagingParent.path)
         #expect(remainingAfterChecksumFail.isEmpty)
@@ -232,30 +232,88 @@ struct UpdateCheckerTests {
         wrongBundleDriver.unpackArchive = { _, _, destinationDir in
             try Self.makeFakeAppBundle(in: destinationDir, bundleID: "com.evil.Replacement", shortVersion: "1.2.0")
         }
-        let wrongBundleUpdater = AppUpdater(
-            currentVersion: "1.0.0",
-            targetBundleURL: targetAppURL,
-            stagingBaseDirectory: stagingParent,
-            driver: wrongBundleDriver
-        )
         await #expect(throws: UpdateInstallError.bundleIdentifierMismatch(found: "com.evil.Replacement")) {
-            _ = try await wrongBundleUpdater.stageUpdate(for: release) { _ in }
+            _ = try await makeUpdater(driver: wrongBundleDriver).stageUpdate(for: release) { _ in }
         }
 
         var invalidSigDriver = happyDriver
-        invalidSigDriver.verifyCodeSignature = { _ in
+        invalidSigDriver.verifyCodeSignature = { _, _ in
             throw UpdateInstallError.codeSignatureInvalid("a sealed resource is missing or invalid")
         }
-        let invalidSigUpdater = AppUpdater(
-            currentVersion: "1.0.0",
-            targetBundleURL: targetAppURL,
-            stagingBaseDirectory: stagingParent,
-            driver: invalidSigDriver
-        )
         await #expect(throws: UpdateInstallError.codeSignatureInvalid("a sealed resource is missing or invalid")) {
-            _ = try await invalidSigUpdater.stageUpdate(for: release) { _ in }
+            _ = try await makeUpdater(driver: invalidSigDriver).stageUpdate(for: release) { _ in }
+        }
+
+        // 篡改 DMG 后同步修改 .sha256：SHA-256 能过，但 Ed25519 必须拒绝。
+        let tamperedBytes = Data("tampered-dmg-content".utf8)
+        let tamperedDigest = SHA256Digest.hash(tamperedBytes)
+        var tamperedDriver = happyDriver
+        tamperedDriver.downloadFile = { _, destination, _ in
+            try tamperedBytes.write(to: destination)
+        }
+        tamperedDriver.fetchData = { req in
+            let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            if req.url?.path.hasSuffix(".ed25519.sig") == true {
+                return (Data(packageSignature.utf8), resp)
+            }
+            return (Data("\(tamperedDigest.hex)  MenuBarMijia-1.2.0.dmg\n".utf8), resp)
+        }
+        await #expect(throws: UpdateInstallError.updateSignatureInvalid("signature does not match the package")) {
+            _ = try await makeUpdater(driver: tamperedDriver).stageUpdate(for: release) { _ in }
+        }
+
+        // .sig 缺失（404）时中止安装。
+        var missingSignatureDriver = happyDriver
+        missingSignatureDriver.fetchData = { req in
+            if req.url?.path.hasSuffix(".ed25519.sig") == true {
+                let resp = HTTPURLResponse(url: req.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!
+                return (Data(), resp)
+            }
+            let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data(sidecarText.utf8), resp)
+        }
+        await #expect(throws: UpdateInstallError.updateSignatureMissing) {
+            _ = try await makeUpdater(driver: missingSignatureDriver).stageUpdate(for: release) { _ in }
+        }
+
+        // .sig 内容不是合法 base64 时同样中止。
+        var malformedSignatureDriver = happyDriver
+        malformedSignatureDriver.fetchData = { req in
+            let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            if req.url?.path.hasSuffix(".ed25519.sig") == true {
+                return (Data("not-base64".utf8), resp)
+            }
+            return (Data(sidecarText.utf8), resp)
+        }
+        await #expect(throws: UpdateInstallError.updateSignatureInvalid("signature is not valid base64")) {
+            _ = try await makeUpdater(driver: malformedSignatureDriver).stageUpdate(for: release) { _ in }
         }
     }
+
+    @Test("Ed25519 update signatures round-trip and reject tampered data, keys, or signatures")
+    func ed25519SignatureVerification() throws {
+        let key = Curve25519.Signing.PrivateKey()
+        let publicKey = key.publicKey.rawRepresentation.base64EncodedString()
+        let data = Data("update-package-bytes".utf8)
+        let signature = try key.signature(for: data).base64EncodedString()
+        #expect(UpdateSignature.verify(signatureBase64: signature, publicKeyBase64: publicKey, data: data))
+        #expect(!UpdateSignature.verify(signatureBase64: signature, publicKeyBase64: publicKey, data: Data("tampered".utf8)))
+
+        let otherKey = Curve25519.Signing.PrivateKey()
+        #expect(!UpdateSignature.verify(
+            signatureBase64: signature,
+            publicKeyBase64: otherKey.publicKey.rawRepresentation.base64EncodedString(),
+            data: data
+        ))
+        let otherSignature = try otherKey.signature(for: data).base64EncodedString()
+        #expect(!UpdateSignature.verify(signatureBase64: otherSignature, publicKeyBase64: publicKey, data: data))
+        #expect(!UpdateSignature.verify(signatureBase64: "not-base64", publicKeyBase64: publicKey, data: data))
+        #expect(!UpdateSignature.verify(signatureBase64: signature, publicKeyBase64: "AAAA", data: data))
+        #expect(Data(base64Encoded: UpdateChecker.updateSigningPublicKeyBase64)?.count == 32)
+        #expect(AppUpdater.signatureURL(for: URL(string: "https://example.com/MenuBarMijia-1.2.0.dmg")!)
+            == URL(string: "https://example.com/MenuBarMijia-1.2.0.dmg.ed25519.sig")!)
+    }
+
 
     @MainActor
     @Test("HomeStore orchestrates throttling, staging, cancellation, retry, and relaunch")
@@ -270,6 +328,9 @@ struct UpdateCheckerTests {
         let targetAppURL = try Self.makeFakeAppBundle(in: rootDir, shortVersion: "1.0.0")
         let archiveBytes = Data("release-binary".utf8)
         let digest = SHA256Digest.hash(archiveBytes)
+        let signingKey = Curve25519.Signing.PrivateKey()
+        let signingPublicKey = signingKey.publicKey.rawRepresentation.base64EncodedString()
+        let packageSignature = try signingKey.signature(for: archiveBytes).base64EncodedString()
         let releaseJSON = """
         {
           "tag_name": "v1.4.0",
@@ -306,6 +367,9 @@ struct UpdateCheckerTests {
                 fetchData: { req in
                     probe.checkCallCount += 1
                     let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                    if req.url?.path.hasSuffix(".ed25519.sig") == true {
+                        return (Data(packageSignature.utf8), resp)
+                    }
                     return (Data(releaseJSON.utf8), resp)
                 },
                 unpackArchive: { _, _, destinationDir in
@@ -314,7 +378,7 @@ struct UpdateCheckerTests {
                     }
                     return try Self.makeFakeAppBundle(in: destinationDir, shortVersion: "1.4.0")
                 },
-                verifyCodeSignature: { _ in },
+                verifyCodeSignature: { _, _ in },
                 launchDetachedSwapAndRelaunch: { _, targetURL, _ in
                     probe.swappedTargetURL = targetURL
                 }
@@ -323,6 +387,7 @@ struct UpdateCheckerTests {
                 currentVersion: "1.0.0",
                 targetBundleURL: targetAppURL,
                 stagingBaseDirectory: rootDir,
+                updateSigningPublicKeyBase64: signingPublicKey,
                 driver: driver
             )
         }
@@ -350,6 +415,7 @@ struct UpdateCheckerTests {
             currentVersion: "1.4.0",
             targetBundleURL: targetAppURL,
             stagingBaseDirectory: rootDir,
+            updateSigningPublicKeyBase64: signingPublicKey,
             driver: UpdateSystemDriver(
                 downloadFile: { _, _, _ in },
                 fetchData: { req in
@@ -358,7 +424,7 @@ struct UpdateCheckerTests {
                     return (Data(releaseJSON.utf8), resp)
                 },
                 unpackArchive: { _, _, dir in dir },
-                verifyCodeSignature: { _ in },
+                verifyCodeSignature: { _, _ in },
                 launchDetachedSwapAndRelaunch: { _, _, _ in }
             )
         )
@@ -405,39 +471,6 @@ struct UpdateCheckerTests {
         #expect(didTerminate)
     }
 
-    @Test("MiSessionStore and KeychainHelper preserve credentials in UserDefaults fallback keys")
-    func credentialFallbackContinuity() {
-        let suiteName = "com.jryang1997.MenuBarMijia.cred-fallback.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
-
-        let session = MiSession(
-            userId: "987654321",
-            cUserId: "cid",
-            ssecurity: "ssec",
-            serviceToken: "stoken",
-            passToken: "ptoken",
-            region: "cn"
-        )
-        #expect(MiSessionStore.save(session, defaults: defaults))
-        #expect(defaults.data(forKey: MiSessionStore.fallbackDefaultsKey) != nil)
-        #expect(MiSessionStore.load(defaults: defaults) == session)
-
-        let deepSeekAccount = KeychainHelper.assistantProviderAPIKeyAccount(for: .deepSeek)
-        KeychainHelper.saveSecret("sk-deepseek-test", account: deepSeekAccount, defaults: defaults)
-        #expect(KeychainHelper.loadSecret(account: deepSeekAccount, defaults: defaults) == "sk-deepseek-test")
-
-        KeychainHelper.synchronizeFallbackCredentialsBeforeUpdate(defaults: defaults)
-        #expect(defaults.string(forKey: KeychainHelper.secretFallbackKey(for: deepSeekAccount)) == "sk-deepseek-test")
-        #expect(MiSessionStore.load(defaults: defaults) == session)
-
-        KeychainHelper.saveSecret("", account: deepSeekAccount, defaults: defaults)
-        #expect(KeychainHelper.loadSecret(account: deepSeekAccount, defaults: defaults).isEmpty)
-
-        MiSessionStore.clear(defaults: defaults)
-        #expect(MiSessionStore.load(defaults: defaults) == nil)
-    }
-
     #if os(macOS)
     private static func runTool(_ executable: String, _ arguments: [String]) throws {
         let process = Process()
@@ -480,12 +513,20 @@ struct UpdateCheckerTests {
         return appURL
     }
 
-    @Test("UpdateSystemDriver.live unpacks ZIP and DMG, verifies code signature with identifier requirement, and swaps bundle")
+    @Test("UpdateSystemDriver.live unpacks ZIP and DMG, enforces the codesign requirement, and swaps bundle")
     func liveDriverUnpacksAndVerifiesSignedBundles() async throws {
         let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent("live-driver-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: rootDir) }
 
+        let missingPinRequirement = AppUpdater.codeSigningRequirement(
+            bundleIdentifier: AppUpdater.expectedBundleIdentifier,
+            certificateSHA1: nil
+        )
+        let pinnedRequirement = AppUpdater.codeSigningRequirement(
+            bundleIdentifier: AppUpdater.expectedBundleIdentifier,
+            certificateSHA1: String(repeating: "a", count: 40)
+        )
         let buildDir = rootDir.appendingPathComponent("build", isDirectory: true)
         try FileManager.default.createDirectory(at: buildDir, withIntermediateDirectories: true)
         let signedAppURL = try Self.makeSignedMachOAppBundle(in: buildDir, shortVersion: "1.5.0")
@@ -498,7 +539,13 @@ struct UpdateCheckerTests {
         let unpackedFromZip = try await UpdateSystemDriver.live.unpackArchive(zipURL, .zip, zipDest)
         #expect(unpackedFromZip.lastPathComponent == "MenuBarMijia.app")
         try await UpdateSystemDriver.live.stripQuarantine(unpackedFromZip)
-        try await UpdateSystemDriver.live.verifyCodeSignature(unpackedFromZip)
+        await #expect(throws: UpdateInstallError.self) {
+            try await UpdateSystemDriver.live.verifyCodeSignature(unpackedFromZip, missingPinRequirement)
+        }
+        // 同 Bundle ID 的 ad-hoc 包必须被钉住证书的 requirement 拒绝。
+        await #expect(throws: UpdateInstallError.self) {
+            try await UpdateSystemDriver.live.verifyCodeSignature(unpackedFromZip, pinnedRequirement)
+        }
 
         let dmgSrcDir = rootDir.appendingPathComponent("dmg-src", isDirectory: true)
         try FileManager.default.createDirectory(at: dmgSrcDir, withIntermediateDirectories: true)
@@ -518,13 +565,15 @@ struct UpdateCheckerTests {
         #expect(unpackedFromDmg.lastPathComponent == "MenuBarMijia.app")
         #expect(!FileManager.default.fileExists(atPath: dmgDest.appendingPathComponent("mnt").path))
         try await UpdateSystemDriver.live.stripQuarantine(unpackedFromDmg)
-        try await UpdateSystemDriver.live.verifyCodeSignature(unpackedFromDmg)
+        await #expect(throws: UpdateInstallError.self) {
+            try await UpdateSystemDriver.live.verifyCodeSignature(unpackedFromDmg, missingPinRequirement)
+        }
 
         let evilDir = rootDir.appendingPathComponent("evil", isDirectory: true)
         try FileManager.default.createDirectory(at: evilDir, withIntermediateDirectories: true)
         let evilAppURL = try Self.makeSignedMachOAppBundle(in: evilDir, bundleID: "com.evil.Other", shortVersion: "1.5.0")
         await #expect(throws: UpdateInstallError.self) {
-            try await UpdateSystemDriver.live.verifyCodeSignature(evilAppURL)
+            try await UpdateSystemDriver.live.verifyCodeSignature(evilAppURL, pinnedRequirement)
         }
     }
     #endif

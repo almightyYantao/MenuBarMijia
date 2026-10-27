@@ -259,7 +259,10 @@ export const MiCloudCrypto = {
     if (randomBytes && randomBytes.length === 8) {
       for (let i = 0; i < 8; i++) out[i] = (randomBytes[i] ?? 0) & 0xff;
     } else {
-      for (let i = 0; i < 8; i++) out[i] = Math.floor(Math.random() * 256);
+      // Security-sensitive nonce bytes: never use Math.random() here (#49).
+      const webCrypto = globalThis.crypto;
+      if (!webCrypto?.getRandomValues) throw new Error("安全随机数生成器不可用");
+      webCrypto.getRandomValues(out.subarray(0, 8));
     }
     const minutes = Math.floor(nowMs / 60_000) >>> 0;
     const view = new DataView(out.buffer);

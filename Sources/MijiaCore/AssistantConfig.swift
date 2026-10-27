@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 // MARK: - AI Provider Presets
 
@@ -131,7 +130,7 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
     public var keyPlaceholder: String {
         switch self {
         case .openRouterJev:
-            return L10n.tr("留空自动读取 CodexBar，或手动输入 sk-or-...", "Auto-read CodexBar or enter sk-or-...")
+            return L10n.tr("点「导入」读取 CodexBar/环境变量，或手动输入 sk-or-...", "Tap Import to read CodexBar/env, or enter sk-or-...")
         case .nativeJev:
             return L10n.tr("粘贴 TypeSafe 原生 Jev API Key", "Paste TypeSafe Native Jev API Key")
         case .deepSeek:
@@ -170,7 +169,8 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
         case .gemini: return ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
         case .groq: return ["GROQ_API_KEY"]
         case .ollama: return []
-        case .custom: return ["OPENAI_API_KEY"]
+        // A custom endpoint can be any server, so it never receives keys meant for a known provider.
+        case .custom: return []
         }
     }
 
@@ -191,21 +191,27 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
         }
     }
 
+    /// Whether "从 CodexBar / 环境变量导入" applies: custom endpoints and keyless Ollama have nothing to import.
+    public var supportsKeyImport: Bool {
+        !envVarNames.isEmpty || !codexBarProviderIds.isEmpty
+    }
+
+    /// Maps an endpoint to the provider whose saved key it may use. Unknown or look-alike hosts are `.custom` (#19).
     public static func infer(baseURL: String) -> AssistantProviderPreset {
-        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let parsed = URL(string: trimmed)
-        let host = parsed?.host?.lowercased() ?? trimmed
-        if host.contains("openrouter.ai") { return .openRouterJev }
-        if host.contains("typesafe.ai") { return .nativeJev }
-        if host.contains("deepseek.com") { return .deepSeek }
-        if host.contains("siliconflow.cn") { return .siliconFlow }
-        if host.contains("aliyuncs.com") { return .dashScope }
-        if host.contains("bigmodel.cn") { return .zhipuGLM }
-        if host.contains("moonshot.cn") || host.contains("moonshot.ai") { return .moonshotKimi }
-        if host.contains("openai.com") { return .openAI }
-        if host.contains("googleapis.com") { return .gemini }
-        if host.contains("groq.com") { return .groq }
-        if parsed?.port == 11434 || trimmed.contains(":11434") { return .ollama }
+        guard let endpoint = AssistantEndpoint(baseURL) else { return .custom }
+        let host = endpoint.host
+        if endpoint.hostMatches(domain: "openrouter.ai") { return .openRouterJev }
+        if endpoint.hostMatches(domain: "typesafe.ai") { return .nativeJev }
+        if endpoint.hostMatches(domain: "deepseek.com") { return .deepSeek }
+        if endpoint.hostMatches(domain: "siliconflow.cn") { return .siliconFlow }
+        // aliyuncs.com and googleapis.com also serve customer-owned buckets, so only the API hosts count.
+        if host == "dashscope.aliyuncs.com" || host == "dashscope-intl.aliyuncs.com" { return .dashScope }
+        if endpoint.hostMatches(domain: "bigmodel.cn") { return .zhipuGLM }
+        if endpoint.hostMatches(domain: "moonshot.cn") || endpoint.hostMatches(domain: "moonshot.ai") { return .moonshotKimi }
+        if endpoint.hostMatches(domain: "openai.com") { return .openAI }
+        if host == "generativelanguage.googleapis.com" { return .gemini }
+        if endpoint.hostMatches(domain: "groq.com") { return .groq }
+        if endpoint.port == 11434 && endpoint.isLocalNetwork { return .ollama }
         return .custom
     }
 }
@@ -222,6 +228,8 @@ public struct AssistantConfig: Equatable, Sendable {
 
     static let baseURLKey = "assistant_base_url"
     static let modelKey = "assistant_model"
+    /// Every custom URL shares one Keychain slot, so this records which server (host:port) the saved custom key belongs to.
+    static let customKeyEndpointKey = "assistant_custom_key_endpoint"
 
     public var baseURL: String
     public var model: String
@@ -241,19 +249,18 @@ public struct AssistantConfig: Equatable, Sendable {
         !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// The endpoint is on this computer or the local network, so it may run without an API key.
     public var isLoopbackEndpoint: Bool {
-        guard let host = URL(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines))?.host?.lowercased() else {
-            return false
-        }
-        return host == "localhost"
-            || host == "127.0.0.1"
-            || host == "::1"
-            || host.hasSuffix(".local")
-            || host.hasPrefix("192.168.")
-            || host.hasPrefix("10.")
+        AssistantEndpoint(baseURL)?.isLocalNetwork ?? false
     }
 
-    public static func load(from defaults: UserDefaults, includeAmbientKey: Bool = true) -> AssistantConfig {
+    /// False for plain http to a public host: the key and the user's words would cross the internet unencrypted.
+    public var allowsSendingAPIKey: Bool {
+        AssistantEndpoint(baseURL)?.allowsSendingSecrets ?? false
+    }
+
+    /// Ambient keys (CodexBar / environment variables) are never used implicitly; the user imports them explicitly (#20).
+    public static func load(from defaults: UserDefaults, includeAmbientKey: Bool = false) -> AssistantConfig {
         let nonEmpty = { (key: String) -> String? in
             guard let v = defaults.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !v.isEmpty else { return nil }
@@ -294,14 +301,38 @@ public struct AssistantConfig: Equatable, Sendable {
         let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let inferred = AssistantProviderPreset.infer(baseURL: trimmedBase)
+        // A key typed by hand replaces an imported one, so the "imported from" label no longer applies.
+        if Self.userStoredAPIKey(forBaseURL: trimmedBase, defaults: defaults) != trimmedKey {
+            defaults.removeObject(forKey: Self.importedKeySourceKey(for: inferred))
+        }
         defaults.set(trimmedBase, forKey: Self.baseURLKey)
         defaults.set(trimmedModel, forKey: Self.modelKey)
-        let inferred = AssistantProviderPreset.infer(baseURL: trimmedBase)
-        let providerAccount = KeychainHelper.assistantProviderAPIKeyAccount(for: inferred)
-        KeychainHelper.saveSecret(trimmedKey, account: providerAccount, defaults: defaults)
-        if inferred == .openRouterJev {
-            KeychainHelper.saveSecret(trimmedKey, account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults)
+        Self.saveSecret(trimmedKey, for: inferred, defaults: defaults)
+        if inferred == .custom {
+            if trimmedKey.isEmpty {
+                defaults.removeObject(forKey: Self.customKeyEndpointKey)
+            } else {
+                defaults.set(AssistantEndpoint(trimmedBase)?.identity, forKey: Self.customKeyEndpointKey)
+            }
         }
+    }
+
+    /// Writes (or, with an empty key, deletes) the saved key for `preset`. The bundled OpenRouter/Jev preset also
+    /// keeps the legacy `assistant_api_key` slot in sync because pre-v1.0.4 builds read the key from there.
+    private static func saveSecret(_ key: String, for preset: AssistantProviderPreset, defaults: UserDefaults) {
+        KeychainHelper.saveSecret(
+            key,
+            account: KeychainHelper.assistantProviderAPIKeyAccount(for: preset),
+            defaults: defaults
+        )
+        if preset == .openRouterJev {
+            KeychainHelper.saveSecret(key, account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults)
+        }
+    }
+
+    private static func clearSecret(for preset: AssistantProviderPreset, defaults: UserDefaults) {
+        saveSecret("", for: preset, defaults: defaults)
     }
 
     /// Returns only the user's explicitly saved Keychain API key for the given endpoint (excluding ambient CodexBar/env keys).
@@ -310,6 +341,9 @@ public struct AssistantConfig: Equatable, Sendable {
         let providerAccount = KeychainHelper.assistantProviderAPIKeyAccount(for: preset)
         let providerKey = KeychainHelper.loadSecret(account: providerAccount, defaults: defaults)
         if !providerKey.isEmpty {
+            if preset == .custom {
+                return customKeyBelongs(to: baseURL, defaults: defaults) ? providerKey : ""
+            }
             return providerKey
         }
         // Pre-v1.0.4 versions stored the OpenRouter key in the generic `assistant_api_key` slot.
@@ -317,6 +351,63 @@ public struct AssistantConfig: Equatable, Sendable {
             return KeychainHelper.loadSecret(account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults)
         }
         return ""
+    }
+
+    /// A custom key is only sent to the server it was saved for. Keys saved before this check existed
+    /// belong to the custom URL that was saved alongside them.
+    private static func customKeyBelongs(to baseURL: String, defaults: UserDefaults) -> Bool {
+        guard let identity = AssistantEndpoint(baseURL)?.identity else { return false }
+        if let bound = defaults.string(forKey: customKeyEndpointKey) {
+            return bound == identity
+        }
+        guard let savedBase = defaults.string(forKey: baseURLKey),
+              AssistantProviderPreset.infer(baseURL: savedBase) == .custom,
+              let savedIdentity = AssistantEndpoint(savedBase)?.identity else {
+            return false
+        }
+        defaults.set(savedIdentity, forKey: customKeyEndpointKey)
+        return savedIdentity == identity
+    }
+
+    static func importedKeySourceKey(for preset: AssistantProviderPreset) -> String {
+        "assistant_key_source_\(preset.rawValue)"
+    }
+
+    /// Copies a key from CodexBar or an environment variable into this app's Keychain, only when the user clicks
+    /// "导入" (#20). CodexBar's file is not read before that. Returns where the key came from, or nil if none was found.
+    @discardableResult
+    public static func importAmbientAPIKey(
+        forBaseURL baseURL: String,
+        defaults: UserDefaults = .standard,
+        configURL: URL? = nil
+    ) -> String? {
+        let preset = AssistantProviderPreset.infer(baseURL: baseURL)
+        guard preset.supportsKeyImport,
+              AssistantEndpoint(baseURL)?.allowsSendingSecrets == true,
+              let label = ambientKeySourceLabel(forBaseURL: baseURL, configURL: configURL),
+              let key = loadAmbientAPIKey(forBaseURL: baseURL, configURL: configURL) else {
+            return nil
+        }
+        saveSecret(key, for: preset, defaults: defaults)
+        defaults.set(label, forKey: importedKeySourceKey(for: preset))
+        return label
+    }
+
+    /// Where the saved key for `baseURL` was imported from ("CodexBar", "OPENROUTER_API_KEY"), or nil if typed by hand.
+    public static func importedKeySource(forBaseURL baseURL: String, defaults: UserDefaults = .standard) -> String? {
+        let preset = AssistantProviderPreset.infer(baseURL: baseURL)
+        guard !userStoredAPIKey(forBaseURL: baseURL, defaults: defaults).isEmpty else { return nil }
+        return defaults.string(forKey: importedKeySourceKey(for: preset))
+    }
+
+    /// Forgets the saved key for `baseURL`'s provider (the "撤销" button next to an imported key).
+    public static func removeStoredAPIKey(forBaseURL baseURL: String, defaults: UserDefaults = .standard) {
+        let preset = AssistantProviderPreset.infer(baseURL: baseURL)
+        clearSecret(for: preset, defaults: defaults)
+        if preset == .custom {
+            defaults.removeObject(forKey: customKeyEndpointKey)
+        }
+        defaults.removeObject(forKey: importedKeySourceKey(for: preset))
     }
 
     /// Reads an ambient API key from environment variables or `~/.config/codexbar/config.json` matching the provider for `baseURL`.
@@ -390,60 +481,42 @@ extension KeychainHelper {
         "assistant_api_key_\(preset.rawValue)"
     }
 
+    /// Every account that may hold a saved assistant key: the per-provider slots plus the pre-v1.0.4 OpenRouter
+    /// slot. Used by the plain-text migration (#16).
+    static var assistantSecretAccounts: [String] {
+        AssistantProviderPreset.allCases.map { assistantProviderAPIKeyAccount(for: $0) } + [assistantAPIKeyAccount]
+    }
+
+    /// `UserDefaults` key of the plain-text copy that ≤1.0.6 wrote (#16). Nothing writes it any more for
+    /// `.standard`; a custom suite uses it as a test-only store so unit tests never touch the real Keychain.
     public static func secretFallbackKey(for account: String) -> String {
         "keychain_fallback_\(account)"
     }
 
     public static func loadSecret(account: String, defaults: UserDefaults = .standard) -> String {
-        let fallbackKey = secretFallbackKey(for: account)
-        if let fallback = defaults.string(forKey: fallbackKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !fallback.isEmpty {
-            return fallback
-        }
         guard defaults === UserDefaults.standard else {
-            return ""
+            return defaults.string(forKey: secretFallbackKey(for: account))?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip
-        ]
-        var item: CFTypeRef?
-        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-           let data = item as? Data,
-           let str = String(data: data, encoding: .utf8) {
-            let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                defaults.set(trimmed, forKey: fallbackKey)
-                return trimmed
-            }
-        }
-        return ""
+        return readKeychainSecret(account: account) ?? ""
     }
 
     /// Saving an empty value deletes the item.
-    public static func saveSecret(_ value: String, account: String, defaults: UserDefaults = .standard) {
-        let fallbackKey = secretFallbackKey(for: account)
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            defaults.removeObject(forKey: fallbackKey)
-        } else {
-            defaults.set(trimmed, forKey: fallbackKey)
+    @discardableResult
+    public static func saveSecret(_ value: String, account: String, defaults: UserDefaults = .standard) -> Bool {
+        guard defaults === UserDefaults.standard else {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                defaults.removeObject(forKey: secretFallbackKey(for: account))
+            } else {
+                defaults.set(trimmed, forKey: secretFallbackKey(for: account))
+            }
+            return true
         }
-        guard defaults === UserDefaults.standard else { return }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        SecItemDelete(query as CFDictionary)
-        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return }
-        var addQuery = query
-        addQuery[kSecValueData as String] = data
-        SecItemAdd(addQuery as CFDictionary, nil)
+        // Credentials live only in the Keychain (#16); drop any plain-text copy left behind by ≤1.0.6 once the
+        // Keychain accepted the new value, so a failed write never loses the old secret.
+        guard writeKeychainSecret(value, account: account) else { return false }
+        defaults.removeObject(forKey: secretFallbackKey(for: account))
+        return true
     }
 }

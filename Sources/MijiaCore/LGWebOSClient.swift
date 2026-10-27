@@ -41,6 +41,11 @@ public struct LGWebOSConfig: Equatable, Sendable {
     public var roomName: String
     public var clientKey: String
 
+    /// Keychain account for the pairing key. ≤1.0.6 kept it in plain `UserDefaults` under the same key name
+    /// (`clientKeyDefaultsKey`), which is migrated into the Keychain the first time it is needed (#16).
+    static let clientKeyAccount = "lg_webos_client_key"
+    static let clientKeyDefaultsKey = "lg_webos_client_key"
+
     public static let defaultHost = ""
     public static let defaultMAC = ""
     public static let defaultName = "LG C2 电视"
@@ -74,7 +79,7 @@ public struct LGWebOSConfig: Equatable, Sendable {
         let mac = defaults.string(forKey: "lg_webos_mac")?.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = defaults.string(forKey: "lg_webos_name")?.trimmingCharacters(in: .whitespacesAndNewlines)
         let room = defaults.string(forKey: "lg_webos_room")?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = defaults.string(forKey: "lg_webos_client_key")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let key = Self.loadClientKey(from: defaults)
 
         return LGWebOSConfig(
             isEnabled: enabled,
@@ -92,7 +97,40 @@ public struct LGWebOSConfig: Equatable, Sendable {
         defaults.set(macAddress, forKey: "lg_webos_mac")
         defaults.set(name, forKey: "lg_webos_name")
         defaults.set(roomName, forKey: "lg_webos_room")
-        defaults.set(clientKey, forKey: "lg_webos_client_key")
+        Self.saveClientKey(clientKey, to: defaults)
+    }
+
+    /// The pairing key is a credential, so `.standard` keeps it only in the Keychain (#16). Other suites (tests)
+    /// keep it inside the suite.
+    private static func loadClientKey(from defaults: UserDefaults) -> String {
+        guard defaults === UserDefaults.standard else {
+            return defaults.string(forKey: clientKeyDefaultsKey)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        if let key = KeychainHelper.readKeychainSecret(account: clientKeyAccount) {
+            return key
+        }
+        // Migrate a ≤1.0.6 plain-text pairing key the first time it is needed; a no-op when there is none.
+        KeychainHelper.migratePlaintextSecret(
+            defaults: defaults,
+            plaintextKey: clientKeyDefaultsKey,
+            account: clientKeyAccount
+        )
+        return KeychainHelper.readKeychainSecret(account: clientKeyAccount) ?? ""
+    }
+
+    private static func saveClientKey(_ key: String, to defaults: UserDefaults) {
+        guard defaults === UserDefaults.standard else {
+            let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                defaults.removeObject(forKey: clientKeyDefaultsKey)
+            } else {
+                defaults.set(trimmed, forKey: clientKeyDefaultsKey)
+            }
+            return
+        }
+        guard KeychainHelper.saveSecret(key, account: clientKeyAccount) else { return }
+        defaults.removeObject(forKey: clientKeyDefaultsKey)
     }
 }
 
@@ -343,9 +381,16 @@ public enum LGWebOSProtocol {
     }
 }
 
-// MARK: - Self-Signed TLS Trust Delegate for LG webOS Port 3001
+// MARK: - First-Use TLS Trust for LG webOS Port 3001
 
-private final class LGWebOSTrustDelegate: NSObject, URLSessionDelegate, Sendable {
+final class LGWebOSTrustDelegate: NSObject, URLSessionDelegate, Sendable {
+    private let trustStore: LGCertificateTrust
+
+    init(trustStore: LGCertificateTrust = .shared) {
+        self.trustStore = trustStore
+        super.init()
+    }
+
     func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
@@ -353,8 +398,15 @@ private final class LGWebOSTrustDelegate: NSObject, URLSessionDelegate, Sendable
     ) {
         #if canImport(Darwin)
         if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-           let trust = challenge.protectionSpace.serverTrust {
-            completionHandler(.useCredential, URLCredential(trust: trust))
+           let trust = challenge.protectionSpace.serverTrust,
+           let certificates = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+           let leaf = certificates.first {
+            let certificate = SecCertificateCopyData(leaf) as Data
+            if trustStore.accepts(certificate: certificate, host: challenge.protectionSpace.host) {
+                completionHandler(.useCredential, URLCredential(trust: trust))
+            } else {
+                completionHandler(.cancelAuthenticationChallenge, nil)
+            }
             return
         }
         #endif
@@ -370,6 +422,7 @@ public actor LGWebOSClient {
     private let session: URLSession
     private let onDeviceUpdated: @Sendable (SmartDevice) -> Void
     private let onClientKeyRegistered: @Sendable (String) -> Void
+    private let onSecurityFailure: @Sendable (String) -> Void
 
     private var loopTask: Task<Void, Never>?
     private var activeWebSocket: URLSessionWebSocketTask?
@@ -387,11 +440,13 @@ public actor LGWebOSClient {
     public init(
         config: LGWebOSConfig,
         onDeviceUpdated: @escaping @Sendable (SmartDevice) -> Void,
-        onClientKeyRegistered: @escaping @Sendable (String) -> Void
+        onClientKeyRegistered: @escaping @Sendable (String) -> Void,
+        onSecurityFailure: @escaping @Sendable (String) -> Void
     ) {
         self.config = config
         self.onDeviceUpdated = onDeviceUpdated
         self.onClientKeyRegistered = onClientKeyRegistered
+        self.onSecurityFailure = onSecurityFailure
 
         let urlConfig = URLSessionConfiguration.ephemeral
         urlConfig.connectionProxyDictionary = [:]
@@ -431,6 +486,15 @@ public actor LGWebOSClient {
         } else {
             start()
         }
+    }
+
+    func resetTrustAndPair() throws {
+        stop()
+        guard LGCertificateTrust.shared.reset(host: config.host) else {
+            throw LGCertificateTrust.Failure.unavailable
+        }
+        config.clientKey = ""
+        start()
     }
 
     // MARK: - Command Execution
@@ -561,9 +625,14 @@ public actor LGWebOSClient {
             do {
                 try await connectAndListen()
             } catch {
+                guard !Task.isCancelled else { return }
                 isConnected = false
                 isWaitingForPairing = false
                 emitCurrentDevice()
+                if let failure = LGCertificateTrust.shared.failure(for: config.host) {
+                    onSecurityFailure(failure.localizedDescription)
+                    return
+                }
             }
             try? await Task.sleep(for: .seconds(6))
         }
