@@ -264,7 +264,7 @@ public struct SkinRoot: ViewModifier {
     public let skin: AppSkin
 
     @Environment(\.colorScheme) private var systemScheme
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
 
     private var appearance: AppAppearance { AppAppearance(rawValue: appearanceRaw) ?? .system }
@@ -403,7 +403,7 @@ struct SkinTileSurface: ViewModifier {
 struct StaggerIn: ViewModifier {
     @Environment(\.appSkin) private var skin
     @Environment(\.isEditingLayout) private var editing
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     let index: Int
     @State private var shown = false
 
@@ -427,7 +427,7 @@ struct StaggerIn: ViewModifier {
 /// A soft expanding ring from the icon whenever the device turns on.
 struct ToggleRipple: ViewModifier {
     @Environment(\.appSkin) private var skin
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     let isOn: Bool
     let color: Color
     @State private var pulse = false
@@ -474,7 +474,7 @@ struct ListeningPulse: ViewModifier {
 
 /// Status dot that breathes slowly while connected.
 struct BreathingDot: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     let color: Color
     let animate: Bool
     @State private var dim = false

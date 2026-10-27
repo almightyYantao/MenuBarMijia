@@ -2,6 +2,40 @@ import SwiftUI
 import AppKit
 import MijiaCore
 
+// MARK: - Overridable Accessibility Environment
+
+// macOS 26 SDK 把 accessibilityReduceMotion/Transparency 的环境键改成了只读，也没有等效修饰符；
+// 快照测试需要在进程级系统设置之外强制它们的值，所以提供可写入的覆盖键：
+// 默认 nil = 跟随系统，`effective*` 是所有视图统一的读取口。
+
+private struct ReduceMotionOverrideKey: EnvironmentKey {
+    static let defaultValue: Bool? = nil
+}
+
+private struct ReduceTransparencyOverrideKey: EnvironmentKey {
+    static let defaultValue: Bool? = nil
+}
+
+public extension EnvironmentValues {
+    var reduceMotionOverride: Bool? {
+        get { self[ReduceMotionOverrideKey.self] }
+        set { self[ReduceMotionOverrideKey.self] = newValue }
+    }
+
+    var reduceTransparencyOverride: Bool? {
+        get { self[ReduceTransparencyOverrideKey.self] }
+        set { self[ReduceTransparencyOverrideKey.self] = newValue }
+    }
+
+    var effectiveReduceMotion: Bool {
+        reduceMotionOverride ?? accessibilityReduceMotion
+    }
+
+    var effectiveReduceTransparency: Bool {
+        reduceTransparencyOverride ?? accessibilityReduceTransparency
+    }
+}
+
 // MARK: - Apple Design Motion Curves & Springs
 
 public enum AppleMotion {
@@ -228,7 +262,7 @@ public enum DevicePalette {
 public struct GlassTileBackground: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.appSkin) private var skin
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
     public var isActive: Bool
     public var accent: Color
     public var cornerRadius: CGFloat
@@ -306,7 +340,7 @@ public struct GlassTileBackground: ViewModifier {
 /// The original adaptive glass behaviour, kept verbatim for the classic skin.
 struct ClassicGlass<S: Shape>: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
     let shape: S
     let tint: Color?
     let interactive: Bool

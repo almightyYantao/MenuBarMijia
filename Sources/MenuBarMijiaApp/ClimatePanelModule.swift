@@ -7,7 +7,7 @@ struct ClimatePanelModule: View {
     @Environment(\.appSkin) private var skin
     @Environment(\.skinPalette) private var palette
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     @Namespace private var modeNamespace
 
     let device: SmartDevice

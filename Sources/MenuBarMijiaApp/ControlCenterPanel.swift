@@ -27,8 +27,8 @@ public struct ControlCenterPanel: View {
     @State private var liveGroupMap: [String: String]?
     @AppStorage(GroupPrefs.aliasesKey) private var aliasesRaw: String = "{}"
     @State private var layoutUI = LayoutUIState.shared
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
     /// Opens the ⌘, Settings window; the popover no longer hosts the long form (#42).
     @Environment(\.openSettings) private var openSettings
     /// Drives the open animation; reset whenever the menu-bar window closes so every open replays it.

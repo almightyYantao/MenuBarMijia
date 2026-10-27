@@ -128,8 +128,8 @@ struct SnapshotTests {
     private func snapshotReady<V: View>(_ view: V) -> some View {
         view
             .environment(\.colorScheme, .light)
-            .accessibilityReduceMotion(true)
-            .accessibilityReduceTransparency(true)
+            .environment(\.reduceMotionOverride, true)
+            .environment(\.reduceTransparencyOverride, true)
             .transaction { transaction in
                 transaction.disablesAnimations = true
             }

@@ -114,7 +114,7 @@ extension EnvironmentValues {
 /// `dragOffset`, jiggles, and shows a size badge that cycles half → full → panel.
 struct LayoutEditable: ViewModifier {
     @Environment(\.isEditingLayout) private var editing
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     @Environment(\.appSkin) private var skin
     @Environment(\.skinPalette) private var palette
 
