@@ -62,6 +62,23 @@ public enum AssistantState: Equatable, Sendable {
     case thinking
     case done(String)
     case failed(String)
+    /// Nothing ran by itself; the user picks one of the suggestion chips (#21).
+    case awaitingChoice(String)
+}
+
+/// The first request to a cloud AI service waits for the user's OK, so they see once what is sent and to whom (#20).
+public struct PendingCloudConsent: Equatable, Sendable {
+    /// The full command to run once allowed; nil when the user asked for proactive suggestions.
+    public let utterance: String?
+    /// host[:port] of the AI service, shown to the user and remembered once allowed.
+    public let endpoint: String
+    public let providerTitle: String
+
+    public init(utterance: String?, endpoint: String, providerTitle: String) {
+        self.utterance = utterance
+        self.endpoint = endpoint
+        self.providerTitle = providerTitle
+    }
 }
 
 // MARK: - Device Category Used by Both Resolvers
@@ -383,7 +400,7 @@ public struct IntentCatalog: Sendable {
             let effectList = s.availableEffects.isEmpty ? "" : " 可用模式:\(s.availableEffects.joined(separator: "/"))"
             guard s.isOn else { return "关" + effectList }
             let bri = s.brightnessPercent.map { " 亮度\($0)%" } ?? ""
-            let eff = s.currentEffect.map { " 当前:\($0)" } ?? ""
+            let eff = s.currentEffect.flatMap { $0.isEmpty ? nil : " 当前:\($0)" } ?? ""
             return "开\(bri)\(eff)\(effectList)"
         case .climate(let s):
             let modes = s.availableModes.joined(separator: "/")

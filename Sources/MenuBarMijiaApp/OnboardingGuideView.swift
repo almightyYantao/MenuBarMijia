@@ -55,7 +55,8 @@ public struct OnboardingGuideView: View {
             voiceAuthorized = SpeechInputController.shared.hasVoicePermissions
             if store.miSessionMaskedUserId == nil,
                haTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               store.homeBackend != .xiaomiCloud {
+               store.homeBackend == .homeAssistant {
+                // Never pull a user who chose the offline demo back into a cloud login (#47).
                 store.switchBackend(.xiaomiCloud)
             }
             Task {
@@ -174,12 +175,54 @@ public struct OnboardingGuideView: View {
             .labelsHidden()
             .controlSize(.small)
 
+            // #47: let people try the panel before signing any account in.
+            if store.homeBackend == .demo {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                        .padding(.top, 1)
+                    Text(L10n.tr(
+                        "演示模式已开启：内置虚拟家庭，完全离线，不发起任何网络请求。选择上方「米家云端直连」或「Home Assistant」即可切回真实账号。",
+                        "Demo mode is on: a built-in virtual home, fully offline, no network requests. Pick Xiaomi Cloud or Home Assistant above to switch back to a real account."
+                    ))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(8)
+                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            } else {
+                HStack(spacing: 6) {
+                    Button {
+                        withAnimation(AppleMotion.snappySpring) {
+                            store.switchBackend(.demo)
+                            // No `completeOnboarding()`: once demo devices arrive the guide hides by
+                            // itself, and switching to an account without credentials shows it again.
+                            store.showToast(L10n.tr("已进入演示模式，可随时在设置里切回真实账号", "Demo mode on; switch back anytime in Settings"))
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "play.rectangle")
+                            Text(L10n.tr("先看看演示（无需账号）", "Try the Demo (No Account)"))
+                        }
+                        .font(.system(size: 10.5, weight: .semibold))
+                    }
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
+
+                    Text(L10n.tr("用虚拟设备体验面板与皮肤", "Explore the dashboard with virtual devices"))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+            }
+
             if store.homeBackend == .xiaomiCloud {
                 MiAccountSection(store: store)
-            } else {
+            } else if store.homeBackend == .homeAssistant {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
-                        TextField("http://homeassistant.local:8123", text: $haURLDraft)
+                        TextField("https://your-home.ui.nabu.casa", text: $haURLDraft)
                             .textFieldStyle(.roundedBorder)
                             .controlSize(.small)
                             .font(.system(size: 11, design: .monospaced))
@@ -189,7 +232,6 @@ public struct OnboardingGuideView: View {
                                 let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: false)
                                 if let first = found.first {
                                     haURLDraft = first.baseURL
-                                    store.applyDiscoveredHAInstance(first, reconnectProvider: false)
                                     store.showToast(L10n.tr("已发现：\(first.displaySummary)", "Found: \(first.displaySummary)"))
                                 } else {
                                     store.showToast(L10n.tr("未在局域网扫描到 Home Assistant", "No Home Assistant found on LAN"), isError: true)
@@ -198,6 +240,16 @@ public struct OnboardingGuideView: View {
                         }
                         .buttonStyle(PillActionButtonStyle())
                         .disabled(store.isDiscoveringHA)
+                    }
+
+                    if let address = URL(string: HAWebSocketProvider.normalizeBaseURL(haURLDraft)),
+                       address.scheme == "http",
+                       let host = address.host,
+                       !["localhost", "127.0.0.1", "::1", "[::1]"].contains(host.lowercased()) {
+                        Label(L10n.tr("令牌将以明文在网络上传输，建议使用 HTTPS 或 Nabu Casa 地址。", "Your token will travel unencrypted. Use HTTPS or a Nabu Casa address."), systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     if let firstHA = store.discoveredHAInstances.first {
@@ -243,10 +295,10 @@ public struct OnboardingGuideView: View {
 
     private var step2JevModelCard: some View {
         let effectiveBase = selectedPreset.defaultBaseURL.isEmpty ? store.assistantConfig.baseURL : selectedPreset.defaultBaseURL
-        let ambientSource = AssistantConfig.ambientKeySourceLabel(forBaseURL: effectiveBase)
         let hasCustomKey = !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let importedSource = hasCustomKey ? AssistantConfig.importedKeySource(forBaseURL: effectiveBase) : nil
         let isLoopback = AssistantConfig(baseURL: effectiveBase, model: selectedPreset.defaultModel, apiKey: "").isLoopbackEndpoint
-        let isReady = hasCustomKey || (ambientSource != nil) || isLoopback
+        let isReady = hasCustomKey || isLoopback
 
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
@@ -254,12 +306,12 @@ public struct OnboardingGuideView: View {
                 Text(L10n.tr("AI 决策模型（支持 Jev / DeepSeek / 自定义 Key）", "AI Decision Model (Jev / DeepSeek / Custom Key)"))
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
-                if hasCustomKey {
-                    Label(L10n.tr("已配置密钥", "Key Configured"), systemImage: "checkmark.circle.fill")
+                if let importedSource {
+                    Label(L10n.tr("已从 \(importedSource) 导入", "Imported from \(importedSource)"), systemImage: "checkmark.circle.fill")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.green)
-                } else if let ambientSource {
-                    Label(L10n.tr("已自动接入 \(ambientSource)", "Linked via \(ambientSource)"), systemImage: "checkmark.circle.fill")
+                } else if hasCustomKey {
+                    Label(L10n.tr("已配置密钥", "Key Configured"), systemImage: "checkmark.circle.fill")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.green)
                 } else if isLoopback {
@@ -314,6 +366,23 @@ public struct OnboardingGuideView: View {
                     store.showToast(L10n.tr("已保存 \(selectedPreset.shortTitle) 配置", "Saved \(selectedPreset.shortTitle) config"))
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: !apiKeyDraft.isEmpty, tintColor: .accentColor))
+            }
+
+            if selectedPreset.supportsKeyImport && !hasCustomKey {
+                Button(L10n.tr("已在 CodexBar 或环境变量里配过？点此导入 Key", "Already set up in CodexBar or env vars? Import the key")) {
+                    if let label = AssistantConfig.importAmbientAPIKey(forBaseURL: effectiveBase) {
+                        apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: effectiveBase)
+                        store.showToast(L10n.tr("已从 \(label) 导入 \(selectedPreset.shortTitle) 的 Key", "Imported the \(selectedPreset.shortTitle) key from \(label)"))
+                    } else {
+                        store.showToast(
+                            L10n.tr("CodexBar 和环境变量里都没有 \(selectedPreset.shortTitle) 的 Key", "No \(selectedPreset.shortTitle) key in CodexBar or environment variables"),
+                            isError: true
+                        )
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(Color.accentColor)
             }
         }
         .padding(11)
@@ -434,6 +503,7 @@ public struct OnboardingGuideView: View {
     // MARK: - Subviews
 
     private var isBackendConnected: Bool {
+        if store.homeBackend == .demo { return true }
         if case .connected = store.connectionStatus { return true }
         if store.homeBackend == .xiaomiCloud && store.miSessionMaskedUserId != nil { return true }
         return false

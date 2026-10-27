@@ -325,12 +325,18 @@ struct AssistantTests {
             scenes: Self.scenes,
             context: AssistantContext(timeSummary: "夜晚 22:30", environmentSummary: "书房 28.4°C", habitSummary: "夜晚常开日光模式")
         )
+        // Only the 99% head runs by itself; the 62% guess waits for a tap (#21).
         #expect(parallelPlan.intents == [
-            DeviceIntent(targetId: "dev_study_ceiling", operation: .lightEffect("Day")),
             DeviceIntent(targetId: "dev_living_ac", operation: .hvacMode("cool")),
             DeviceIntent(targetId: "dev_living_ac", operation: .targetTemperature(25))
         ])
         #expect(parallelPlan.suggestions == [
+            AssistantSuggestion(
+                id: "jev:dev_study_ceiling:effect_day",
+                title: "书房吸顶灯·日光模式",
+                confidencePercent: 62,
+                intents: [DeviceIntent(targetId: "dev_study_ceiling", operation: .lightEffect("Day"))]
+            ),
             AssistantSuggestion(
                 id: "jev:dev_study_desk:power_on",
                 title: "打开书房台灯",
@@ -338,6 +344,7 @@ struct AssistantTests {
                 intents: [DeviceIntent(targetId: "dev_study_desk", operation: .power(true))]
             )
         ])
+        #expect(parallelPlan.reply.hasSuffix("；下面的建议要点一下才执行"))
     }
 
     @Test("UserHabitMemory learns time-bucket habits, personal phrases, and filters already-active states")

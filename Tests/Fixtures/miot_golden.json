@@ -307,12 +307,59 @@
           ]
         }
       ]
+    },
+    "lemesh.switch.sw2f12": {
+      "type": "urn:miot-spec-v2:device:switch:0000A003:lemesh-sw2f12:1",
+      "services": [
+        {
+          "iid": 2,
+          "type": "urn:miot-spec-v2:service:switch:0000780C:lemesh-sw2f12:1",
+          "properties": [
+            {
+              "iid": 1,
+              "type": "urn:miot-spec-v2:property:on:00000006:lemesh-sw2f12:1",
+              "format": "bool",
+              "access": ["read", "write"]
+            }
+          ]
+        },
+        {
+          "iid": 3,
+          "type": "urn:miot-spec-v2:service:switch:0000780C:lemesh-sw2f12:1",
+          "properties": [
+            {
+              "iid": 1,
+              "type": "urn:miot-spec-v2:property:on:00000006:lemesh-sw2f12:1",
+              "format": "bool",
+              "access": ["read", "write"]
+            }
+          ]
+        },
+        {
+          "iid": 7,
+          "type": "urn:miot-spec-v2:service:physical-controls-locked:00007807:lemesh-sw2f12:1",
+          "properties": [
+            {
+              "iid": 1,
+              "type": "urn:miot-spec-v2:property:physical-controls-locked:0000001D:lemesh-sw2f12:1",
+              "format": "bool",
+              "access": ["read", "write"]
+            }
+          ]
+        }
+      ]
     }
   },
   "devices": [
     {
       "did": "did_light",
       "name": "书房吸顶灯",
+      "model": "yeelink.light.ceiling22",
+      "isOnline": true
+    },
+    {
+      "did": "group.living_lights",
+      "name": "客厅灯组",
       "model": "yeelink.light.ceiling22",
       "isOnline": true
     },
@@ -345,11 +392,33 @@
       "name": "主卧温湿度计",
       "model": "miaomiaoce.sensor_ht.t2",
       "isOnline": true
+    },
+    {
+      "did": "did_panel",
+      "name": "情景Mesh双键开关",
+      "model": "lemesh.switch.sw2f12",
+      "isOnline": true
+    },
+    {
+      "did": "did_panel.s2",
+      "name": "筒灯",
+      "model": "lemesh.switch.sw2f12",
+      "isOnline": true,
+      "splitParentDid": "did_panel",
+      "splitSiid": 2
+    },
+    {
+      "did": "did_panel.s3",
+      "name": "灯带",
+      "model": "lemesh.switch.sw2f12",
+      "isOnline": true,
+      "splitParentDid": "did_panel",
+      "splitSiid": 3
     }
   ],
   "rooms": [
     { "id": "r_study", "name": "书房", "dids": ["did_light", "did_plug"] },
-    { "id": "r_living", "name": "客厅", "dids": ["did_ac", "did_vacuum"] },
+    { "id": "r_living", "name": "客厅", "dids": ["did_ac", "did_vacuum", "group.living_lights", "did_panel"] },
     { "id": "r_bed", "name": "主卧", "dids": ["did_fan", "did_sensor"] }
   ],
   "values": [
@@ -357,6 +426,10 @@
     { "did": "did_light", "siid": 2, "piid": 2, "value": 128 },
     { "did": "did_light", "siid": 2, "piid": 3, "value": 4100 },
     { "did": "did_light", "siid": 2, "piid": 4, "value": 1 },
+    { "did": "group.living_lights", "siid": 2, "piid": 1, "value": 1 },
+    { "did": "group.living_lights", "siid": 2, "piid": 2, "value": 255 },
+    { "did": "group.living_lights", "siid": 2, "piid": 3, "value": 5000 },
+    { "did": "group.living_lights", "siid": 2, "piid": 4, "value": 1 },
     { "did": "did_ac", "siid": 2, "piid": 1, "value": true },
     { "did": "did_ac", "siid": 2, "piid": 2, "value": 2 },
     { "did": "did_ac", "siid": 2, "piid": 4, "value": 24.5 },
@@ -375,7 +448,9 @@
     { "did": "did_vacuum", "siid": 3, "piid": 1, "value": 82 },
     { "did": "did_sensor", "siid": 2, "piid": 1, "value": 23.8 },
     { "did": "did_sensor", "siid": 2, "piid": 2, "value": 54 },
-    { "did": "did_sensor", "siid": 3, "piid": 1, "value": 91 }
+    { "did": "did_sensor", "siid": 3, "piid": 1, "value": 91 },
+    { "did": "did_panel", "siid": 2, "piid": 1, "value": true },
+    { "did": "did_panel", "siid": 3, "piid": 1, "value": false }
   ],
   "expectedKinds": {
     "did_light": {
@@ -388,6 +463,17 @@
       "maxKelvin": 6500,
       "currentEffect": "Night",
       "availableEffects": ["Day", "Night"]
+    },
+    "group.living_lights": {
+      "kind": "light",
+      "entityId": "miot:group.living_lights:2",
+      "isOn": true,
+      "brightnessPercent": 100,
+      "colorTempKelvin": 5000,
+      "minKelvin": 2700,
+      "maxKelvin": 6500,
+      "currentEffect": null,
+      "availableEffects": []
     },
     "did_ac": {
       "kind": "climate",
@@ -434,6 +520,22 @@
       "temperature": 23.8,
       "humidity": 54,
       "battery": 91
+    },
+    "did_panel.s2": {
+      "kind": "plug",
+      "switchEntityId": "miot:did_panel:2",
+      "isOn": true,
+      "powerWatts": null,
+      "childLockEntityId": null,
+      "isChildLocked": false
+    },
+    "did_panel.s3": {
+      "kind": "plug",
+      "switchEntityId": "miot:did_panel:3",
+      "isOn": false,
+      "powerWatts": null,
+      "childLockEntityId": null,
+      "isChildLocked": false
     }
   },
   "expectedEnvironmentReadings": [
@@ -452,6 +554,12 @@
       { "did": "did_light", "siid": 2, "piid": 2 },
       { "did": "did_light", "siid": 2, "piid": 3 },
       { "did": "did_light", "siid": 2, "piid": 4 }
+    ],
+    "group.living_lights": [
+      { "did": "group.living_lights", "siid": 2, "piid": 1 },
+      { "did": "group.living_lights", "siid": 2, "piid": 2 },
+      { "did": "group.living_lights", "siid": 2, "piid": 3 },
+      { "did": "group.living_lights", "siid": 2, "piid": 4 }
     ],
     "did_ac": [
       { "did": "did_ac", "siid": 2, "piid": 1 },
@@ -481,6 +589,16 @@
       { "did": "did_sensor", "siid": 2, "piid": 1 },
       { "did": "did_sensor", "siid": 2, "piid": 2 },
       { "did": "did_sensor", "siid": 3, "piid": 1 }
+    ],
+    "did_panel": [
+      { "did": "did_panel", "siid": 2, "piid": 1 },
+      { "did": "did_panel", "siid": 7, "piid": 1 }
+    ],
+    "did_panel.s2": [
+      { "did": "did_panel", "siid": 2, "piid": 1 }
+    ],
+    "did_panel.s3": [
+      { "did": "did_panel", "siid": 3, "piid": 1 }
     ]
   },
   "commandCases": [

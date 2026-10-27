@@ -312,6 +312,8 @@ struct GoldenCorpusTests {
         let name: String
         let model: String
         let isOnline: Bool
+        let splitParentDid: String?
+        let splitSiid: Int?
     }
 
     private struct MiotRoomEntry: Decodable {
@@ -411,6 +413,65 @@ struct GoldenCorpusTests {
         let expected: MiotExpectedWrite
     }
 
+    private struct RegionCorpus: Decodable {
+        let regions: [String]
+    }
+
+    private struct AIRequestCorpus: Decodable {
+        let utterance: String
+        let context: AIRequestContext
+        let devices: [CorpusDevice]
+        let scenes: [AIRequestScene]
+        let expected: AIRequestExpected
+    }
+
+    private struct AIRequestContext: Decodable {
+        let timeSummary: String
+        let environmentSummary: String
+        let activeDevicesSummary: String
+        let habitSummary: String
+
+        func toAssistantContext() -> AssistantContext {
+            AssistantContext(
+                timeSummary: timeSummary,
+                environmentSummary: environmentSummary,
+                activeDevicesSummary: activeDevicesSummary,
+                habitSummary: habitSummary
+            )
+        }
+    }
+
+    private struct AIRequestScene: Decodable {
+        let id: String
+        let name: String
+        let entityId: String
+
+        func toHomeScene() -> HomeScene {
+            HomeScene(id: id, name: name, entityId: entityId)
+        }
+    }
+
+    private struct AICatalogDeviceLine: Decodable, Equatable {
+        let alias: String
+        let name: String
+        let room: String
+        let category: String
+    }
+
+    private struct AICatalogSceneLine: Decodable, Equatable {
+        let alias: String
+        let name: String
+    }
+
+    private struct AIRequestExpected: Decodable {
+        let stateKeys: [String]
+        let questionsKeys: [String]
+        let targetAliases: [String]
+        let catalogDeviceLines: [AICatalogDeviceLine]
+        let catalogSceneLines: [AICatalogSceneLine]
+        let decisionHeadCriteriaKeys: [String: [String]]
+    }
+
     private static func locateGoldenFixture(_ relativePath: String = "Tests/Fixtures/intent_golden.json") throws -> URL {
         var dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         for _ in 0..<8 {
@@ -466,7 +527,14 @@ struct GoldenCorpusTests {
         let corpus = try JSONDecoder().decode(MiotCorpus.self, from: data)
 
         let records = corpus.devices.map {
-            MiDeviceRecord(did: $0.did, name: $0.name, model: $0.model, isOnline: $0.isOnline)
+            MiDeviceRecord(
+                did: $0.did,
+                name: $0.name,
+                model: $0.model,
+                isOnline: $0.isOnline,
+                splitParentDid: $0.splitParentDid,
+                splitSiid: $0.splitSiid
+            )
         }
         let rooms = corpus.rooms.map {
             MiRoom(id: $0.id, name: $0.name, dids: $0.dids)
@@ -505,5 +573,143 @@ struct GoldenCorpusTests {
             let actualWrite = try MiotCommandMapper.map(cmd, spec: spec)
             #expect(actualWrite == item.expected.toMiotWrite(), "\(item.model) \(item.command.kind)")
         }
+    }
+
+    // MARK: - Issue #37: cloud region list shared with the Windows login screen
+
+    @Test("Cross-platform region golden JSON corpus matches MiCloudRegion.allCases order (#37)")
+    func regionGoldenCorpusParity() throws {
+        let fixtureURL = try Self.locateGoldenFixture("Tests/Fixtures/region_golden.json")
+        let corpus = try JSONDecoder().decode(RegionCorpus.self, from: Data(contentsOf: fixtureURL))
+
+        // The array order is the login dropdown order, so it must match exactly, not just as a set:
+        // Windows (windows/tests/core.test.ts) asserts MI_CLOUD_REGIONS against the same array.
+        #expect(MiCloudRegion.allCases.map(\.rawValue) == corpus.regions)
+        for code in corpus.regions {
+            #expect(MiCloudRegion(rawValue: code) != nil, "shared corpus region \(code) is unknown to MiCloudRegion")
+        }
+        #expect(Set(corpus.regions).count == corpus.regions.count, "region corpus must not repeat a server")
+    }
+
+    // MARK: - Issue #38: Jev /v1/systemone request structure shared with Windows
+
+    @Test("Cross-platform Jev SystemOne request corpus matches MijiaCore ModelIntentResolver (#38)")
+    func systemOneRequestGoldenCorpusParity() throws {
+        let fixtureURL = try Self.locateGoldenFixture("Tests/Fixtures/ai_request_golden.json")
+        let corpus = try JSONDecoder().decode(AIRequestCorpus.self, from: Data(contentsOf: fixtureURL))
+        let devices = corpus.devices.map { $0.toSmartDevice() }
+        let scenes = corpus.scenes.map { $0.toHomeScene() }
+
+        let resolver = ModelIntentResolver(
+            config: AssistantConfig(
+                baseURL: "https://openrouter.ai/api/v1",
+                model: "~typesafe/jev-latest",
+                apiKey: "test-token"
+            )
+        )
+        #expect(ModelIntentResolver.isSystemOneModel(resolver.config.model))
+
+        let catalog = IntentCatalog(devices: devices, scenes: scenes)
+        let request = try resolver.makeSystemOneRequest(
+            utterance: corpus.utterance,
+            catalog: catalog,
+            devices: devices,
+            context: corpus.context.toAssistantContext()
+        )
+        let bodyData = try #require(request.httpBody, "System One request must carry a body")
+        let body = try #require(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+        let state = try #require(body["state"] as? [String: Any])
+        let questions = try #require(body["questions"] as? [String: Any])
+        #expect(body["model"] as? String == "~typesafe/jev-latest")
+
+        // Swift dictionaries (and JSONSerialization) do not promise key order, so the ordered
+        // expectation is checked where this implementation builds order itself (catalog lines
+        // below). Key sets are compared for the JSON objects; the Windows test compares the same
+        // corpus with insertion order because its objects preserve it.
+        #expect(Set(state.keys) == Set(corpus.expected.stateKeys), "state keys drifted from the shared corpus")
+        #expect(state["command"] as? String == corpus.utterance)
+        #expect(state["time"] as? String == corpus.context.timeSummary)
+        #expect(state["environment"] as? String == corpus.context.environmentSummary)
+        #expect(state["active_devices"] as? String == corpus.context.activeDevicesSummary)
+        #expect(state["user_habits"] as? String == corpus.context.habitSummary)
+
+        func criteriaKeys(of question: String) throws -> Set<String> {
+            let payload = try #require(questions[question] as? [String: Any], "missing question \(question)")
+            let criteria = try #require(payload["criteria"] as? [String: Any], "\(question) has no criteria")
+            return Set(criteria.keys)
+        }
+
+        // One decision head per controllable device, never truncated at 10 (#33): the corpus has
+        // 13 devices, 12 controllable, and the trailing sensor must not get a head of its own.
+        #expect(Set(questions.keys) == Set(corpus.expected.questionsKeys), "question keys drifted from the shared corpus")
+        #expect(questions.count == 3 + 12)
+        #expect(questions["dev_d10"] != nil)
+        #expect(questions["dev_d11"] != nil)
+        #expect(questions["dev_d12"] != nil, "the 12th controllable device must keep its head (#33)")
+        #expect(questions["dev_d13"] == nil, "the sensor is not controllable and must not get a decision head")
+
+        let targetKeys = try criteriaKeys(of: "target")
+        #expect(targetKeys == Set(corpus.expected.targetAliases), "target aliases drifted from the shared corpus")
+        #expect(targetKeys.count == corpus.expected.targetAliases.count)
+        #expect(targetKeys.contains("none"))
+
+        for (head, expectedKeys) in corpus.expected.decisionHeadCriteriaKeys {
+            let actualKeys = try criteriaKeys(of: head)
+            #expect(actualKeys == Set(expectedKeys), "\(head) criteria drifted from the shared corpus")
+        }
+
+        // Each head must describe the same device its catalog alias does: alias numbering is
+        // computed once in IntentCatalog and again in the head builder, so a drift between the two
+        // would point `dev_dN` at the wrong device without changing any key.
+        for line in corpus.expected.catalogDeviceLines {
+            let payload = try #require(questions["dev_\(line.alias)"] as? [String: Any], "missing head for \(line.alias)")
+            let instructions = try #require(payload["instructions"] as? String, "\(line.alias) has no instructions")
+            #expect(instructions.contains(line.name), "\(line.alias) head must name \(line.name)")
+            #expect(instructions.contains(line.room), "\(line.alias) head must name room \(line.room)")
+        }
+
+        // The catalog is a plain string, so its section and line order are deterministic and are
+        // compared in full for the four skeleton fields; the trailing state summary is free text
+        // (device-specific wording) and is only required to be present.
+        let catalogText = try #require(state["catalog"] as? String)
+        let sceneMarker = "\n场景(id|名称):\n"
+        let sections = catalogText.components(separatedBy: sceneMarker)
+        #expect(sections.count == 2, "catalog must carry both a device section and a scene section")
+        let deviceSection = try #require(sections.first)
+        let sceneSection = try #require(sections.dropFirst().first, "catalog must carry a scene section")
+
+        var deviceLines = deviceSection.components(separatedBy: "\n")
+        deviceLines.removeFirst() // header line: 设备(id|名称|房间|类型|当前状态):
+        let parsedDevices = deviceLines.filter { !$0.isEmpty }.map { (line: String) -> (parsed: AICatalogDeviceLine, summary: String) in
+            let parts = line.split(separator: "|", maxSplits: 4, omittingEmptySubsequences: false).map(String.init)
+            let parsed = AICatalogDeviceLine(
+                alias: parts.count > 0 ? parts[0] : "",
+                name: parts.count > 1 ? parts[1] : "",
+                room: parts.count > 2 ? parts[2] : "",
+                category: parts.count > 3 ? parts[3] : ""
+            )
+            return (parsed: parsed, summary: parts.count > 4 ? parts[4] : "")
+        }
+        #expect(parsedDevices.map { $0.parsed } == corpus.expected.catalogDeviceLines)
+        #expect(parsedDevices.allSatisfy { !$0.summary.isEmpty }, "every catalog device line needs a state summary")
+
+        let parsedScenes = sceneSection.components(separatedBy: "\n").filter { !$0.isEmpty }.map { (line: String) -> AICatalogSceneLine in
+            let parts = line.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            return AICatalogSceneLine(alias: parts.count > 0 ? parts[0] : "", name: parts.count > 1 ? parts[1] : "")
+        }
+        #expect(parsedScenes == corpus.expected.catalogSceneLines)
+
+        // Same empty-context rule as Windows: the ambient keys are omitted, not sent blank.
+        let bareRequest = try resolver.makeSystemOneRequest(
+            utterance: corpus.utterance,
+            catalog: catalog,
+            devices: devices
+        )
+        let bareData = try #require(bareRequest.httpBody)
+        let bareBody = try #require(JSONSerialization.jsonObject(with: bareData) as? [String: Any])
+        let bareState = try #require(bareBody["state"] as? [String: Any])
+        #expect(Set(bareState.keys) == Set(["catalog", "command"]), "empty context must omit the ambient summaries")
+        let bareQuestions = try #require(bareBody["questions"] as? [String: Any])
+        #expect(Set(bareQuestions.keys) == Set(corpus.expected.questionsKeys))
     }
 }

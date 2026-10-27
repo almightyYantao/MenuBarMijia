@@ -312,6 +312,8 @@ struct AssistantCommandBar: View {
 
     @Bindable private var speech = SpeechInputController.shared
     @State private var lastHandledVoiceRequest: Int = 0
+    /// Asked once when the first timer is scheduled (#55).
+    @State private var asksForTimerNotifications = false
     @FocusState private var isFieldFocused: Bool
 
     var body: some View {
@@ -357,8 +359,8 @@ struct AssistantCommandBar: View {
 
             if let reply = replyLine {
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Image(systemName: reply.isError ? "xmark.octagon.fill" : "checkmark.circle.fill")
-                        .foregroundStyle(reply.isError ? Color.red : Color.green)
+                    Image(systemName: reply.isChoice ? "hand.tap.fill" : (reply.isError ? "xmark.octagon.fill" : "checkmark.circle.fill"))
+                        .foregroundStyle(reply.isChoice ? Color.orange : (reply.isError ? Color.red : Color.green))
                     Text(reply.text)
                         .foregroundStyle(.primary.opacity(0.85))
                         .lineLimit(2)
@@ -368,12 +370,43 @@ struct AssistantCommandBar: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
+            if store.undoBanner == nil,
+               UndoAvailabilityTracker.shared.isAvailable,
+               store.pendingCloudConsent == nil {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Image(systemName: "arrow.uturn.backward.circle")
+                        .foregroundStyle(Color.orange)
+                    Text(L10n.tr(
+                        "刚才的操作 10 分钟内仍可撤销（也可以直接说「撤销」）",
+                        "The last action can still be undone for 10 minutes (or just say \"undo\")"
+                    ))
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .lineLimit(2)
+                    Spacer(minLength: 4)
+                    Button(L10n.tr("撤销上一步", "Undo")) {
+                        Task { await UndoAvailabilityTracker.shared.performUndo(store: store) }
+                    }
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
+                }
+                .font(.system(size: 10.5, weight: .medium))
+                .padding(.horizontal, 4)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            if let consent = store.pendingCloudConsent {
+                cloudConsentRow(consent)
+            }
+
             if !store.missedScheduledCommands.isEmpty {
                 missedScheduledRow
             }
 
             if !store.scheduledCommands.isEmpty {
                 scheduledRow
+            }
+
+            if asksForTimerNotifications {
+                timerNotificationPromptRow
             }
 
             suggestionsRow
@@ -385,7 +418,9 @@ struct AssistantCommandBar: View {
         .animation(AppleMotion.snappySpring, value: store.assistantState)
         .animation(AppleMotion.snappySpring, value: store.assistantSuggestions)
         .animation(AppleMotion.snappySpring, value: store.missedScheduledCommands)
+        .animation(AppleMotion.snappySpring, value: store.pendingCloudConsent)
         .animation(AppleMotion.snappySpring, value: store.scheduledCommands)
+        .animation(AppleMotion.snappySpring, value: asksForTimerNotifications)
         .animation(AppleMotion.snappySpring, value: speech.isListening)
         .onAppear {
             if store.assistantVoiceRequest != lastHandledVoiceRequest {
@@ -404,6 +439,89 @@ struct AssistantCommandBar: View {
             lastHandledVoiceRequest = newValue
             speech.toggle(store: store)
         }
+        // First timer: explain notifications before macOS ever asks (#55).
+        .onChange(of: store.scheduledCommands.count) { oldValue, newValue in
+            guard newValue > oldValue, !asksForTimerNotifications else { return }
+            Task {
+                await HotkeyAndNotificationManager.shared.refreshNotificationPermission()
+                let permission = NotificationPermissionState.shared
+                guard permission.canRequest,
+                      !HotkeyAndNotificationManager.hasRequestedNotificationAuthorization else { return }
+                asksForTimerNotifications = true
+            }
+        }
+    }
+
+    /// Asked once per AI service before anything is sent to the cloud (#20).
+    private func cloudConsentRow(_ consent: PendingCloudConsent) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: "icloud.and.arrow.up")
+                    .foregroundStyle(Color.accentColor)
+                Text(consent.utterance == nil
+                     ? L10n.tr("生成建议要用云端 AI（\(consent.endpoint)），可以发送吗？", "Suggestions need the cloud AI (\(consent.endpoint)). Send?")
+                     : L10n.tr("这句话本机没听懂，要交给云端 AI（\(consent.endpoint)）处理吗？", "Not understood locally. Send it to the cloud AI (\(consent.endpoint))?"))
+                    .foregroundStyle(.primary.opacity(0.88))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(L10n.tr(
+                "会发送：这句话、设备名称/房间/状态、时间段、室温\(store.isHabitLearningEnabled ? "、习惯摘要" : "")。只问这一次，可在设置里撤销。",
+                "Sends: your words, device names/rooms/states, time of day, room temperature\(store.isHabitLearningEnabled ? ", habit summary" : ""). Asked once; revoke in Settings."
+            ))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Spacer(minLength: 0)
+                Button(L10n.tr("不用了", "Not Now")) {
+                    store.declinePendingCloudRequest()
+                }
+                .buttonStyle(PillActionButtonStyle())
+                Button(L10n.tr("允许并发送", "Allow & Send")) {
+                    Task { @MainActor in
+                        await store.allowPendingCloudRequest()
+                        if case .done = store.assistantState {
+                            speech.draft = ""
+                        }
+                    }
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .padding(.horizontal, 4)
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    /// Asked once, right after the first timed command, before the system prompt (#55).
+    private var timerNotificationPromptRow: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: "bell.badge")
+                    .foregroundStyle(Color.accentColor)
+                Text(L10n.tr(
+                    "定时到点后要靠系统通知提醒你。通知只在本机显示，不上传任何内容。允许通知吗？",
+                    "Timers are announced with local macOS notifications. They stay on this Mac. Allow notifications?"
+                ))
+                .foregroundStyle(.primary.opacity(0.88))
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 6) {
+                Spacer(minLength: 0)
+                Button(L10n.tr("暂不", "Not Now")) {
+                    asksForTimerNotifications = false
+                }
+                .buttonStyle(PillActionButtonStyle())
+                Button(L10n.tr("允许通知", "Allow Notifications")) {
+                    asksForTimerNotifications = false
+                    Task { _ = await HotkeyAndNotificationManager.shared.requestNotificationAuthorization() }
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .padding(.horizontal, 4)
+        .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
     /// Timers that expired while the app was closed; user can run or dismiss each one.
@@ -428,6 +546,7 @@ struct AssistantCommandBar: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(Text(L10n.tr("忽略已错过的定时", "Dismiss missed timer")))
                     .help(L10n.tr("忽略这个已错过的定时", "Dismiss this missed timer"))
                 }
                 .font(.system(size: 11, weight: .medium))
@@ -458,6 +577,7 @@ struct AssistantCommandBar: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(Text(L10n.tr("取消这个定时", "Cancel this timer")))
                     .help(L10n.tr("取消这个定时", "Cancel this timer"))
                 }
                 .font(.system(size: 11, weight: .medium))
@@ -484,7 +604,7 @@ struct AssistantCommandBar: View {
                                 .font(.system(size: 10, weight: .semibold))
                         }
                         Text(isJev ? L10n.tr("Jev 猜你想做", "Jev Suggests") : L10n.tr("AI 猜你想做", "AI Suggests"))
-                            .font(.system(size: 10.5, weight: .semibold))
+                            .font(.system(size: 11, weight: .semibold))
                     }
                     .foregroundStyle(Color.accentColor)
                     .padding(.horizontal, 8)
@@ -507,11 +627,11 @@ struct AssistantCommandBar: View {
                                 .font(.system(size: 9.5, weight: .semibold))
                                 .foregroundStyle(suggestion.confidencePercent != nil ? Color.orange : Color.secondary)
                             Text(suggestion.title)
-                                .font(.system(size: 10.5, weight: .medium))
+                                .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(.primary.opacity(0.88))
                             if let pct = suggestion.confidencePercent {
                                 Text("\(pct)%")
-                                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                                    .font(.system(size: 10, weight: .bold, design: .rounded))
                                     .monospacedDigit()
                                     .foregroundStyle(Color.orange)
                             }
@@ -562,6 +682,9 @@ struct AssistantCommandBar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(Text(speech.isListening
+            ? L10n.tr("停止聆听", "Stop listening")
+            : L10n.tr("语音输入", "Voice input")))
         .help(speech.isListening
               ? L10n.tr("停止聆听并执行", "Stop listening and run")
               : L10n.tr("语音输入（快捷键 V，或长按菜单栏图标）", "Voice input (Shortcut V, or long-press menu bar icon)"))
@@ -588,17 +711,19 @@ struct AssistantCommandBar: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Text(L10n.tr("关闭 AI 指令栏", "Close AI command bar")))
             .help(L10n.tr("关闭 (Esc)", "Close (Esc)"))
         }
     }
 
-    private var replyLine: (text: String, isError: Bool)? {
+    private var replyLine: (text: String, isError: Bool, isChoice: Bool)? {
         if let speechError = speech.errorMessage {
-            return (speechError, true)
+            return (speechError, true, false)
         }
         switch store.assistantState {
-        case .done(let text): return (text.isEmpty ? L10n.tr("已执行", "Done") : text, false)
-        case .failed(let message): return (message, true)
+        case .done(let text): return (text.isEmpty ? L10n.tr("已执行", "Done") : text, false, false)
+        case .failed(let message): return (message, true, false)
+        case .awaitingChoice(let message): return (message, false, true)
         case .idle, .thinking: return nil
         }
     }
@@ -617,15 +742,20 @@ struct AssistantSettingsSection: View {
     @State private var isShowingHabits = false
     /// Habit memory lives in UserDefaults (not observed), so bump this to redraw after edits.
     @State private var habitRevision = 0
+    /// Imported-key labels and cloud consent also live in UserDefaults; bump to redraw after import/undo/revoke.
+    @State private var storageRevision = 0
 
     var body: some View {
         let _ = store.effectiveLanguage
         let _ = habitRevision
+        let _ = storageRevision
         let habitItems = store.userHabitMemory.readableItems(devices: store.devices, scenes: store.scenes)
         let habitCount = habitItems.count
         let hasCustomKey = !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let ambientSource = AssistantConfig.ambientKeySourceLabel(forBaseURL: baseURLDraft)
+        let importedSource = hasCustomKey ? AssistantConfig.importedKeySource(forBaseURL: baseURLDraft) : nil
         let isLoopback = AssistantConfig(baseURL: baseURLDraft, model: modelDraft, apiKey: "").isLoopbackEndpoint
+        let isInsecure = !baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !AssistantConfig(baseURL: baseURLDraft, model: modelDraft, apiKey: "").allowsSendingAPIKey
         let isSystemOne = ModelIntentResolver.isSystemOneModel(modelDraft)
 
         VStack(alignment: .leading, spacing: 9) {
@@ -634,12 +764,16 @@ struct AssistantSettingsSection: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if hasCustomKey {
-                    Text(L10n.tr("● 已配置自定义密钥", "● Custom API Key Set"))
+                if isInsecure {
+                    Text(L10n.tr("● 地址需用 https，否则不会发送", "● Use https; nothing will be sent"))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.orange)
+                } else if let importedSource {
+                    Text(L10n.tr("● 已从 \(importedSource) 导入", "● Imported from \(importedSource)"))
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(.green)
-                } else if let ambientSource {
-                    Text(L10n.tr("● 已自动接入 \(ambientSource)", "● Linked via \(ambientSource)"))
+                } else if hasCustomKey {
+                    Text(L10n.tr("● 已配置自定义密钥", "● Custom API Key Set"))
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(.green)
                 } else if isLoopback {
@@ -672,7 +806,10 @@ struct AssistantSettingsSection: View {
                                 if modelDraft == oldPreset.defaultModel || ModelIntentResolver.isSystemOneModel(modelDraft) {
                                     modelDraft = "gpt-4o-mini"
                                 }
-                                apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: "https://custom.local/v1")
+                                // Keys never follow the user to another provider; a custom key reappears once its own URL is typed.
+                                apiKeyDraft = AssistantProviderPreset.infer(baseURL: baseURLDraft) == .custom
+                                    ? AssistantConfig.userStoredAPIKey(forBaseURL: baseURLDraft)
+                                    : ""
                             }
                         }
                     )
@@ -696,8 +833,15 @@ struct AssistantSettingsSection: View {
                         get: { baseURLDraft },
                         set: { newValue in
                             let oldPreset = selectedPreset
+                            let oldURL = baseURLDraft
                             baseURLDraft = newValue
                             let inferred = AssistantProviderPreset.infer(baseURL: newValue)
+                            if inferred == .custom, inferred == oldPreset,
+                               AssistantEndpoint(newValue)?.identity != AssistantEndpoint(oldURL)?.identity,
+                               apiKeyDraft.isEmpty || apiKeyDraft == AssistantConfig.userStoredAPIKey(forBaseURL: oldURL) {
+                                // Another custom server: the saved key stays with its own server (#19).
+                                apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: newValue)
+                            }
                             if inferred != oldPreset {
                                 selectedPreset = inferred
                                 apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: newValue)
@@ -726,7 +870,7 @@ struct AssistantSettingsSection: View {
                             modelDraft = candidate
                         }
                         .buttonStyle(.plain)
-                        .font(.system(size: 9.5, weight: modelDraft == candidate ? .semibold : .regular, design: .monospaced))
+                        .font(.system(size: 10, weight: modelDraft == candidate ? .semibold : .regular, design: .monospaced))
                         .foregroundStyle(modelDraft == candidate ? Color.accentColor : Color.secondary)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1.5)
@@ -746,14 +890,18 @@ struct AssistantSettingsSection: View {
             }
 
             labeledField(L10n.tr(
-                "API Key（安全存入本机钥匙串；自定义密钥优先于环境配置）",
-                "API Key (Stored in Keychain; custom key takes priority)"
+                "API Key（只存在本机钥匙串）",
+                "API Key (Stored only in your Keychain)"
             )) {
                 SecureField(
                     selectedPreset.keyPlaceholder,
                     text: $apiKeyDraft
                 )
                 .textFieldStyle(.roundedBorder)
+            }
+
+            if selectedPreset.supportsKeyImport {
+                keyImportRow(importedSource: importedSource)
             }
 
             privacySection(habitItems: habitItems, habitCount: habitCount)
@@ -824,6 +972,13 @@ struct AssistantSettingsSection: View {
         return cfg
     }
 
+    /// Whether the current UI language ships an on-device recognizer on this Mac (#50).
+    private static func supportsOnDeviceSpeech(for language: AppLanguage) -> Bool {
+        let locale = Locale(identifier: language.speechLocaleIdentifier)
+        guard let recognizer = SFSpeechRecognizer(locale: locale) else { return false }
+        return recognizer.supportsOnDeviceRecognition
+    }
+
     @ViewBuilder
     private func privacySection(habitItems: [UserHabitMemory.ReadableItem], habitCount: Int) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -846,6 +1001,20 @@ struct AssistantSettingsSection: View {
             }
             .toggleStyle(.switch)
             .controlSize(.mini)
+
+            // #50: say so instead of silently falling back to Apple's servers.
+            if store.prefersOnDeviceSpeech && !Self.supportsOnDeviceSpeech(for: store.effectiveLanguage) {
+                Label(
+                    L10n.tr(
+                        "当前语言（\(store.effectiveLanguage.speechLocaleIdentifier)）不支持本机识别，语音将使用苹果服务器。",
+                        "This language (\(store.effectiveLanguage.speechLocaleIdentifier)) can't be recognized on-device; Apple's servers will be used."
+                    ),
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
 
             HStack {
                 Button(isShowingHabits
@@ -892,6 +1061,23 @@ struct AssistantSettingsSection: View {
                 }
             }
 
+            let consented = store.consentedCloudEndpoints
+            if !consented.isEmpty {
+                HStack(spacing: 6) {
+                    Text(L10n.tr("已允许发送到：\(consented.joined(separator: "、"))", "Allowed to send to: \(consented.joined(separator: ", "))"))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Spacer(minLength: 4)
+                    Button(L10n.tr("撤销授权", "Revoke")) {
+                        store.revokeCloudConsent()
+                        storageRevision &+= 1
+                        store.showToast(L10n.tr("已撤销，下次发往云端前会再问你", "Revoked; you will be asked before the next cloud request"))
+                    }
+                    .buttonStyle(PillActionButtonStyle())
+                }
+            }
+
             Text(L10n.tr(
                 "发给 AI 的内容：你说的那句话、设备名称/房间/当前状态、时间段、室温\(store.isHabitLearningEnabled ? "、习惯摘要" : "")。只有本机解析不了的指令才会发送。API Key 和米家登录信息只存在本机钥匙串，不会发送。",
                 "Sent to AI only when local parsing cannot resolve: your command text, device names/rooms/states, time slot, room temperature\(store.isHabitLearningEnabled ? ", and habit summary" : ""). API keys and Xiaomi credentials stay in your local Keychain."
@@ -899,6 +1085,48 @@ struct AssistantSettingsSection: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Keys from CodexBar or environment variables are only read and copied when the user clicks (#20).
+    @ViewBuilder
+    private func keyImportRow(importedSource: String?) -> some View {
+        let target = baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? selectedPreset.defaultBaseURL
+            : baseURLDraft
+        HStack(spacing: 6) {
+            if let importedSource {
+                Text(L10n.tr("来源：\(importedSource)（已复制到本机钥匙串）", "Source: \(importedSource) (copied to Keychain)"))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Button(L10n.tr("撤销导入", "Remove")) {
+                    AssistantConfig.removeStoredAPIKey(forBaseURL: target)
+                    apiKeyDraft = ""
+                    storageRevision &+= 1
+                    store.showToast(L10n.tr("已删除导入的 Key", "Removed the imported key"))
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+            } else {
+                Button(L10n.tr("从 CodexBar / 环境变量导入 Key", "Import key from CodexBar / environment")) {
+                    if let label = AssistantConfig.importAmbientAPIKey(forBaseURL: target) {
+                        apiKeyDraft = AssistantConfig.userStoredAPIKey(forBaseURL: target)
+                        storageRevision &+= 1
+                        store.showToast(L10n.tr("已从 \(label) 导入 \(selectedPreset.shortTitle) 的 Key", "Imported the \(selectedPreset.shortTitle) key from \(label)"))
+                    } else {
+                        store.showToast(
+                            L10n.tr("CodexBar 和环境变量里都没有 \(selectedPreset.shortTitle) 的 Key", "No \(selectedPreset.shortTitle) key in CodexBar or environment variables"),
+                            isError: true
+                        )
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .help(L10n.tr("点了才会读取 ~/.config/codexbar/config.json 和环境变量", "Reads ~/.config/codexbar/config.json and environment variables only when clicked"))
+            }
+            Spacer(minLength: 0)
         }
     }
 

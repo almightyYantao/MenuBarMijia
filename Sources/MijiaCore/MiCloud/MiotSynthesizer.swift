@@ -43,16 +43,20 @@ public enum MiotSynthesizer {
             for did in room.dids where roomByDid[did] == nil { roomByDid[did] = room }
         }
 
+        // A panel whose keys are listed as split devices is shown through those keys only.
+        let splitParents = Set(devices.compactMap(\.splitParentDid))
+
         var smartDevices: [SmartDevice] = []
         var readings: [EnvironmentReading] = []
 
-        for record in devices {
+        for record in devices where !splitParents.contains(record.did) {
             guard let spec = specs[record.model],
-                  let (service, build) = primary(for: spec) else { continue }
-            let reader = MiotReader(did: record.did, spec: spec, values: values)
+                  let (service, build) = primary(for: record, spec: spec) else { continue }
+            let scopedSpec = specForRecord(record, spec: spec)
+            let reader = MiotReader(did: record.miotDid, spec: scopedSpec, values: values)
             let kind = build(reader, service)
 
-            let room = roomByDid[record.did]
+            let room = roomByDid[record.did] ?? record.splitParentDid.flatMap { roomByDid[$0] }
             let roomName = DeviceSynthesizer.normalizeRoomName(room?.name ?? "")
             let roomId = DeviceSynthesizer.normalizedRoomId(for: roomName, fallback: room.map { "mi_room_\($0.id)" } ?? "other")
             let name = DeviceSynthesizer.cleanDeviceName(record.name, roomName: roomName, model: record.model)
@@ -80,20 +84,40 @@ public enum MiotSynthesizer {
             }
         }
 
-        return DeviceSynthesizer.assembleHome(devices: smartDevices, readings: readings, scenes: [])
+        return DeviceSynthesizer.assembleHome(
+            devices: smartDevices,
+            readings: readings,
+            scenes: [],
+            roomNameOrder: DeviceSynthesizer.roomNameOrder(from: rooms.map(\.name))
+        )
     }
 
     /// The (did, siid, piid) triples the synthesizer reads for this device; poll exactly these.
     public static func requiredProps(for device: MiDeviceRecord, spec: MiotDeviceSpec) -> [MiotPropKey] {
-        guard let (service, build) = primary(for: spec) else { return [] }
-        let reader = MiotReader(did: device.did, spec: spec, values: [:])
+        guard let (service, build) = primary(for: device, spec: spec) else { return [] }
+        let scopedSpec = specForRecord(device, spec: spec)
+        let reader = MiotReader(did: device.miotDid, spec: scopedSpec, values: [:])
         _ = build(reader, service)
         return reader.touched
+    }
+
+    /// Narrows a multi-key panel spec to the switch service controlled by a split key.
+    static func specForRecord(_ record: MiDeviceRecord, spec: MiotDeviceSpec) -> MiotDeviceSpec {
+        guard record.splitParentDid != nil, let siid = record.splitSiid else { return spec }
+        return MiotDeviceSpec(type: spec.type, services: spec.services.filter { $0.iid == siid })
     }
 
     /// Registry key of the builder that will handle this spec, or nil when unsupported.
     public static func supportedServiceName(for spec: MiotDeviceSpec) -> String? {
         primary(for: spec)?.0.shortName
+    }
+
+    /// Split keys use their own switch service instead of the panel's first one.
+    static func primary(for record: MiDeviceRecord, spec: MiotDeviceSpec) -> (MiotService, KindBuilder)? {
+        guard record.splitParentDid != nil, let siid = record.splitSiid else { return primary(for: spec) }
+        guard let service = spec.service(iid: siid),
+              let entry = registry.first(where: { $0.service == service.shortName }) else { return nil }
+        return (service, entry.build)
     }
 
     static func primary(for spec: MiotDeviceSpec) -> (MiotService, KindBuilder)? {
@@ -126,6 +150,7 @@ public enum MiotSynthesizer {
         let bri = r.ref("brightness", in: s)
         let ct = r.ref("color-temperature", in: s)
         let mode = r.ref("mode", in: s)
+        let isLightGroup = r.did.hasPrefix("group.")
         return .light(LightSpec(
             entityId: MiotAddress.make(did: r.did, siid: s.iid),
             isOn: on?.value?.miotBool ?? false,
@@ -133,8 +158,8 @@ public enum MiotSynthesizer {
             colorTempKelvin: ct?.value?.intValue,
             minKelvin: ct?.property.rangeMin.map { Int($0) } ?? 2700,
             maxKelvin: ct?.property.rangeMax.map { Int($0) } ?? 6500,
-            currentEffect: mode?.valueDescription,
-            availableEffects: mode?.property.valueList?.map(\.description) ?? []
+            currentEffect: isLightGroup ? nil : mode?.valueDescription,
+            availableEffects: isLightGroup ? [] : (mode?.property.valueList?.map(\.description) ?? [])
         ))
     }
 

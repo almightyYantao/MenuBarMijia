@@ -160,11 +160,26 @@ public enum JSONValue: Codable, Equatable, Sendable {
 
 // MARK: - Synthesized Home Snapshot
 
+/// A Mi Home "家庭" the account can switch between.
+public struct HomeOption: Equatable, Sendable, Identifiable {
+    public var id: String
+    public var name: String
+    public var deviceCount: Int
+
+    public init(id: String, name: String, deviceCount: Int) {
+        self.id = id
+        self.name = name
+        self.deviceCount = deviceCount
+    }
+}
+
 public struct SynthesizedHome: Equatable, Sendable {
     public var rooms: [RoomArea]
     public var devices: [SmartDevice]
     public var environmentReadings: [EnvironmentReading]
     public var scenes: [HomeScene]
+    /// Homes on the account (empty for backends without the concept).
+    public var homes: [HomeOption] = []
 
     public init(
         rooms: [RoomArea] = [],
@@ -182,17 +197,6 @@ public struct SynthesizedHome: Equatable, Sendable {
 // MARK: - Deep Synthesizer Module
 
 public enum DeviceSynthesizer {
-    private static let roomOrderMap: [String: Int] = [
-        "客厅": 1,
-        "书房": 2,
-        "卧室": 3,
-        "主卧": 3,
-        "小卧室": 4,
-        "次卧": 4,
-        "厨房": 5,
-        "阳台": 6
-    ]
-
     public static func synthesize(
         areas: [HAAreaEntry],
         devices: [HADeviceEntry],
@@ -321,15 +325,45 @@ public enum DeviceSynthesizer {
         }
         synthesizedScenes.sort { $0.name < $1.name }
 
-        return assembleHome(devices: smartDevices, readings: envReadings, scenes: synthesizedScenes)
+        return assembleHome(
+            devices: smartDevices,
+            readings: envReadings,
+            scenes: synthesizedScenes,
+            roomNameOrder: roomNameOrder(from: areas.map(\.name))
+        )
+    }
+
+    /// Provider order for rooms (HA area registry, Mi Home room list) — no built-in name weights (#36).
+    static func roomNameOrder(from rawNames: [String]) -> [String: Int] {
+        var order: [String: Int] = [:]
+        for (idx, rawName) in rawNames.enumerated() {
+            let name = normalizeRoomName(rawName)
+            if order[name] == nil { order[name] = idx }
+        }
+        return order
     }
 
     /// Shared tail of every backend's synthesis: derive the room list and apply the panel sort order.
+    /// `roomNameOrder` comes from the provider's own room list; rooms missing from it keep their
+    /// first-seen order after the provider rooms (#36).
     static func assembleHome(
         devices smartDevices: [SmartDevice],
         readings envReadings: [EnvironmentReading],
-        scenes synthesizedScenes: [HomeScene]
+        scenes synthesizedScenes: [HomeScene],
+        roomNameOrder: [String: Int] = [:]
     ) -> SynthesizedHome {
+        var firstSeen: [String: Int] = [:]
+        for d in smartDevices where firstSeen[d.roomName] == nil {
+            firstSeen[d.roomName] = firstSeen.count
+        }
+        for reading in envReadings where firstSeen[reading.roomName] == nil {
+            firstSeen[reading.roomName] = firstSeen.count
+        }
+        let fallbackBase = roomNameOrder.count + 1
+        let roomOrder: (String) -> Int = { name in
+            roomNameOrder[name] ?? (fallbackBase + (firstSeen[name] ?? 999))
+        }
+
         // Build deduplicated room list from active smartDevices
         var roomDict: [String: RoomArea] = [:]
         for d in smartDevices {
@@ -337,7 +371,7 @@ public enum DeviceSynthesizer {
                 roomDict[d.roomId] = RoomArea(
                     id: d.roomId,
                     name: d.roomName,
-                    sortOrder: roomOrderMap[d.roomName] ?? 50
+                    sortOrder: roomOrder(d.roomName)
                 )
             }
         }
@@ -352,15 +386,16 @@ public enum DeviceSynthesizer {
             let pa = kindPriority(a.kind)
             let pb = kindPriority(b.kind)
             if pa != pb { return pa < pb }
-            let ra = roomOrderMap[a.roomName] ?? 50
-            let rb = roomOrderMap[b.roomName] ?? 50
+            let ra = roomOrder(a.roomName)
+            let rb = roomOrder(b.roomName)
             if ra != rb { return ra < rb }
             return a.name < b.name
         }
 
         let sortedReadings = envReadings.sorted { a, b in
-            if a.label == "主卧" { return true }
-            if b.label == "主卧" { return false }
+            let ra = roomOrder(a.roomName)
+            let rb = roomOrder(b.roomName)
+            if ra != rb { return ra < rb }
             return a.label < b.label
         }
 

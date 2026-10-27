@@ -40,3 +40,4 @@ video_promo/
 *.mp4
 docs/assets/AppIcon_*.png
 
+.review/

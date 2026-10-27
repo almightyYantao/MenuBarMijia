@@ -18,17 +18,25 @@ public struct UndoBanner: Equatable, Sendable {
     public var title: String
     public var restoreCommands: [DeviceCommand]
     public var previousDevices: [SmartDevice]
+    /// Habit records written while executing this action; undoing the banner takes them back (#34).
+    public var habitReceipt: UserHabitMemory.RecordingReceipt?
+    /// Explicit window for actions outside the panel (automation, #59); nil uses the device-count rule.
+    public var duration: TimeInterval?
 
     public init(
         id: UUID = UUID(),
         title: String,
         restoreCommands: [DeviceCommand],
-        previousDevices: [SmartDevice]
+        previousDevices: [SmartDevice],
+        habitReceipt: UserHabitMemory.RecordingReceipt? = nil,
+        duration: TimeInterval? = nil
     ) {
         self.id = id
         self.title = title
         self.restoreCommands = restoreCommands
         self.previousDevices = previousDevices
+        self.habitReceipt = habitReceipt
+        self.duration = duration
     }
 }
 
@@ -37,11 +45,15 @@ public struct UndoBanner: Equatable, Sendable {
 public final class HomeStore {
     public static let shared = HomeStore()
 
-    public private(set) var connectionStatus: ConnectionStatus = .connecting
-    public private(set) var rooms: [RoomArea] = []
+    public internal(set) var connectionStatus: ConnectionStatus = .connecting
+    public internal(set) var rooms: [RoomArea] = []
+    /// Mi Home 家庭 list from the cloud backend; empty elsewhere.
+    public internal(set) var homes: [HomeOption] = []
+    public internal(set) var selectedMiHomeId: String? = UserDefaults.standard.string(forKey: MiCloudProvider.selectedHomeKey)
     public internal(set) var devices: [SmartDevice] = []
-    public private(set) var environmentReadings: [EnvironmentReading] = []
-    public private(set) var scenes: [HomeScene] = []
+    public internal(set) var environmentReadings: [EnvironmentReading] = []
+    public internal(set) var scenes: [HomeScene] = []
+    public internal(set) var hasReceivedInitialSnapshot = false
 
     public var selectedRoomId: String? = nil // nil = 全部 / 常用
     public var expandedDeviceId: String? = nil
@@ -88,6 +100,11 @@ public final class HomeStore {
         }
     }
 
+    /// Per-device choice for 全关; a missing entry means the default from `joinsAllOffByDefault` (#23).
+    public var allOffOverrides: [String: Bool] {
+        didSet { userDefaults.set(allOffOverrides, forKey: "all_off_overrides") }
+    }
+
     public var menuBarDisplayMode: MenuBarDisplayMode {
         didSet { userDefaults.set(menuBarDisplayMode.rawValue, forKey: "menubar_display_mode") }
     }
@@ -125,7 +142,8 @@ public final class HomeStore {
     }
 
     /// Ask macOS to keep speech recognition on this Mac (no audio sent to Apple) when the language supports it.
-    public var prefersOnDeviceSpeech: Bool = false {
+    /// Defaults on for privacy; an explicitly saved `false` still wins (#50).
+    public var prefersOnDeviceSpeech: Bool = true {
         didSet { userDefaults.set(prefersOnDeviceSpeech, forKey: "assistant_on_device_speech") }
     }
 
@@ -142,7 +160,7 @@ public final class HomeStore {
         guard !hasCompletedOnboarding, devices.isEmpty else { return false }
         if case .connected = connectionStatus { return false }
         let hasMiSession = (miSessionMaskedUserId != nil)
-        let hasHAToken = !KeychainHelper.loadToken().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasHAToken = !KeychainHelper.loadToken(defaults: userDefaults).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return !hasMiSession && !hasHAToken
     }
 
@@ -166,20 +184,6 @@ public final class HomeStore {
 
     public internal(set) var miSessionMaskedUserId: String?
 
-    public var serverHostSummary: String {
-        let _ = effectiveLanguage
-        if homeBackend == .xiaomiCloud {
-            return miSessionMaskedUserId.map { L10n.tr("米家云端 (\($0))", "Xiaomi Cloud (\($0))") }
-                ?? L10n.tr("米家云端 (未登录)", "Xiaomi Cloud (Signed Out)")
-        }
-        if let url = URL(string: serverURLString), let host = url.host() {
-            return host
-        }
-        return serverURLString
-            .replacingOccurrences(of: "http://", with: "")
-            .replacingOccurrences(of: "https://", with: "")
-    }
-
     public private(set) var toastNotice: ToastNotice?
     public internal(set) var undoBanner: UndoBanner?
     public var onSafetyAlert: ((SafetyAlert) -> Void)?
@@ -199,6 +203,8 @@ public final class HomeStore {
     }
     public var onTerminateForUpdate: (() -> Void)?
     public var updater: AppUpdater
+    /// Local energy history fed by provider snapshots (#62).
+    public let energyHistory: EnergyHistory
     var updateTask: Task<Void, Never>?
     var activeUpdateAttemptID: UUID?
 
@@ -206,23 +212,37 @@ public final class HomeStore {
         didSet { lgConfig.save(to: userDefaults) }
     }
 
-    public private(set) var discoveredHAInstances: [HADiscoveredInstance] = []
-    public private(set) var isDiscoveringHA: Bool = false
+    public internal(set) var discoveredHAInstances: [HADiscoveredInstance] = []
+    /// Another Home Assistant address found after disconnects; only used if the user taps 切换 (#18).
+    public internal(set) var pendingHAAddressSuggestion: HADiscoveredInstance?
+    var dismissedHAAddressURLs: Set<String> = []
+    public internal(set) var isDiscoveringHA: Bool = false
 
     var provider: any HomeProvider
     var lgWebOSClient: LGWebOSClient?
-    private let isTestEnvironment: Bool
-    private var latestLGDevice: SmartDevice?
-    private var eventTask: Task<Void, Never>?
-    private var debounceTasks: [String: Task<Void, Never>] = [:]
+    let isTestEnvironment: Bool
+    var latestLGDevice: SmartDevice?
+    var eventTask: Task<Void, Never>?
+    /// Panel open, Mac awake, Low Power Mode; the provider paces polling with it (#26).
+    public internal(set) var pollingContext = PollingContext()
+    var pollingContextSync: Task<Void, Never>?
+    var debounceTasks: [String: Task<Void, Never>] = [:]
     var undoTimerTask: Task<Void, Never>?
     private var toastTimerTask: Task<Void, Never>?
     var optimisticLockUntil: [String: ContinuousClock.Instant] = [:]
+    public static let deviceAliasesKey = "device_aliases"
+    var rawDeviceNames: [String: String] = [:]
 
-    private var lowBatteryAlertedAt: [String: Date] = [:]
-    private var activeSinceByDeviceId: [String: Date] = [:]
-    private var longRunAlertedForSession: Set<String> = []
-    private var previousOnlineDeviceIds: Set<String> = []
+    var lowBatteryAlertedAt: [String: Date] = [:]
+    var activeSinceByDeviceId: [String: Date] = [:]
+    var longRunAlertedForSession: Set<String> = []
+
+    static let lastManualLightIdKey = "last_manual_light_id"
+    /// Last light the user switched on by hand; the 柔和夜灯 fallback uses it instead of "主卧" (#36).
+    var lastManuallyUsedLightId: String?
+    /// A legacy 主卧/阳台 menu-bar mode was migrated; pick the first temperature sensor when readings arrive.
+    var pendingLegacyMenuBarTargetMigration = false
+    var previousOnlineDeviceIds: Set<String> = []
 
     public init(
         provider: (any HomeProvider)? = nil,
@@ -231,8 +251,14 @@ public final class HomeStore {
     ) {
         let ud = defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.userDefaults = ud
-        self.isTestEnvironment = (provider != nil || defaultsSuiteName != nil)
+        let isTestEnvironment = (provider != nil || defaultsSuiteName != nil)
+        self.isTestEnvironment = isTestEnvironment
         self.updater = updater ?? AppUpdater()
+        self.energyHistory = EnergyHistory(defaults: ud)
+        // ≤1.0.6 mirrored credentials into plain `UserDefaults`; move them into the Keychain before any read (#16).
+        if !isTestEnvironment && ud === UserDefaults.standard {
+            KeychainHelper.migratePlaintextCredentialsToKeychain(defaults: ud)
+        }
         let boolOrDefaultTrue = { (key: String) -> Bool in
             ud.object(forKey: key) == nil ? true : ud.bool(forKey: key)
         }
@@ -258,10 +284,12 @@ public final class HomeStore {
         let initialBackend = ud.string(forKey: "home_backend").flatMap(HomeBackend.init(rawValue:)) ?? .homeAssistant
         self.homeBackend = initialBackend
         self.miSessionMaskedUserId = MiSessionStore.load(defaults: ud)?.maskedUserId
+        self.selectedMiHomeId = ud.string(forKey: MiCloudProvider.selectedHomeKey)
         self.lgConfig = LGWebOSConfig.load(from: ud)
         self.homeName = ud.string(forKey: "home_name") ?? KeychainHelper.localizedDefaultHomeName
         self.isHabitLearningEnabled = boolOrDefaultTrue("assistant_habit_learning_enabled")
-        self.prefersOnDeviceSpeech = ud.bool(forKey: "assistant_on_device_speech")
+        // Privacy-first default: ask for on-device recognition unless the user explicitly opted out (#50).
+        self.prefersOnDeviceSpeech = boolOrDefaultTrue("assistant_on_device_speech")
         self.hasCompletedOnboarding = ud.bool(forKey: "has_completed_onboarding")
         self.hideOfflineDevices = ud.bool(forKey: "hide_offline_devices")
         self.showQuickActionsBar = boolOrDefaultTrue("show_quick_actions_bar")
@@ -269,12 +297,21 @@ public final class HomeStore {
         self.enableSafetyAlerts = boolOrDefaultTrue("enable_safety_alerts")
         self.isCompactGridMode = ud.bool(forKey: "compact_grid_mode")
         self.menuBarTargetId = ud.string(forKey: "menubar_target_id") ?? "auto:primary"
+        self.lastManuallyUsedLightId = ud.string(forKey: Self.lastManualLightIdKey)
+        self.lowBatteryAlertedAt = Self.loadLowBatteryAlertedAt(from: ud)
 
-        if let modeRaw = ud.string(forKey: "menubar_display_mode"),
-           let mode = MenuBarDisplayMode(rawValue: modeRaw) {
+        let savedModeRaw = ud.string(forKey: "menubar_display_mode")
+        if let savedModeRaw, let mode = MenuBarDisplayMode(rawValue: savedModeRaw) {
             self.menuBarDisplayMode = mode
+        } else if let savedModeRaw, MenuBarDisplayMode.legacyTemperatureRawValues.contains(savedModeRaw) {
+            // ≤1.0.x stored 主卧/阳台 modes. Keep the user on a temperature readout, but let the
+            // generic sensor option pick whichever sensor exists in this home (#36).
+            self.menuBarDisplayMode = .sensorTemperature
+            ud.set(MenuBarDisplayMode.sensorTemperature.rawValue, forKey: "menubar_display_mode")
+            let savedTarget = ud.string(forKey: "menubar_target_id")
+            self.pendingLegacyMenuBarTargetMigration = savedTarget == nil || savedTarget == "auto:primary"
         } else {
-            self.menuBarDisplayMode = .primaryTemp
+            self.menuBarDisplayMode = .sensorTemperature
         }
 
         if let savedFavs = ud.stringArray(forKey: "favorite_device_ids") {
@@ -288,17 +325,16 @@ public final class HomeStore {
         } else {
             self.hiddenDeviceIds = []
         }
+        self.allOffOverrides = ud.dictionary(forKey: "all_off_overrides") as? [String: Bool] ?? [:]
 
-        if !self.isTestEnvironment && ud === UserDefaults.standard {
-            KeychainHelper.synchronizeFallbackCredentialsBeforeUpdate(defaults: ud)
-        }
-
-        let initialHAToken = (provider == nil && initialBackend == .homeAssistant) ? KeychainHelper.loadToken() : ""
+        let initialHAToken = (provider == nil && initialBackend == .homeAssistant) ? KeychainHelper.loadToken(defaults: ud) : ""
         if let provider {
             self.provider = provider
         } else if initialBackend == .xiaomiCloud {
             nonisolated(unsafe) let ud = userDefaults
             self.provider = MiCloudProvider(sessionLoader: { MiSessionStore.load(defaults: ud) })
+        } else if initialBackend == .demo {
+            self.provider = DemoHomeProvider()
         } else {
             self.provider = HAWebSocketProvider(baseURLString: savedURL, token: initialHAToken)
         }
@@ -307,7 +343,8 @@ public final class HomeStore {
         }
         startListening()
         restoreScheduledCommands()
-        if provider == nil {
+        // Demo mode is strictly offline: no LAN discovery, no LG connection (#47).
+        if provider == nil, initialBackend != .demo {
             startLGWebOSIfNeeded()
             Task { [weak self] in
                 _ = await self?.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
@@ -315,29 +352,9 @@ public final class HomeStore {
         }
     }
 
-    private func startLGWebOSIfNeeded() {
-        let client = LGWebOSClient(
-            config: lgConfig,
-            onDeviceUpdated: { [weak self] dev in
-                Task { @MainActor [weak self] in
-                    self?.applyLGDeviceUpdate(dev)
-                }
-            },
-            onClientKeyRegistered: { [weak self] key in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    self.lgConfig.clientKey = key
-                    self.showToast(L10n.tr("已成功配对 \(self.lgConfig.name)", "Paired with \(self.lgConfig.name)"))
-                }
-            }
-        )
-        self.lgWebOSClient = client
-        if lgConfig.isEnabled && lgConfig.hasConfiguredHost {
-            Task { await client.start() }
-        }
-    }
-
-    private func syncEffectiveLanguage() {
+    /// Re-resolves `effectiveLanguage` and pushes it to `L10n`; also called from the language
+    /// preference setter and from localization extensions (#52).
+    func syncEffectiveLanguage() {
         let next: AppLanguage = (isTestEnvironment && appLanguagePreference == .system)
             ? .zhHans
             : appLanguagePreference.resolved()
@@ -349,1283 +366,6 @@ public final class HomeStore {
             let localizedDefault = next == .en ? "My Home" : "我的家"
             if homeName != localizedDefault {
                 homeName = localizedDefault
-            }
-        }
-    }
-
-    func applyLGDeviceUpdate(_ dev: SmartDevice) {
-        guard lgConfig.isEnabled, lgConfig.hasConfiguredHost else {
-            latestLGDevice = nil
-            devices.removeAll { $0.id == dev.id }
-            return
-        }
-        latestLGDevice = dev
-        let now = ContinuousClock.now
-        if let lockTime = optimisticLockUntil[dev.id], now < lockTime {
-            return
-        }
-        if let idx = devices.firstIndex(where: { $0.id == dev.id }) {
-            devices[idx] = dev
-        } else {
-            devices.append(dev)
-            if favoriteDeviceIds.contains(dev.id) == false && favoriteOrder.count < 8 {
-                favoriteDeviceIds.insert(dev.id)
-                favoriteOrder.insert(dev.id, at: 0)
-            }
-        }
-        if !rooms.contains(where: { $0.id == dev.roomId || $0.name == dev.roomName }) {
-            rooms.append(RoomArea(id: dev.roomId, name: dev.roomName, sortOrder: 1))
-        }
-    }
-
-    public func startListening() {
-        eventTask?.cancel()
-        let stream = provider.events()
-        eventTask = Task { [weak self] in
-            for await event in stream {
-                guard let self else { break }
-                self.handleProviderEvent(event)
-            }
-        }
-    }
-
-    private func handleProviderEvent(_ event: HomeProviderEvent) {
-        switch event {
-        case .statusChanged(let status):
-            if connectionStatus != status { connectionStatus = status }
-
-        case .snapshotUpdated(let snapshot):
-            var nextRooms = snapshot.rooms
-            if let lgDev = latestLGDevice, lgConfig.isEnabled,
-               !nextRooms.contains(where: { $0.id == lgDev.roomId || $0.name == lgDev.roomName }) {
-                nextRooms.append(RoomArea(id: lgDev.roomId, name: lgDev.roomName, sortOrder: 1))
-            }
-            // @Observable invalidates on every assignment, and HA pushes a snapshot for every
-            // state_changed event (incl. entities we never show), so only write real changes.
-            if rooms != nextRooms { rooms = nextRooms }
-            if environmentReadings != snapshot.environmentReadings { environmentReadings = snapshot.environmentReadings }
-            if scenes != snapshot.scenes { scenes = snapshot.scenes }
-
-            let now = ContinuousClock.now
-            var merged: [SmartDevice] = []
-            let existingById = Dictionary(uniqueKeysWithValues: self.devices.map { ($0.id, $0) })
-
-            for incoming in snapshot.devices {
-                if let lockTime = optimisticLockUntil[incoming.id], now < lockTime,
-                   let local = existingById[incoming.id] {
-                    merged.append(local)
-                } else {
-                    merged.append(incoming)
-                }
-            }
-            if let lgDev = latestLGDevice, lgConfig.isEnabled,
-               !merged.contains(where: { $0.id == lgDev.id }) {
-                if let lockTime = optimisticLockUntil[lgDev.id], now < lockTime,
-                   let local = existingById[lgDev.id] {
-                    merged.insert(local, at: 0)
-                } else {
-                    merged.insert(lgDev, at: 0)
-                }
-            }
-            if devices != merged {
-                devices = merged
-                seedDefaultFavoritesIfNeeded()
-            }
-
-            if enableSafetyAlerts, let handler = onSafetyAlert {
-                for alert in evaluateSafetyAlerts(now: Date()) {
-                    handler(alert)
-                }
-            }
-            notifyMissedScheduledCommandsIfNeeded()
-        }
-    }
-
-    private func seedDefaultFavoritesIfNeeded() {
-        guard favoriteDeviceIds.isEmpty,
-              userDefaults.object(forKey: "favorite_device_ids") == nil,
-              !devices.isEmpty else {
-            return
-        }
-        // Automatically star online controllable devices on first launch
-        let initial = devices
-            .filter { $0.isOnline && $0.hasDetailDrawer }
-            .prefix(6)
-            .map(\.id)
-        if !initial.isEmpty {
-            self.favoriteDeviceIds = Set(initial)
-            self.favoriteOrder = initial
-        }
-    }
-
-    // MARK: - Computed Views of State
-
-    public var activeDeviceCount: Int {
-        devices.filter(\.isActiveOn).count
-    }
-
-    public var onlineDeviceCount: Int {
-        devices.filter(\.isOnline).count
-    }
-
-    public var totalPowerWatts: Double {
-        devices.reduce(0.0) { acc, dev in
-            guard dev.isOnline, case .plug(let s) = dev.kind, s.isOn else { return acc }
-            return acc + (s.powerWatts ?? 0)
-        }
-    }
-
-    public var availableMenuBarOptions: [MenuBarMetricOption] {
-        let _ = effectiveLanguage
-        var opts: [MenuBarMetricOption] = [
-            MenuBarMetricOption(id: "auto:primary", title: L10n.tr("自动（主卧温度优先）", "Auto (Bedroom Temp First)"))
-        ]
-        for env in environmentReadings {
-            opts.append(MenuBarMetricOption(id: "temp:\(env.id)", title: L10n.tr("\(env.label) · 温度", "\(env.label) · Temp")))
-            if env.humidity != nil {
-                opts.append(MenuBarMetricOption(id: "temp_hum:\(env.id)", title: L10n.tr("\(env.label) · 温湿度", "\(env.label) · Temp & Humidity")))
-            }
-        }
-        opts.append(MenuBarMetricOption(id: "power:total", title: L10n.tr("全屋实时总功率 (W)", "Total Home Power (W)")))
-        opts.append(MenuBarMetricOption(id: "active:count", title: L10n.tr("开启设备数量", "Active Device Count")))
-        opts.append(MenuBarMetricOption(id: "icon:only", title: L10n.tr("仅显示图标", "Icon Only")))
-        return opts
-    }
-
-    public var hiddenDevices: [SmartDevice] {
-        devices.filter { hiddenDeviceIds.contains($0.id) }
-    }
-
-    public var filteredDevices: [SmartDevice] {
-        devices.filter { dev in
-            if hiddenDeviceIds.contains(dev.id) { return false }
-            if hideOfflineDevices && !dev.isOnline { return false }
-            if let roomId = selectedRoomId {
-                return dev.roomId == roomId
-            }
-            return true
-        }
-    }
-
-    public var favoriteDevices: [SmartDevice] {
-        let favs = filteredDevices.filter { favoriteDeviceIds.contains($0.id) }
-        guard !favoriteOrder.isEmpty else { return favs }
-        let orderIndex = Dictionary(uniqueKeysWithValues: favoriteOrder.enumerated().map { ($1, $0) })
-        return favs.sorted { a, b in
-            let ia = orderIndex[a.id] ?? Int.max
-            let ib = orderIndex[b.id] ?? Int.max
-            if ia != ib { return ia < ib }
-            return false
-        }
-    }
-
-    public var nonFavoriteDevices: [SmartDevice] {
-        filteredDevices.filter { !favoriteDeviceIds.contains($0.id) }
-    }
-
-    public var orderedVisibleDevices: [SmartDevice] {
-        if selectedRoomId == nil {
-            return favoriteDevices + nonFavoriteDevices
-        }
-        return filteredDevices
-    }
-
-    public var menuBarSymbolName: String {
-        activeDeviceCount > 0 ? "house.fill" : "house"
-    }
-
-    public var menuBarText: String? {
-        let sensorReading = { (prefix: String) -> EnvironmentReading? in
-            guard self.menuBarTargetId.hasPrefix(prefix) else { return nil }
-            let sensorId = String(self.menuBarTargetId.dropFirst(prefix.count))
-            return self.environmentReadings.first(where: { $0.id == sensorId }) ?? self.environmentReadings.first
-        }
-
-        if let env = sensorReading("temp:"), let t = env.temperature {
-            return String(format: "%.1f°", t)
-        }
-        if let env = sensorReading("temp_hum:"), let t = env.temperature {
-            if let h = env.humidity {
-                return String(format: "%.1f° %.0f%%", t, h)
-            }
-            return String(format: "%.1f°", t)
-        }
-        if menuBarTargetId == "power:total" {
-            return String(format: "%.0fW", totalPowerWatts)
-        }
-        if menuBarTargetId == "active:count" {
-            let _ = effectiveLanguage
-            return activeDeviceCount > 0 ? L10n.tr("\(activeDeviceCount)开", "\(activeDeviceCount) On") : nil
-        }
-        if menuBarTargetId == "icon:only" {
-            return nil
-        }
-
-        switch menuBarDisplayMode {
-        case .iconOnly:
-            return nil
-        case .primaryTemp:
-            if let primary = environmentReadings.first(where: { $0.label.contains("主卧") }) ?? environmentReadings.first,
-               let t = primary.temperature {
-                return String(format: "%.1f°", t)
-            }
-            return nil
-        case .balconyTemp:
-            if let bal = environmentReadings.first(where: { $0.label.contains("阳台") }) ?? environmentReadings.last,
-               let t = bal.temperature {
-                return String(format: "%.1f°", t)
-            }
-            return nil
-        case .activeCount:
-            let _ = effectiveLanguage
-            return activeDeviceCount > 0 ? L10n.tr("\(activeDeviceCount)开", "\(activeDeviceCount) On") : nil
-        }
-    }
-
-    // MARK: - SafetyAlert Evaluation Engine
-
-    @discardableResult
-    public func evaluateSafetyAlerts(now: Date = Date()) -> [SafetyAlert] {
-        guard enableSafetyAlerts else { return [] }
-        var emitted: [SafetyAlert] = []
-
-        for dev in devices {
-            // 1. Starred device offline transition check
-            if favoriteDeviceIds.contains(dev.id) {
-                if previousOnlineDeviceIds.contains(dev.id) && !dev.isOnline {
-                    emitted.append(
-                        SafetyAlert(
-                            id: "offline:\(dev.id):\(Int(now.timeIntervalSince1970))",
-                            deviceId: dev.id,
-                            title: L10n.tr("\(dev.name) 已离线", "\(dev.name) Offline"),
-                            body: L10n.tr(
-                                "\(dev.roomName)的「\(dev.name)」刚刚断开连接或断电。",
-                                "\"\(dev.name)\" in \(dev.roomName) just went offline or lost power."
-                            )
-                        )
-                    )
-                }
-            }
-
-            // 2. Low battery check (<15% for sensors/locks, 24h cooldown)
-            if dev.isOnline, case .sensor(let s) = dev.kind, let bat = s.battery, bat > 0 && bat < 15 {
-                let lastAlert = lowBatteryAlertedAt[dev.id]
-                if lastAlert == nil || now.timeIntervalSince(lastAlert!) >= 86_400 {
-                    lowBatteryAlertedAt[dev.id] = now
-                    emitted.append(
-                        SafetyAlert(
-                            id: "battery:\(dev.id)",
-                            deviceId: dev.id,
-                            title: L10n.tr("\(dev.name) 电量低 (\(bat)%)", "\(dev.name) Low Battery (\(bat)%)"),
-                            body: L10n.tr(
-                                "请及时为\(dev.roomName)的「\(dev.name)」更换电池或充电。",
-                                "Please replace or recharge the battery for \"\(dev.name)\" (\(dev.roomName))."
-                            )
-                        )
-                    )
-                }
-            }
-
-            // 3. Long-running plug (>=45m) or climate (>=4h) check
-            if dev.isActiveOn {
-                let startedAt = activeSinceByDeviceId[dev.id] ?? {
-                    activeSinceByDeviceId[dev.id] = now
-                    return now
-                }()
-                let elapsed = now.timeIntervalSince(startedAt)
-
-                switch dev.kind {
-                case .plug(let s) where elapsed >= 45 * 60 && !longRunAlertedForSession.contains(dev.id):
-                    longRunAlertedForSession.insert(dev.id)
-                    emitted.append(
-                        SafetyAlert(
-                            id: "longrun:\(dev.id)",
-                            deviceId: dev.id,
-                            title: L10n.tr("\(dev.name) 已开启超过 45 分钟", "\(dev.name) On for Over 45m"),
-                            body: L10n.tr(
-                                "当前功率 \(Int((s.powerWatts ?? 0).rounded()))W，如需关闭可直接点击通知按钮。",
-                                "Drawing \(Int((s.powerWatts ?? 0).rounded()))W. Click the notification action to turn it off."
-                            ),
-                            turnOffCommand: .setSwitch(entityId: s.switchEntityId, isOn: false)
-                        )
-                    )
-                case .climate(let s) where elapsed >= 4 * 3600 && !longRunAlertedForSession.contains(dev.id):
-                    longRunAlertedForSession.insert(dev.id)
-                    emitted.append(
-                        SafetyAlert(
-                            id: "longrun:\(dev.id)",
-                            deviceId: dev.id,
-                            title: L10n.tr("\(dev.name) 已连续运行 4 小时", "\(dev.name) Running for 4 Hours"),
-                            body: L10n.tr(
-                                "当前设定 \(Int(s.targetTemperature.rounded()))°C，请确认是否仍需开启。",
-                                "Target temp \(Int(s.targetTemperature.rounded()))°C. Check if you still need it running."
-                            ),
-                            turnOffCommand: .setClimatePower(entityId: s.entityId, isOn: false, fallbackMode: s.hvacMode)
-                        )
-                    )
-                default:
-                    break
-                }
-            } else {
-                activeSinceByDeviceId.removeValue(forKey: dev.id)
-                longRunAlertedForSession.remove(dev.id)
-            }
-        }
-
-        previousOnlineDeviceIds = Set(devices.filter(\.isOnline).map(\.id))
-        return emitted
-    }
-
-    public func executeSafetyAlertAction(_ alert: SafetyAlert) {
-        guard let cmd = alert.turnOffCommand else { return }
-        Task {
-            try? await provider.execute(cmd)
-            await provider.refreshNow()
-        }
-    }
-
-    // MARK: - Keyboard Navigation & Quick Number Shortcuts
-
-    public func selectQuickIndex(_ oneBasedIndex: Int) {
-        let list = orderedVisibleDevices
-        let idx = oneBasedIndex - 1
-        guard idx >= 0 && idx < list.count else { return }
-        togglePrimary(list[idx])
-    }
-
-    public func moveFocus(delta: Int) {
-        let list = orderedVisibleDevices
-        guard !list.isEmpty else {
-            focusedDeviceId = nil
-            return
-        }
-        guard let currentId = focusedDeviceId,
-              let curIdx = list.firstIndex(where: { $0.id == currentId }) else {
-            focusedDeviceId = delta >= 0 ? list.first?.id : list.last?.id
-            return
-        }
-        let nextIdx = (curIdx + delta + list.count) % list.count
-        focusedDeviceId = list[nextIdx].id
-    }
-
-    public func toggleFocusedDevice() {
-        let list = orderedVisibleDevices
-        guard !list.isEmpty else { return }
-        if let fid = focusedDeviceId, let dev = list.first(where: { $0.id == fid }) {
-            togglePrimary(dev)
-        } else if let first = list.first {
-            focusedDeviceId = first.id
-            togglePrimary(first)
-        }
-    }
-
-    public func adjustFocusedDevice(delta: Int) {
-        guard let fid = focusedDeviceId,
-              let dev = devices.first(where: { $0.id == fid }) else { return }
-
-        if expandedDeviceId != dev.id {
-            if delta > 0 && dev.hasDetailDrawer {
-                expandedDeviceId = dev.id
-            }
-            return
-        }
-
-        switch dev.kind {
-        case .light(let s):
-            let current = s.brightnessPercent ?? (s.isOn ? 80 : 0)
-            let next = max(1, min(100, current + delta * 10))
-            setLightBrightness(dev.id, percent: next)
-        case .climate:
-            stepClimateTemperature(dev.id, delta: Double(delta) * 1.0)
-        case .speaker(let s):
-            setSpeakerVolume(dev.id, percent: max(0, min(100, s.volumePercent + delta * 10)))
-        case .tv(let s):
-            setSpeakerVolume(dev.id, percent: max(0, min(100, s.volumePercent + delta * 10)))
-        default:
-            if delta < 0 {
-                expandedDeviceId = nil
-            }
-        }
-    }
-
-    public func cycleRoom(delta: Int = 1) {
-        let options: [String?] = [nil] + rooms.map { Optional($0.id) }
-        guard options.count > 1 else { return }
-        let curIdx = options.firstIndex(where: { $0 == selectedRoomId }) ?? 0
-        let nextIdx = (curIdx + delta + options.count) % options.count
-        selectedRoomId = options[nextIdx]
-    }
-
-    // MARK: - User Actions & Optimistic State Mutations
-
-    public func toggleFavorite(_ deviceId: String) {
-        if favoriteDeviceIds.contains(deviceId) {
-            favoriteDeviceIds.remove(deviceId)
-            favoriteOrder.removeAll { $0 == deviceId }
-        } else {
-            favoriteDeviceIds.insert(deviceId)
-            if !favoriteOrder.contains(deviceId) {
-                favoriteOrder.append(deviceId)
-            }
-        }
-    }
-
-    public func moveFavorite(deviceId: String, direction: Int) {
-        var currentIds = favoriteDevices.map(\.id)
-        for id in favoriteOrder where favoriteDeviceIds.contains(id) && !currentIds.contains(id) {
-            currentIds.append(id)
-        }
-        guard let idx = currentIds.firstIndex(of: deviceId) else { return }
-        let targetIdx = idx + direction
-        guard targetIdx >= 0 && targetIdx < currentIds.count else { return }
-        currentIds.swapAt(idx, targetIdx)
-        favoriteOrder = currentIds
-    }
-
-    public func hideDevice(_ deviceId: String) {
-        hiddenDeviceIds.insert(deviceId)
-        if expandedDeviceId == deviceId {
-            expandedDeviceId = nil
-        }
-        if focusedDeviceId == deviceId {
-            focusedDeviceId = nil
-        }
-    }
-
-    public func unhideDevice(_ deviceId: String) {
-        hiddenDeviceIds.remove(deviceId)
-    }
-
-    public func toggleExpanded(_ deviceId: String) {
-        if expandedDeviceId == deviceId {
-            expandedDeviceId = nil
-        } else {
-            expandedDeviceId = deviceId
-        }
-    }
-
-    public func togglePrimary(_ device: SmartDevice) {
-        guard device.isOnline else {
-            showToast(L10n.tr("\(device.name) 当前离线（可能断电）", "\(device.name) is offline (unplugged)"), isError: true)
-            return
-        }
-        guard let idx = devices.firstIndex(where: { $0.id == device.id }) else { return }
-        let previous = devices[idx]
-        var updated = previous
-        var command: DeviceCommand?
-
-        switch updated.kind {
-        case .light(var s):
-            s.isOn.toggle()
-            updated.kind = .light(s)
-            command = .setLightPower(entityId: s.entityId, isOn: s.isOn)
-
-        case .climate(var s):
-            s.isOn.toggle()
-            let targetMode = s.isOn ? (s.hvacMode == "off" ? (s.availableModes.first(where: { $0 != "off" }) ?? "heat") : s.hvacMode) : "off"
-            s.hvacMode = targetMode
-            updated.kind = .climate(s)
-            command = .setClimatePower(entityId: s.entityId, isOn: s.isOn, fallbackMode: targetMode)
-
-        case .fan(var s):
-            s.isOn.toggle()
-            updated.kind = .fan(s)
-            command = .setFanPower(entityId: s.entityId, isOn: s.isOn)
-
-        case .plug(var s):
-            s.isOn.toggle()
-            updated.kind = .plug(s)
-            command = .setSwitch(entityId: s.switchEntityId, isOn: s.isOn)
-
-        case .vacuum(var s):
-            let startCleaning = !s.isCleaning
-            s.status = startCleaning ? "cleaning" : "returning"
-            updated.kind = .vacuum(s)
-            command = .vacuumAction(entityId: s.entityId, action: startCleaning ? .start : .returnToBase)
-
-        case .tv(var s):
-            let turnOn = (s.state == "off" || s.state == "standby")
-            s.state = turnOn ? "on" : "standby"
-            if turnOn { s.isScreenOff = false }
-            updated.kind = .tv(s)
-            if LGWebOSProtocol.isLGEntity(s.mediaEntityId) {
-                command = .setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: turnOn)
-            } else if turnOn, let btnId = s.turnOnButtonId {
-                command = .pressButton(entityId: btnId)
-            } else {
-                toggleExpanded(device.id)
-                return
-            }
-
-        case .speaker, .fridge, .sensor:
-            toggleExpanded(device.id)
-            return
-        }
-
-        guard let cmd = command else { return }
-        devices[idx] = updated
-        lockOptimistic(device.id, duration: .seconds(2.2))
-
-        var memory = userHabitMemory
-        memory.record(
-            utterance: nil,
-            intents: [DeviceIntent(targetId: device.id, operation: .power(updated.isActiveOn))],
-            devices: devices,
-            scenes: scenes
-        )
-        if isHabitLearningEnabled { userHabitMemory = memory }
-
-        Task {
-            do {
-                try await executeDeviceCommand(cmd)
-            } catch {
-                if let revertIdx = self.devices.firstIndex(where: { $0.id == device.id }) {
-                    self.devices[revertIdx] = previous
-                }
-                self.optimisticLockUntil.removeValue(forKey: device.id)
-                self.showToast(L10n.tr("\(device.name) 响应失败，已回滚", "\(device.name) failed to respond; rolled back"), isError: true)
-            }
-        }
-    }
-
-    // MARK: - Detail Drawer Controls (Debounced & Optimistic)
-
-    public func setLightBrightness(_ deviceId: String, percent: Int) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .light(var s) = devices[idx].kind else { return }
-        let previous = devices[idx]
-        s.isOn = percent > 0
-        s.brightnessPercent = percent
-        devices[idx].kind = .light(s)
-        lockOptimistic(deviceId, duration: .seconds(2.5))
-
-        dispatchDebounced(
-            key: "\(deviceId).brightness",
-            deviceId: deviceId,
-            fallback: previous,
-            command: .setLightBrightness(entityId: s.entityId, percent: percent)
-        )
-    }
-
-    public func setLightColorTemp(_ deviceId: String, kelvin: Int) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .light(var s) = devices[idx].kind else { return }
-        let previous = devices[idx]
-        s.isOn = true
-        s.colorTempKelvin = kelvin
-        s.currentEffect = nil
-        devices[idx].kind = .light(s)
-        lockOptimistic(deviceId, duration: .seconds(2.5))
-
-        dispatchDebounced(
-            key: "\(deviceId).colortemp",
-            deviceId: deviceId,
-            fallback: previous,
-            command: .setLightColorTemp(entityId: s.entityId, kelvin: kelvin)
-        )
-    }
-
-    public func setLightEffect(_ deviceId: String, effect: String) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .light(var s) = devices[idx].kind else { return }
-        let previous = devices[idx]
-        s.isOn = true
-        s.currentEffect = effect
-        devices[idx].kind = .light(s)
-        lockOptimistic(deviceId, duration: .seconds(2.2))
-
-        var memory = userHabitMemory
-        memory.record(
-            utterance: nil,
-            intents: [DeviceIntent(targetId: deviceId, operation: .lightEffect(effect))],
-            devices: devices,
-            scenes: scenes
-        )
-        if isHabitLearningEnabled { userHabitMemory = memory }
-
-        dispatchImmediate(
-            deviceId: deviceId,
-            fallback: previous,
-            command: .setLightEffect(entityId: s.entityId, effect: effect)
-        )
-    }
-
-    public func stepClimateTemperature(_ deviceId: String, delta: Double) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .climate(var s) = devices[idx].kind else { return }
-        let previous = devices[idx]
-        let nextTemp = max(s.minTemp, min(s.maxTemp, s.targetTemperature + delta))
-        s.targetTemperature = nextTemp
-        devices[idx].kind = .climate(s)
-        lockOptimistic(deviceId, duration: .seconds(2.5))
-
-        dispatchDebounced(
-            key: "\(deviceId).temp",
-            deviceId: deviceId,
-            fallback: previous,
-            command: .setClimateTemperature(entityId: s.entityId, temperature: nextTemp)
-        )
-    }
-
-    public func setClimateMode(_ deviceId: String, mode: String) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .climate(var s) = devices[idx].kind else { return }
-        let previous = devices[idx]
-        s.hvacMode = mode
-        s.isOn = (mode != "off")
-        devices[idx].kind = .climate(s)
-        lockOptimistic(deviceId, duration: .seconds(2.2))
-
-        dispatchImmediate(
-            deviceId: deviceId,
-            fallback: previous,
-            command: .setClimateMode(entityId: s.entityId, hvacMode: mode)
-        )
-    }
-
-    public func setFanPresetMode(_ deviceId: String, preset: String) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .fan(var s) = devices[idx].kind else { return }
-        let previous = devices[idx]
-        s.isOn = true
-        s.presetMode = preset
-        devices[idx].kind = .fan(s)
-        lockOptimistic(deviceId, duration: .seconds(2.2))
-
-        dispatchImmediate(
-            deviceId: deviceId,
-            fallback: previous,
-            command: .setFanPresetMode(entityId: s.entityId, presetMode: preset)
-        )
-    }
-
-    public func setPlugChildLock(_ deviceId: String, locked: Bool) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .plug(var s) = devices[idx].kind,
-              let lockEid = s.childLockEntityId else { return }
-        let previous = devices[idx]
-        s.isChildLocked = locked
-        devices[idx].kind = .plug(s)
-        lockOptimistic(deviceId, duration: .seconds(2.0))
-
-        dispatchImmediate(
-            deviceId: deviceId,
-            fallback: previous,
-            command: .setSwitch(entityId: lockEid, isOn: locked)
-        )
-    }
-
-    public func setFridgeMode(_ deviceId: String, mode: String) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .fridge(var s) = devices[idx].kind,
-              let modeEid = s.modeEntityId else { return }
-        let previous = devices[idx]
-        s.currentMode = mode
-        devices[idx].kind = .fridge(s)
-        lockOptimistic(deviceId, duration: .seconds(2.0))
-
-        dispatchImmediate(
-            deviceId: deviceId,
-            fallback: previous,
-            command: .setSelectOption(entityId: modeEid, option: mode)
-        )
-    }
-
-    public func stepFridgeTargetTemp(_ deviceId: String, isFreezer: Bool, delta: Double) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .fridge(var s) = devices[idx].kind else { return }
-        let previous = devices[idx]
-
-        if isFreezer {
-            guard let eid = s.freezerTargetEntityId else { return }
-            let next = max(-24, min(-15, s.freezerTargetTemp + delta))
-            s.freezerTargetTemp = next
-            devices[idx].kind = .fridge(s)
-            lockOptimistic(deviceId, duration: .seconds(2.5))
-            dispatchDebounced(
-                key: "\(deviceId).freezer",
-                deviceId: deviceId,
-                fallback: previous,
-                command: .setNumberValue(entityId: eid, value: next)
-            )
-        } else {
-            guard let eid = s.fridgeTargetEntityId else { return }
-            let next = max(2, min(8, s.fridgeTargetTemp + delta))
-            s.fridgeTargetTemp = next
-            devices[idx].kind = .fridge(s)
-            lockOptimistic(deviceId, duration: .seconds(2.5))
-            dispatchDebounced(
-                key: "\(deviceId).fridge",
-                deviceId: deviceId,
-                fallback: previous,
-                command: .setNumberValue(entityId: eid, value: next)
-            )
-        }
-    }
-
-    public func performVacuumAction(_ deviceId: String, action: VacuumAction) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .vacuum(var s) = devices[idx].kind else { return }
-        let previous = devices[idx]
-        switch action {
-        case .start: s.status = "cleaning"
-        case .pause: s.status = "paused"
-        case .returnToBase: s.status = "returning"
-        }
-        devices[idx].kind = .vacuum(s)
-        lockOptimistic(deviceId, duration: .seconds(2.5))
-
-        dispatchImmediate(
-            deviceId: deviceId,
-            fallback: previous,
-            command: .vacuumAction(entityId: s.entityId, action: action)
-        )
-    }
-
-    public func setSpeakerVolume(_ deviceId: String, percent: Int) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }) else { return }
-        let previous = devices[idx]
-        let clamped = max(0, min(100, percent))
-
-        let mediaEid: String
-        switch devices[idx].kind {
-        case .speaker(var s):
-            s.volumePercent = clamped
-            devices[idx].kind = .speaker(s)
-            mediaEid = s.mediaEntityId
-        case .tv(var s):
-            s.volumePercent = clamped
-            devices[idx].kind = .tv(s)
-            mediaEid = s.mediaEntityId
-        default:
-            return
-        }
-
-        lockOptimistic(deviceId, duration: .seconds(2.5))
-        dispatchDebounced(
-            key: "\(deviceId).volume",
-            deviceId: deviceId,
-            fallback: previous,
-            command: .mediaSetVolume(entityId: mediaEid, volumeLevel: Double(clamped) / 100.0)
-        )
-    }
-
-    public func toggleSpeakerMute(_ deviceId: String) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .speaker(var s) = devices[idx].kind,
-              let muteEid = s.muteSwitchEntityId else { return }
-        let previous = devices[idx]
-        s.isMuted.toggle()
-        devices[idx].kind = .speaker(s)
-        lockOptimistic(deviceId, duration: .seconds(2.0))
-
-        dispatchImmediate(
-            deviceId: deviceId,
-            fallback: previous,
-            command: .setSwitch(entityId: muteEid, isOn: s.isMuted)
-        )
-    }
-
-    public func toggleTVMute(_ deviceId: String) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .tv(var s) = devices[idx].kind else { return }
-        let previous = devices[idx]
-        s.isMuted.toggle()
-        devices[idx].kind = .tv(s)
-        lockOptimistic(deviceId, duration: .seconds(2.0))
-
-        let entityId = LGWebOSProtocol.isLGEntity(s.mediaEntityId) ? LGWebOSProtocol.muteEntityId : s.mediaEntityId
-        dispatchImmediate(
-            deviceId: deviceId,
-            fallback: previous,
-            command: .setSwitch(entityId: entityId, isOn: s.isMuted)
-        )
-    }
-
-    public func toggleTVScreenOff(_ deviceId: String) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .tv(var s) = devices[idx].kind else { return }
-        let previous = devices[idx]
-        s.isScreenOff.toggle()
-        if !s.isScreenOff && (s.state == "off" || s.state == "standby") {
-            s.state = "on"
-        }
-        devices[idx].kind = .tv(s)
-        lockOptimistic(deviceId, duration: .seconds(2.2))
-
-        dispatchImmediate(
-            deviceId: deviceId,
-            fallback: previous,
-            command: .setSwitch(entityId: LGWebOSProtocol.screenOffEntityId, isOn: s.isScreenOff)
-        )
-    }
-
-    public func selectTVSource(_ deviceId: String, source: String) {
-        guard let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .tv(var s) = devices[idx].kind else { return }
-        let previous = devices[idx]
-        s.currentSource = source
-        s.state = "on"
-        s.isScreenOff = false
-        devices[idx].kind = .tv(s)
-        lockOptimistic(deviceId, duration: .seconds(2.5))
-
-        dispatchImmediate(
-            deviceId: deviceId,
-            fallback: previous,
-            command: .mediaSelectSource(entityId: s.mediaEntityId, source: source)
-        )
-    }
-
-    public func sendSpeakerText(_ deviceId: String, text: String, asDirective: Bool) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .speaker(let s) = devices[idx].kind else { return }
-
-        let targetEid = asDirective ? s.directiveNotifyEntityId : s.ttsNotifyEntityId
-        guard let eid = targetEid else {
-            showToast(L10n.tr("该音箱不支持此指令通道", "This speaker does not support that channel"), isError: true)
-            return
-        }
-
-        Task {
-            do {
-                try await executeDeviceCommand(.sendNotifyMessage(entityId: eid, message: trimmed))
-                showToast(
-                    asDirective
-                        ? L10n.tr("已向小爱下发指令：「\(trimmed)」", "Sent command to XiaoAi: \"\(trimmed)\"")
-                        : L10n.tr("小爱已播报：「\(trimmed)」", "XiaoAi announced: \"\(trimmed)\"")
-                )
-            } catch {
-                showToast(L10n.tr("发送失败：\(error.localizedDescription)", "Failed to send: \(error.localizedDescription)"), isError: true)
-            }
-        }
-    }
-
-    public func pressDeviceButton(_ buttonEntityId: String, label: String) {
-        Task {
-            do {
-                try await executeDeviceCommand(.pressButton(entityId: buttonEntityId))
-                showToast(L10n.tr("已触发：\(label)", "Triggered: \(label)"))
-            } catch {
-                showToast(L10n.tr("\(label) 执行失败", "\(label) failed"), isError: true)
-            }
-        }
-    }
-
-    // MARK: - Scenes & Built-In QuickActions with 5-Second Undo
-
-    public func triggerScene(_ scene: HomeScene) {
-        Task {
-            do {
-                try await executeDeviceCommand(.activateScene(entityId: scene.entityId))
-                showToast(L10n.tr("已触发场景：\(scene.name)", "Activated scene: \(scene.name)"))
-            } catch {
-                showToast(L10n.tr("场景「\(scene.name)」执行失败", "Scene \"\(scene.name)\" failed"), isError: true)
-            }
-        }
-    }
-
-    public func executeQuickAction(_ action: QuickAction) {
-        let previousSnapshot = devices
-        var commands: [DeviceCommand] = []
-        var restoreCommands: [DeviceCommand] = []
-
-        switch action {
-        case .lightsOff:
-            for idx in devices.indices where devices[idx].isOnline {
-                guard case .light(var s) = devices[idx].kind, s.isOn else { continue }
-                lockOptimistic(devices[idx].id, duration: .seconds(3.0))
-                commands.append(.setLightPower(entityId: s.entityId, isOn: false))
-                restoreCommands.append(.setLightPower(entityId: s.entityId, isOn: true))
-                s.isOn = false
-                devices[idx].kind = .light(s)
-            }
-
-        case .softNightLight:
-            var targetIndices = devices.indices.filter { idx in
-                guard devices[idx].isOnline, case .light(let s) = devices[idx].kind else { return false }
-                return s.isOn
-            }
-            if targetIndices.isEmpty {
-                let isOnlineLight = { (dev: SmartDevice) -> Bool in
-                    if dev.isOnline, case .light = dev.kind { return true }
-                    return false
-                }
-                let fallbackIdx = devices.indices.first(where: { isOnlineLight(devices[$0]) && favoriteDeviceIds.contains(devices[$0].id) })
-                    ?? devices.indices.first(where: { isOnlineLight(devices[$0]) && devices[$0].roomName == "主卧" })
-                    ?? devices.indices.first(where: { isOnlineLight(devices[$0]) })
-                if let fallbackIdx {
-                    targetIndices = [fallbackIdx]
-                }
-            }
-            for idx in targetIndices {
-                guard case .light(var s) = devices[idx].kind else { continue }
-                lockOptimistic(devices[idx].id, duration: .seconds(3.0))
-                let prevOn = s.isOn
-                let prevBri = s.brightnessPercent ?? 80
-                let prevKelvin = s.colorTempKelvin ?? 4000
-                commands.append(.setLightBrightness(entityId: s.entityId, percent: 15))
-                commands.append(.setLightColorTemp(entityId: s.entityId, kelvin: max(s.minKelvin, 2700)))
-                if prevOn {
-                    restoreCommands.append(.setLightBrightness(entityId: s.entityId, percent: prevBri))
-                    restoreCommands.append(.setLightColorTemp(entityId: s.entityId, kelvin: prevKelvin))
-                } else {
-                    restoreCommands.append(.setLightPower(entityId: s.entityId, isOn: false))
-                }
-                s.isOn = true
-                s.brightnessPercent = 15
-                s.colorTempKelvin = max(s.minKelvin, 2700)
-                s.currentEffect = nil
-                devices[idx].kind = .light(s)
-            }
-
-        case .climateSleepOff:
-            for idx in devices.indices where devices[idx].isOnline {
-                switch devices[idx].kind {
-                case .climate(var s) where s.isOn && s.hvacMode != "off":
-                    let prevMode = s.hvacMode
-                    lockOptimistic(devices[idx].id, duration: .seconds(3.0))
-                    commands.append(.setClimatePower(entityId: s.entityId, isOn: false, fallbackMode: prevMode))
-                    restoreCommands.append(.setClimatePower(entityId: s.entityId, isOn: true, fallbackMode: prevMode))
-                    s.isOn = false
-                    s.hvacMode = "off"
-                    devices[idx].kind = .climate(s)
-                case .fan(var s) where s.isOn:
-                    lockOptimistic(devices[idx].id, duration: .seconds(3.0))
-                    commands.append(.setFanPower(entityId: s.entityId, isOn: false))
-                    restoreCommands.append(.setFanPower(entityId: s.entityId, isOn: true))
-                    s.isOn = false
-                    devices[idx].kind = .fan(s)
-                default:
-                    break
-                }
-            }
-        }
-
-        guard !commands.isEmpty else {
-            showToast(L10n.tr("当前无需执行「\(action.title)」", "No devices need \"\(action.title)\""))
-            return
-        }
-
-        scheduleUndoBanner(
-            title: L10n.tr("已执行「\(action.title)」", "Executed \"\(action.title)\""),
-            restoreCommands: restoreCommands,
-            previousDevices: previousSnapshot
-        )
-
-        Task {
-            for cmd in commands {
-                try? await executeDeviceCommand(cmd)
-            }
-        }
-    }
-
-    // MARK: - Turn All Off with 5-Second Undo
-
-    public func turnAllOff() {
-        let activeDevs = devices.filter(\.isActiveOn)
-        guard !activeDevs.isEmpty else {
-            showToast(L10n.tr("当前没有开启的设备", "No active devices are currently on"))
-            return
-        }
-
-        let previousSnapshot = devices
-        var offCommands: [DeviceCommand] = []
-        var restoreCommands: [DeviceCommand] = []
-
-        for idx in devices.indices {
-            guard devices[idx].isActiveOn else { continue }
-            let devId = devices[idx].id
-            lockOptimistic(devId, duration: .seconds(3.0))
-
-            switch devices[idx].kind {
-            case .light(var s):
-                offCommands.append(.setLightPower(entityId: s.entityId, isOn: false))
-                restoreCommands.append(.setLightPower(entityId: s.entityId, isOn: true))
-                s.isOn = false
-                devices[idx].kind = .light(s)
-
-            case .climate(var s):
-                let prevMode = s.hvacMode
-                offCommands.append(.setClimatePower(entityId: s.entityId, isOn: false, fallbackMode: prevMode))
-                restoreCommands.append(.setClimatePower(entityId: s.entityId, isOn: true, fallbackMode: prevMode))
-                s.isOn = false
-                s.hvacMode = "off"
-                devices[idx].kind = .climate(s)
-
-            case .fan(var s):
-                offCommands.append(.setFanPower(entityId: s.entityId, isOn: false))
-                restoreCommands.append(.setFanPower(entityId: s.entityId, isOn: true))
-                s.isOn = false
-                devices[idx].kind = .fan(s)
-
-            case .plug(var s):
-                offCommands.append(.setSwitch(entityId: s.switchEntityId, isOn: false))
-                restoreCommands.append(.setSwitch(entityId: s.switchEntityId, isOn: true))
-                s.isOn = false
-                devices[idx].kind = .plug(s)
-
-            case .vacuum(var s):
-                offCommands.append(.vacuumAction(entityId: s.entityId, action: .returnToBase))
-                restoreCommands.append(.vacuumAction(entityId: s.entityId, action: .start))
-                s.status = "returning"
-                devices[idx].kind = .vacuum(s)
-
-            case .tv(var s):
-                if LGWebOSProtocol.isLGEntity(s.mediaEntityId) {
-                    offCommands.append(.setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: false))
-                    restoreCommands.append(.setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: true))
-                    s.state = "standby"
-                    devices[idx].kind = .tv(s)
-                }
-
-            default:
-                break
-            }
-        }
-
-        scheduleUndoBanner(
-            title: L10n.tr("已关闭 \(offCommands.count) 台设备", "Turned off \(offCommands.count) device(s)"),
-            restoreCommands: restoreCommands,
-            previousDevices: previousSnapshot
-        )
-
-        Task {
-            for cmd in offCommands {
-                try? await executeDeviceCommand(cmd)
-            }
-        }
-    }
-
-    func scheduleUndoBanner(
-        title: String,
-        restoreCommands: [DeviceCommand],
-        previousDevices: [SmartDevice]
-    ) {
-        let banner = UndoBanner(
-            title: title,
-            restoreCommands: restoreCommands,
-            previousDevices: previousDevices
-        )
-        self.undoBanner = banner
-        undoTimerTask?.cancel()
-        undoTimerTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5.0))
-            guard !Task.isCancelled else { return }
-            if self?.undoBanner?.id == banner.id {
-                self?.undoBanner = nil
-            }
-        }
-    }
-
-    public func undoTurnAllOff() {
-        guard let banner = undoBanner else { return }
-        undoTimerTask?.cancel()
-        self.undoBanner = nil
-        let currentMap = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0) })
-        self.devices = banner.previousDevices
-
-        for dev in banner.previousDevices where currentMap[dev.id] != dev {
-            lockOptimistic(dev.id, duration: .seconds(3.0))
-        }
-
-        Task {
-            for cmd in banner.restoreCommands {
-                try? await executeDeviceCommand(cmd)
-            }
-            showToast(L10n.tr("已恢复关闭前的状态", "Restored previous device states"))
-        }
-    }
-
-    // MARK: - Connection & Settings Management
-
-    private func makeHAProvider(baseURLString: String, token: String) -> HAWebSocketProvider {
-        let callback: (@Sendable (HADiscoveredInstance) -> Void)?
-        if isTestEnvironment {
-            callback = nil
-        } else {
-            callback = { @Sendable [weak self] instance in
-                Task { @MainActor [weak self] in
-                    self?.applyDiscoveredHAInstance(instance, reconnectProvider: false)
-                }
-            }
-        }
-        return HAWebSocketProvider(
-            baseURLString: baseURLString,
-            token: token,
-            onDiscoveredInstance: callback
-        )
-    }
-
-    public func switchBackend(_ backend: HomeBackend) {
-        let matches: Bool = switch backend {
-        case .homeAssistant: provider is HAWebSocketProvider
-        case .xiaomiCloud: provider is MiCloudProvider
-        }
-        guard homeBackend != backend || !matches else { return }
-
-        self.homeBackend = backend
-        eventTask?.cancel()
-        shutdownCurrentProvider()
-
-        switch backend {
-        case .homeAssistant:
-            self.provider = makeHAProvider(baseURLString: serverURLString, token: KeychainHelper.loadToken())
-        case .xiaomiCloud:
-            nonisolated(unsafe) let ud = userDefaults
-            self.provider = MiCloudProvider(sessionLoader: { MiSessionStore.load(defaults: ud) })
-        }
-        startListening()
-    }
-
-    public func completeMiLogin(_ session: MiSession) {
-        MiSessionStore.save(session, defaults: userDefaults)
-        self.miSessionMaskedUserId = session.maskedUserId
-        if let region = MiCloudRegion(rawValue: session.region.lowercased()) {
-            self.miCloudRegion = region
-        }
-        self.homeBackend = .xiaomiCloud
-        self.completeOnboarding()
-        eventTask?.cancel()
-        shutdownCurrentProvider()
-        nonisolated(unsafe) let ud = userDefaults
-        self.provider = MiCloudProvider(sessionLoader: { MiSessionStore.load(defaults: ud) })
-        startListening()
-        showToast(L10n.tr("已登录米家账号 (\(session.maskedUserId))", "Signed in to Xiaomi Home (\(session.maskedUserId))"))
-    }
-
-    public func logoutMiAccount() {
-        MiSessionStore.clear(defaults: userDefaults)
-        self.miSessionMaskedUserId = nil
-        if homeBackend == .xiaomiCloud {
-            self.devices = []
-            self.rooms = []
-            self.environmentReadings = []
-            self.scenes = []
-            eventTask?.cancel()
-            shutdownCurrentProvider()
-            nonisolated(unsafe) let ud = userDefaults
-            self.provider = MiCloudProvider(sessionLoader: { MiSessionStore.load(defaults: ud) })
-            startListening()
-        }
-        showToast(L10n.tr("已退出米家账号", "Signed out of Xiaomi Home"))
-    }
-
-    private func shutdownCurrentProvider() {
-        if let old = provider as? MiCloudProvider {
-            Task { await old.shutdown() }
-        } else if let old = provider as? HAWebSocketProvider {
-            Task { await old.shutdown() }
-        }
-    }
-
-    public func updateConnection(serverURL: String, token: String) {
-        let normalized = HAWebSocketProvider.normalizeBaseURL(serverURL)
-        self.serverURLString = normalized
-        KeychainHelper.saveToken(token)
-        if !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            self.completeOnboarding()
-        }
-        if homeBackend != .homeAssistant || !(provider is HAWebSocketProvider) {
-            switchBackend(.homeAssistant)
-        } else if let haProvider = provider as? HAWebSocketProvider {
-            Task {
-                await haProvider.updateCredentials(baseURLString: normalized, token: token)
-            }
-        }
-        showToast(L10n.tr("已保存并重新连接 Home Assistant", "Saved and reconnecting to Home Assistant"))
-    }
-
-    public func applyDiscoveredHAInstance(_ instance: HADiscoveredInstance, reconnectProvider: Bool = true) {
-        if !discoveredHAInstances.contains(where: { $0.baseURL == instance.baseURL }) {
-            discoveredHAInstances.insert(instance, at: 0)
-        }
-        let normalizedCurrent = HAWebSocketProvider.normalizeBaseURL(serverURLString)
-        if userDefaults.string(forKey: "home_name") == nil,
-           !instance.locationName.isEmpty,
-           instance.locationName != "Home Assistant" {
-            self.homeName = instance.locationName
-        }
-        guard normalizedCurrent != instance.baseURL else { return }
-        self.serverURLString = instance.baseURL
-        if reconnectProvider, let haProvider = provider as? HAWebSocketProvider {
-            let token = KeychainHelper.loadToken()
-            Task {
-                await haProvider.updateCredentials(baseURLString: instance.baseURL, token: token)
-            }
-        }
-    }
-
-    @discardableResult
-    public func discoverHomeAssistantOnLAN(autoApplyIfDefault: Bool = false) async -> [HADiscoveredInstance] {
-        isDiscoveringHA = true
-        defer { isDiscoveringHA = false }
-        let found = await HADiscovery.discoverOnLAN(currentURLHint: serverURLString)
-        self.discoveredHAInstances = found
-        if autoApplyIfDefault, let first = found.first {
-            let normalizedCurrent = HAWebSocketProvider.normalizeBaseURL(serverURLString)
-            let isDefaultURL = (normalizedCurrent == KeychainHelper.defaultNASURL)
-                || (userDefaults.string(forKey: "ha_server_url") == nil)
-            if isDefaultURL && first.baseURL != normalizedCurrent {
-                applyDiscoveredHAInstance(first, reconnectProvider: true)
-            }
-        }
-        return found
-    }
-
-    public func updateLGWebOSConfig(_ newConfig: LGWebOSConfig) {
-        self.lgConfig = newConfig
-        if !newConfig.isEnabled || !newConfig.hasConfiguredHost {
-            latestLGDevice = nil
-            devices.removeAll { $0.id == LGWebOSProtocol.deviceId }
-        }
-        if let lgClient = lgWebOSClient {
-            Task {
-                await lgClient.updateConfig(newConfig)
-            }
-        } else {
-            startLGWebOSIfNeeded()
-        }
-        if newConfig.isEnabled {
-            showToast(
-                newConfig.hasConfiguredHost
-                    ? L10n.tr("已保存并重连 \(newConfig.name)", "Saved and reconnecting to \(newConfig.name)")
-                    : L10n.tr("请先填写或扫描电视局域网 IP", "Please enter or scan the TV LAN IP first"),
-                isError: !newConfig.hasConfiguredHost
-            )
-        } else {
-            showToast(L10n.tr("已停用 LG 电视局域网直连", "Disabled LG TV LAN direct connection"))
-        }
-    }
-
-    public func triggerLGWebOSPairing() {
-        guard lgConfig.hasConfiguredHost else {
-            showToast(L10n.tr("请先填写或扫描电视局域网 IP", "Please enter or scan the TV LAN IP first"), isError: true)
-            return
-        }
-        if lgWebOSClient == nil {
-            startLGWebOSIfNeeded()
-        }
-        guard let lgClient = lgWebOSClient else { return }
-        showToast(L10n.tr("已向电视发送配对请求，请在电视屏幕点击「接受」", "Pairing request sent; accept the prompt on your TV screen"))
-        Task {
-            await lgClient.triggerPairing()
-        }
-    }
-
-    public func discoverLGWebOSTVs(hostHint: String? = nil) async -> [LGWebOSDiscoveredTV] {
-        let hint = (hostHint ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let effectiveHint = hint.isEmpty ? lgConfig.host : hint
-        return await LGWebOSClient.discoverOnLAN(hostHint: effectiveHint)
-    }
-
-    public func refreshNow() {
-        Task {
-            await provider.refreshNow()
-            if lgConfig.isEnabled, lgConfig.hasConfiguredHost, let lgClient = lgWebOSClient {
-                await lgClient.start()
             }
         }
     }
@@ -1643,7 +383,7 @@ public final class HomeStore {
         }
     }
 
-    // MARK: - Internal Dispatch Helpers
+    // MARK: - Command Execution & Optimistic Locks
 
     func executeDeviceCommand(_ command: DeviceCommand) async throws {
         if LGWebOSProtocol.isLGEntity(command.targetEntityId), let lgClient = lgWebOSClient {
@@ -1657,46 +397,6 @@ public final class HomeStore {
         optimisticLockUntil[deviceId] = ContinuousClock.now.advanced(by: duration)
     }
 
-    private func dispatchImmediate(
-        deviceId: String,
-        fallback: SmartDevice,
-        command: DeviceCommand
-    ) {
-        Task {
-            do {
-                try await executeDeviceCommand(command)
-            } catch {
-                if let idx = self.devices.firstIndex(where: { $0.id == deviceId }) {
-                    self.devices[idx] = fallback
-                }
-                self.optimisticLockUntil.removeValue(forKey: deviceId)
-                self.showToast(L10n.tr("\(fallback.name) 操作未生效", "\(fallback.name) action failed"), isError: true)
-            }
-        }
-    }
-
-    private func dispatchDebounced(
-        key: String,
-        deviceId: String,
-        fallback: SmartDevice,
-        command: DeviceCommand
-    ) {
-        debounceTasks[key]?.cancel()
-        debounceTasks[key] = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(280))
-            guard !Task.isCancelled, let self else { return }
-            do {
-                try await self.executeDeviceCommand(command)
-            } catch {
-                if let idx = self.devices.firstIndex(where: { $0.id == deviceId }) {
-                    self.devices[idx] = fallback
-                }
-                self.optimisticLockUntil.removeValue(forKey: deviceId)
-                self.showToast(L10n.tr("\(fallback.name) 调节未生效", "\(fallback.name) adjustment failed"), isError: true)
-            }
-        }
-    }
-
     // MARK: - Assistant Commands & Personalized Jev Context
 
     public var isShowingAssistantBar: Bool = false
@@ -1705,6 +405,8 @@ public final class HomeStore {
     /// Bumped to ask the command bar to start or toggle live speech recognition.
     public internal(set) var assistantVoiceRequest: Int = 0
     public internal(set) var assistantState: AssistantState = .idle
+    /// A command or suggestion request waiting for the user to allow sending it to a cloud AI service (#20).
+    public internal(set) var pendingCloudConsent: PendingCloudConsent?
     public internal(set) var assistantSuggestions: [AssistantSuggestion] = []
     public internal(set) var isProactiveRecommending: Bool = false
     var assistantResetTask: Task<Void, Never>?
@@ -1714,15 +416,26 @@ public final class HomeStore {
     var assistantTransportOverride: ModelIntentResolver.Transport?
     /// Commands waiting on a spoken delay ("10 分钟后关灯"), soonest first. Persisted across launches.
     public internal(set) var scheduledCommands: [ScheduledCommand] = []
-    /// Persisted commands whose fireDate passed while the app was closed. Never auto-executed without user confirmation.
+    /// Timers that came due while the app was closed or the Mac slept. Never auto-executed without user confirmation.
     public internal(set) var missedScheduledCommands: [ScheduledCommand] = []
     public var onMissedScheduledCommand: ((ScheduledCommand) -> Void)?
     var notifiedMissedTimerIds: Set<UUID> = []
     var scheduledTasks: [UUID: Task<Void, Never>] = [:]
     /// The most recent assistant action, kept so "撤销" can restore it after the 5 s banner is gone.
-    var lastAssistantUndo: (reply: String, restore: [DeviceCommand], previous: [SmartDevice], at: Date)?
+    var lastAssistantUndo: (
+        reply: String,
+        restore: [DeviceCommand],
+        previous: [SmartDevice],
+        at: Date,
+        habitReceipt: UserHabitMemory.RecordingReceipt?
+    )?
+    public var lastAssistantActionAt: Date? { lastAssistantUndo?.at }
     /// How long a spoken "撤销" can still reach back.
     static let voiceUndoWindow: TimeInterval = 10 * 60
     /// Test seam for the delay before a scheduled command fires.
     var assistantSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    /// Test seam for "now" when a timer wakes up, so a Mac that slept through it can be simulated.
+    var assistantNow: @Sendable () -> Date = { Date() }
+    /// A timer that wakes up later than this (the Mac slept, the app was frozen) waits for the user (#22).
+    static let lateTimerGrace: TimeInterval = 60
 }

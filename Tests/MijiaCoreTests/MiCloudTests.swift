@@ -104,7 +104,7 @@ struct MiAccountLoginTests {
         #expect(scan.ssecurity == "c3NlYw==")
         #expect(scan.cUserId == "cu-1")
         #expect(scan.location.absoluteString == "https://sts.api.io.mi.com/sts?d=1")
-        #expect(MiSession(userId: scan.userId, cUserId: "", ssecurity: "", serviceToken: "", passToken: "").maskedUserId == "12****90")
+        #expect(MiSession(userId: scan.userId, cUserId: "", ssecurity: "", serviceToken: "").maskedUserId == "12****90")
     }
 
     @Test("Full scan flow: long-poll timeout retried, then serviceToken read from Set-Cookie")
@@ -129,7 +129,7 @@ struct MiAccountLoginTests {
             timeout: 30
         )
         let session = try await login.waitForScan(ticket)
-        #expect(session == MiSession(userId: "42", cUserId: "c", ssecurity: "c3M=", serviceToken: "tok123", passToken: "p", region: "cn"))
+        #expect(session == MiSession(userId: "42", cUserId: "c", ssecurity: "c3M=", serviceToken: "tok123", region: "cn"))
     }
 
     @Test(
@@ -236,7 +236,7 @@ struct MiotSynthesizerTests {
             values: MiotFixtures.lightValues
         )
         #expect(home.devices == [MiotFixtures.expectedLight])
-        #expect(home.rooms == [RoomArea(id: "shu_fang", name: "书房", sortOrder: 2)])
+        #expect(home.rooms == [RoomArea(id: "shu_fang", name: "书房", sortOrder: 0)])
         #expect(MiotSynthesizer.requiredProps(for: MiotFixtures.lightRecord, spec: MiotFixtures.specs["yeelink.light.ceiling22"]!) == [
             MiotFixtures.key("123", 2, 1), MiotFixtures.key("123", 2, 2),
             MiotFixtures.key("123", 2, 3), MiotFixtures.key("123", 2, 4),
@@ -300,6 +300,47 @@ struct MiotSynthesizerTests {
         )))
         #expect(MiotSynthesizer.requiredProps(for: record, spec: MiotFixtures.specs["cuco.plug.v3"]!) == [
             MiotFixtures.key("789", 2, 1), MiotFixtures.key("789", 11, 2), MiotFixtures.key("789", 7, 1),
+        ])
+    }
+
+    @Test("Split keys of a multi-key Mesh panel become separate plugs addressed at the parent did")
+    func splitPanelKeys() throws {
+        let onProp = MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:on:00000006:lemesh-sw2f12:1", format: "bool", access: ["read", "write", "notify"])
+        let spec = MiotDeviceSpec(type: "urn:miot-spec-v2:device:switch:0000A003:lemesh-sw2f12:1", services: [
+            MiotService(iid: 2, type: "urn:miot-spec-v2:service:switch:0000780C:lemesh-sw2f12:1", properties: [onProp]),
+            MiotService(iid: 3, type: "urn:miot-spec-v2:service:switch:0000780C:lemesh-sw2f12:1", properties: [onProp]),
+        ])
+        let model = "lemesh.switch.sw2f12"
+        let parent = MiDeviceRecord(did: "100", name: "二键开关", model: model, isOnline: true)
+        let key2 = MiDeviceRecord(did: "100.s2", name: "筒灯", model: model, isOnline: true, splitParentDid: "100", splitSiid: 2)
+        let key3 = MiDeviceRecord(did: "100.s3", name: "氛围灯", model: model, isOnline: true, splitParentDid: "100", splitSiid: 3)
+        let home = MiotSynthesizer.synthesize(
+            devices: [parent, key2, key3],
+            rooms: [MiRoom(id: "r1", name: "主卧", dids: ["100.s2", "100.s3"])],
+            specs: [model: spec],
+            values: [MiotFixtures.key("100", 2, 1): .bool(false), MiotFixtures.key("100", 3, 1): .bool(true)]
+        )
+        #expect(home.devices.map(\.id).sorted() == ["100.s2", "100.s3"])
+        let ambient = try #require(home.devices.first { $0.id == "100.s3" })
+        #expect(ambient.roomName == "主卧")
+        if case .plug(let p) = ambient.kind {
+            #expect(p.switchEntityId == "miot:100:3")
+            #expect(p.isOn)
+        } else {
+            Issue.record("expected plug")
+        }
+        #expect(MiotSynthesizer.requiredProps(for: key3, spec: spec) == [MiotFixtures.key("100", 3, 1)])
+    }
+
+    @Test("device_list_page split metadata is parsed from extra.split")
+    func parseSplitRecord() {
+        let result: JSONValue = .object(["list": .array([.object([
+            "did": .string("100.s3"), "name": .string("氛围灯"), "model": .string("lemesh.switch.sw2f12"),
+            "isOnline": .bool(true),
+            "extra": .object(["split": .object(["parentId": .string("100"), "moduleId": .number(3)])]),
+        ])])])
+        #expect(MiCloudClient.parseDeviceList(result) == [
+            MiDeviceRecord(did: "100.s3", name: "氛围灯", model: "lemesh.switch.sw2f12", isOnline: true, splitParentDid: "100", splitSiid: 3),
         ])
     }
 
@@ -426,7 +467,10 @@ actor StubMiCloudAPI: MiCloudAPI {
 
     func setValue(_ key: MiotPropKey, _ value: JSONValue) { values[key] = value }
 
+    private(set) var deviceListCalls = 0
+
     func deviceList() async throws -> [MiDeviceRecord] {
+        deviceListCalls += 1
         if let failure { throw failure }
         return devices
     }
@@ -481,7 +525,7 @@ private func consume(_ provider: some HomeProvider) -> (EventLog, Task<Void, Nev
     return (log, task)
 }
 
-private let fakeSession = MiSession(userId: "42", cUserId: "c", ssecurity: Vectors.ssecurity, serviceToken: "tok", passToken: "p")
+private let fakeSession = MiSession(userId: "42", cUserId: "c", ssecurity: Vectors.ssecurity, serviceToken: "tok")
 
 struct MiCloudProviderTests {
     @Test("Device list + props produce one snapshot with the synthesized light; execute writes and re-polls")
@@ -578,16 +622,6 @@ struct MiCloudProviderTests {
     @MainActor
     @Test("HomeStore persists homeBackend, formats serverHostSummary for both modes, and handles login/logout")
     func backendSwitchingAndSummary() {
-        let priorSession = MiSessionStore.load()
-        defer {
-            if let priorSession {
-                MiSessionStore.save(priorSession)
-            } else {
-                MiSessionStore.clear()
-            }
-        }
-        MiSessionStore.clear()
-
         let suite = "com.jryang1997.MenuBarMijia.backend-test.\(UUID().uuidString)"
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
 
@@ -607,8 +641,7 @@ struct MiCloudProviderTests {
             userId: "1234567890",
             cUserId: "cu",
             ssecurity: Vectors.ssecurity,
-            serviceToken: "tok",
-            passToken: "pt"
+            serviceToken: "tok"
         )
         store.completeMiLogin(session)
         #expect(store.homeBackend == .xiaomiCloud)
@@ -657,8 +690,58 @@ struct MiCloudClientTests {
     func rooms() throws {
         let json = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"homelist":[{"id":"h1","roomlist":[{"id":"r1","name":"客厅","dids":["1","2"]},{"id":2,"name":"卧室","dids":[]}]}]}"#.utf8))
         #expect(MiCloudClient.parseRooms(json) == [
-            MiRoom(id: "r1", name: "客厅", dids: ["1", "2"]),
-            MiRoom(id: "2", name: "卧室", dids: []),
+            MiRoom(id: "r1", name: "客厅", dids: ["1", "2"], homeId: "h1"),
+            MiRoom(id: "2", name: "卧室", dids: [], homeId: "h1"),
         ])
+    }
+
+    @Test("Each home becomes a HomeOption; room-less home devices land in an unnamed room")
+    func homes() throws {
+        let json = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"homelist":[{"id":"h1","name":"东澜府","dids":["1","9"],"roomlist":[{"id":"r1","name":"客厅","dids":["1","2"]}]},{"id":"h2","name":"果果家","roomlist":[{"id":"r2","name":"卧室","dids":["3"]}]}]}"#.utf8))
+        let rooms = MiCloudClient.parseRooms(json)
+        #expect(rooms.last(where: { $0.homeId == "h1" }) == MiRoom(id: "home_h1", name: "", dids: ["1", "9"], homeId: "h1", homeName: "东澜府"))
+        #expect(MiCloudProvider.homeOptions(from: rooms) == [
+            HomeOption(id: "h1", name: "东澜府", deviceCount: 3),
+            HomeOption(id: "h2", name: "果果家", deviceCount: 1),
+        ])
+    }
+
+    @Test("Split switch keys without power or child-lock hide detail drawer and use switch/light SF Symbols")
+    func switchKeyPresentation() {
+        let downlightKey = SmartDevice(
+            id: "1109223163.s2",
+            name: "筒灯",
+            roomId: "living_room",
+            roomName: "客厅",
+            model: "lemesh.switch.sw2f12",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:1109223163:2", isOn: true))
+        )
+        #expect(downlightKey.hasDetailDrawer == false)
+        #expect(downlightKey.sfSymbolName == "lightbulb.fill")
+
+        let wallSwitchKey = SmartDevice(
+            id: "1109223163.s3",
+            name: "玄关开关",
+            roomId: "living_room",
+            roomName: "客厅",
+            model: "lemesh.switch.sw2f12",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:1109223163:3", isOn: false))
+        )
+        #expect(wallSwitchKey.hasDetailDrawer == false)
+        #expect(wallSwitchKey.sfSymbolName == "lightswitch.off")
+
+        let smartPlug = SmartDevice(
+            id: "did_plug",
+            name: "桌面插座",
+            roomId: "study",
+            roomName: "书房",
+            model: "cuco.plug.v3",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:did_plug:2", isOn: true, powerWatts: 42.0))
+        )
+        #expect(smartPlug.hasDetailDrawer == true)
+        #expect(smartPlug.sfSymbolName == "powerplug.fill")
     }
 }

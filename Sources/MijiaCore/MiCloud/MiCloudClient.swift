@@ -9,25 +9,39 @@ public struct MiDeviceRecord: Equatable, Sendable {
     public var model: String
     public var isOnline: Bool
     public var specType: String?
+    /// Set on a split key of a multi-key panel (did like `<parent>.s2`): MIoT reads and writes
+    /// go to the parent did, limited to the switch service `splitSiid`.
+    public var splitParentDid: String?
+    public var splitSiid: Int?
 
-    public init(did: String, name: String, model: String, isOnline: Bool, specType: String? = nil) {
+    public init(did: String, name: String, model: String, isOnline: Bool, specType: String? = nil,
+                splitParentDid: String? = nil, splitSiid: Int? = nil) {
         self.did = did
         self.name = name
         self.model = model
         self.isOnline = isOnline
         self.specType = specType
+        self.splitParentDid = splitParentDid
+        self.splitSiid = splitSiid
     }
+
+    /// The did MIoT property and action calls address.
+    public var miotDid: String { splitParentDid ?? did }
 }
 
 public struct MiRoom: Equatable, Sendable {
     public var id: String
     public var name: String
     public var dids: [String]
+    public var homeId: String
+    public var homeName: String
 
-    public init(id: String, name: String, dids: [String]) {
+    public init(id: String, name: String, dids: [String], homeId: String = "", homeName: String = "") {
         self.id = id
         self.name = name
         self.dids = dids
+        self.homeId = homeId
+        self.homeName = homeName
     }
 }
 
@@ -82,6 +96,7 @@ public enum MiCloudError: LocalizedError, Equatable, Sendable {
         switch self {
         case .notLoggedIn: return L10n.tr("请在设置中扫码登录米家账号", "Scan QR code in Settings to sign in to Xiaomi Home")
         case .sessionExpired: return L10n.tr("米家登录已过期，请重新扫码", "Xiaomi Home session expired; please scan again")
+        case .http(429): return L10n.tr("米家云提示请求太频繁，已放慢刷新，稍后自动重试", "Xiaomi Cloud is rate limiting; refreshing less often and retrying later")
         case .http(let code): return L10n.tr("米家云服务 HTTP \(code)", "Xiaomi Cloud HTTP \(code)")
         case .api(let code, let message): return L10n.tr("米家云指令失败 (\(code))：\(message)", "Xiaomi Cloud command failed (\(code)): \(message)")
         case .badResponse(let what): return L10n.tr("米家云响应异常：\(what)", "Invalid Xiaomi Cloud response: \(what)")
@@ -194,7 +209,39 @@ public actor MiCloudClient: MiCloudAPI {
 
     // MARK: Endpoints
 
+    /// `v2/home/device_list_page` also returns the split keys of multi-key Mesh panels, which
+    /// `home/device_list` omits even with `get_split_device`; fall back to the latter on failure.
     public func deviceList() async throws -> [MiDeviceRecord] {
+        do {
+            return try await deviceListPaged()
+        } catch MiCloudError.sessionExpired {
+            throw MiCloudError.sessionExpired
+        } catch {
+            return try await legacyDeviceList()
+        }
+    }
+
+    private func deviceListPaged() async throws -> [MiDeviceRecord] {
+        var records: [MiDeviceRecord] = []
+        var startDid = ""
+        for _ in 0..<20 {
+            var data: [String: JSONValue] = [
+                "get_split_device": .bool(true),
+                "support_smart_home": .bool(true),
+                "limit": .number(200),
+            ]
+            if !startDid.isEmpty { data["start_did"] = .string(startDid) }
+            let result = try await request("v2/home/device_list_page", data: .object(data))
+            records += Self.parseDeviceList(result)
+            let next = result["next_start_did"]?.idString ?? ""
+            guard result["has_more"]?.boolValue == true, !next.isEmpty, next != startDid else { break }
+            startDid = next
+        }
+        var seen: Set<String> = []
+        return records.filter { seen.insert($0.did).inserted }
+    }
+
+    private func legacyDeviceList() async throws -> [MiDeviceRecord] {
         let result = try await request("home/device_list", data: .object([
             "getVirtualModel": .bool(true),
             "getHuamiDevices": .number(1),
@@ -207,12 +254,15 @@ public actor MiCloudClient: MiCloudAPI {
     static func parseDeviceList(_ result: JSONValue) -> [MiDeviceRecord] {
         (result["list"]?.arrayValue ?? []).compactMap { item in
             guard let did = item["did"]?.idString, let model = item["model"]?.stringValue else { return nil }
+            let split = item["extra"]?["split"]
             return MiDeviceRecord(
                 did: did,
                 name: item["name"]?.stringValue ?? model,
                 model: model,
                 isOnline: item["isOnline"]?.boolValue ?? true,
-                specType: item["spec_type"]?.stringValue
+                specType: item["spec_type"]?.stringValue,
+                splitParentDid: split?["parentId"]?.idString,
+                splitSiid: split?["moduleId"]?.intValue
             )
         }
     }
@@ -238,13 +288,22 @@ public actor MiCloudClient: MiCloudAPI {
     static func parseRooms(_ result: JSONValue) -> [MiRoom] {
         var rooms: [MiRoom] = []
         for home in result["homelist"]?.arrayValue ?? [] {
+            let homeId = home["id"]?.idString ?? ""
+            let homeName = home["name"]?.stringValue ?? ""
             for room in home["roomlist"]?.arrayValue ?? [] {
                 guard let id = room["id"]?.idString else { continue }
                 rooms.append(MiRoom(
                     id: id,
                     name: room["name"]?.stringValue ?? "",
-                    dids: (room["dids"]?.arrayValue ?? []).compactMap(\.idString)
+                    dids: (room["dids"]?.arrayValue ?? []).compactMap(\.idString),
+                    homeId: homeId,
+                    homeName: homeName
                 ))
+            }
+            // Devices assigned to the home but no room; the empty name lands them in 全屋.
+            let homeDids = (home["dids"]?.arrayValue ?? []).compactMap(\.idString)
+            if !homeDids.isEmpty {
+                rooms.append(MiRoom(id: "home_\(homeId)", name: "", dids: homeDids, homeId: homeId, homeName: homeName))
             }
         }
         return rooms

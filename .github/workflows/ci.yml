@@ -2,11 +2,23 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      snapshot_failure_probe:
+        description: "Intentionally mismatch one snapshot to verify failure artifacts"
+        type: boolean
+        default: false
 
+# 最小权限：所有 job 只读。需要写权限的发布流程放在单独的 release 工作流里。
 permissions:
-  contents: write
+  contents: read
+
+# 同一个 PR / 分支只保留最新一次运行，节省 Runner 时间。
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   linux-core:
@@ -14,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     container: swift:6.1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Secret & coding-standard checks
         run: bash scripts/check.sh --lint-only
       - name: Test MijiaCore on Linux
@@ -27,8 +39,8 @@ jobs:
       run:
         working-directory: windows
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -44,18 +56,20 @@ jobs:
       run:
         working-directory: windows
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: windows/package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: "windows/src-tauri -> target"
       - name: Install frontend & Tauri CLI dependencies
         run: npm ci
+      - name: Test native URL and credential policies
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - name: Build Windows Tauri installer (.exe & .msi)
         run: npx tauri build -- --locked
       - name: Collect Windows installers
@@ -68,20 +82,65 @@ jobs:
           cd ../dist-windows
           sha256sum "MenuBarMijia-${version}-windows-x64-setup.exe" > "MenuBarMijia-${version}-windows-x64-setup.exe.sha256"
           sha256sum "MenuBarMijia-${version}-windows-x64.msi" > "MenuBarMijia-${version}-windows-x64.msi.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: MenuBarMijia-Windows-x64
           path: dist-windows/*
 
   macos:
-    # Package.swift 要求 macOS 26 SDK（GitHub 托管 Runner 暂未提供 macos-26 镜像，仅手动或自托管触发）
-    if: github.event_name == 'workflow_dispatch'
+    # 编译 App 层（Release -O 配置，#2 这类崩溃只在 -O 下出现）并运行全部单测。
+    # Package.swift 需要 macOS 26 SDK；GitHub 托管的 macos-26 Runner 已于 2026-02-26 正式可用。
     runs-on: macos-26
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Toolchain info
+        run: xcodebuild -version && swift --version
       - name: Install ripgrep
-        run: brew install ripgrep
-      - name: Build app (release)
-        run: swift build -c release --product MenuBarMijiaApp
+        run: command -v rg >/dev/null || brew install ripgrep
+      - name: Build app (release and App Intents metadata)
+        run: bash scripts/build_app.sh
+      - name: Perturb baseline for the manual snapshot failure probe
+        if: github.event_name == 'workflow_dispatch' && inputs.snapshot_failure_probe
+        run: sips -z 1 1 Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests/deviceCardSnapshots.card-light-classic-zh-light.png
       - name: Lint & test
+        env:
+          # 快照不一致时把差异图写到固定目录，便于作为 artifact 下载（#46）。
+          SNAPSHOT_ARTIFACTS: "${{ github.workspace }}/snapshot-failed"
         run: bash scripts/check.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: snapshot-diff
+          path: |
+            snapshot-failed
+            .build/appintents-build.log
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+  snapshot-record:
+    # 仅手动触发（workflow_dispatch）：以 record 模式渲染 UI 快照基线（#46）。
+    # Record 模式下 SnapshotTesting 以非零码退出，属预期；把 PNG 从 artifact 下载后
+    # 拷到 Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests/ 提交即可。
+    if: github.event_name == 'workflow_dispatch' && !inputs.snapshot_failure_probe
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      SNAPSHOT_RECORD: "1"
+      SNAPSHOT_ARTIFACTS: "${{ github.workspace }}/snapshot-failed"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Record snapshot baselines
+        continue-on-error: true
+        run: swift test --filter SnapshotTests
+      - name: Collect baselines
+        if: always()
+        run: |
+          mkdir -p snapshot-baselines
+          find Tests/MenuBarMijiaAppTests/__Snapshots__ -name '*.png' -exec cp {} snapshot-baselines/ \; 2>/dev/null || true
+          ls snapshot-baselines | head -20
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: snapshot-baselines
+          path: snapshot-baselines

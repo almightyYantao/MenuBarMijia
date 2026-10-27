@@ -5,41 +5,71 @@ import MijiaCore
 @main
 @MainActor
 struct MenuBarMijiaApp: App {
-    @State private var store = HomeStore.shared
-    @State private var speech = SpeechInputController.shared
+    /// Receives `menumijia://` links while the app is running and on cold launch (#57).
+    @NSApplicationDelegateAdaptor(MenuBarMijiaAppDelegate.self) private var appDelegate
 
     init() {
         let sharedStore = HomeStore.shared
+        // The menu-bar item, its label, tooltip, long press and panel all live in the AppKit
+        // controller now (#56), so there is no `MenuBarExtra` scene left to host.
         HotkeyAndNotificationManager.shared.start(with: sharedStore)
+        SystemActivityMonitor.shared.start(with: sharedStore)
+        AutomationEngine.shared.start(with: sharedStore)
     }
 
     var body: some Scene {
-        let _ = store.effectiveLanguage
-        MenuBarExtra {
-            ControlCenterPanel(store: store)
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: speech.isListening ? "waveform" : store.menuBarSymbolName)
-                if speech.isListening {
-                    Text(menuBarSpeechText)
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                } else if let text = store.menuBarText {
-                    Text(text)
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .monospacedDigit()
-                }
-            }
-            .help(L10n.tr("单击打开面板；按住直接说话控制设备", "Click to open panel; hold to speak a command"))
+        // ⌘, and the app menu's Settings… item still come from the SwiftUI `Settings` scene; the
+        // window survives switching to the browser to copy a token (#42).
+        Settings {
+            SettingsWindowView(store: HomeStore.shared)
         }
-        .menuBarExtraStyle(.window)
     }
+}
 
-    private var menuBarSpeechText: String {
-        let trimmed = speech.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return L10n.tr("聆听中…", "Listening…") }
-        if trimmed.count > 10 {
-            return String(trimmed.suffix(10))
+// MARK: - External URL Scheme (#57)
+
+/// `application(_:open:)` is the reliable entry point for custom schemes on a menu-bar app: no panel
+/// exists when a link launches the app, so `.onOpenURL` alone would miss cold-start links.
+/// `ObservableObject` is required by `NSApplicationDelegateAdaptor`; the type publishes nothing.
+@MainActor
+final class MenuBarMijiaAppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+    func application(_ application: NSApplication, open urls: [URL]) {
+        URLCommandHandler.shared.enqueue(urls)
+    }
+}
+
+// MARK: - Menu Bar Tooltip (#54)
+
+/// One-line status shown when hovering the menu-bar icon: "MenuBarMijia · 3 on · Study 26.5° ·
+/// Xiaomi Cloud connected". Disconnected shows the reason instead of the backend name.
+@MainActor
+enum MenuBarStatusSummary {
+    static func text(for store: HomeStore) -> String {
+        let _ = store.effectiveLanguage
+        var parts: [String] = ["MenuBarMijia"]
+        parts.append(L10n.tr("\(store.activeDeviceCount) 台开启", "\(store.activeDeviceCount) on"))
+
+        if let reading = store.environmentReadings.first(where: { $0.temperature != nil }),
+           let temperature = reading.temperature {
+            parts.append("\(L10n.displayRoomName(reading.label)) \(L10n.temperature(temperature, fractionDigits: 1))")
         }
-        return trimmed
+
+        switch store.connectionStatus {
+        case .connected:
+            switch store.homeBackend {
+            case .xiaomiCloud:
+                parts.append(L10n.tr("已连接米家云", "Xiaomi Cloud connected"))
+            case .homeAssistant:
+                parts.append(L10n.tr("已连接 Home Assistant", "Home Assistant connected"))
+            case .demo:
+                parts.append(L10n.tr("演示模式", "Demo mode"))
+            }
+        case .connecting:
+            parts.append(L10n.tr("正在连接…", "Connecting…"))
+        case .disconnected(let reason):
+            parts.append(L10n.tr("未连接：\(reason)", "Disconnected: \(reason)"))
+        }
+
+        return parts.joined(separator: " · ")
     }
 }

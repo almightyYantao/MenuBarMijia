@@ -46,6 +46,39 @@ export function maskedMiUserId(userId: string): string {
   return `${userId.slice(0, 2)}****${userId.slice(-2)}`;
 }
 
+export interface MiCloudRegionOption {
+  /** Xiaomi cloud region code, used as the API subdomain (`<code>.api.io.mi.com`). */
+  readonly code: string;
+  /** Label shown in the region dropdown. */
+  readonly label: string;
+}
+
+/**
+ * Xiaomi cloud regions offered by both apps (#37). Order and membership are shared with
+ * macOS: Tests/Fixtures/region_golden.json is the single source of truth and both ends'
+ * tests assert against it (macOS `MiCloudRegion.allCases`, Windows `MI_CLOUD_REGIONS`).
+ */
+export const MI_CLOUD_REGIONS: ReadonlyArray<MiCloudRegionOption> = [
+  { code: "cn", label: "中国大陆 (cn)" },
+  { code: "de", label: "欧洲 (de)" },
+  { code: "i2", label: "印度 (i2)" },
+  { code: "ru", label: "俄罗斯 (ru)" },
+  { code: "sg", label: "新加坡 / 国际 (sg)" },
+  { code: "us", label: "美区 (us)" },
+];
+
+/** Falls back to China Mainland for unknown/missing values coming from older settings. */
+export function normalizeMiCloudRegion(raw: unknown): string {
+  if (typeof raw !== "string") return "cn";
+  const code = raw.trim().toLowerCase();
+  return MI_CLOUD_REGIONS.some((region) => region.code === code) ? code : "cn";
+}
+
+export function miCloudRegionLabel(code: string): string {
+  const normalized = normalizeMiCloudRegion(code);
+  return MI_CLOUD_REGIONS.find((region) => region.code === normalized)?.label ?? normalized;
+}
+
 export function miApiBaseURL(region = "cn"): string {
   const r = region.trim().toLowerCase();
   return r === "" || r === "cn" ? "https://api.io.mi.com/app" : `https://${r}.api.io.mi.com/app`;
@@ -237,12 +270,28 @@ export interface MiDeviceRecord {
   readonly model: string;
   readonly isOnline: boolean;
   readonly specType: string | null;
+  /** Split key of a multi-key panel (did like `<parent>.s2`): MIoT calls go to the parent did, switch service `splitSiid`. */
+  readonly splitParentDid?: string | null;
+  readonly splitSiid?: number | null;
+}
+
+/** The did MIoT property and action calls address. */
+export function miotDid(record: MiDeviceRecord): string {
+  return record.splitParentDid ?? record.did;
+}
+
+/** Narrows a panel spec to the switch service a split key controls. */
+function specForRecord(record: MiDeviceRecord, spec: MiotDeviceSpec): MiotDeviceSpec {
+  if (!record.splitParentDid || record.splitSiid == null) return spec;
+  return { ...spec, services: spec.services.filter((s) => s.iid === record.splitSiid) };
 }
 
 export interface MiRoom {
   readonly id: string;
   readonly name: string;
   readonly dids: readonly string[];
+  readonly homeId?: string;
+  readonly homeName?: string;
 }
 
 export interface MiotPropKey {
@@ -372,12 +421,17 @@ export class MiCloudClient {
       const did = asIdString(rec["did"]);
       const model = typeof rec["model"] === "string" ? rec["model"] : null;
       if (!did || !model) continue;
+      const extra = rec["extra"] && typeof rec["extra"] === "object" ? (rec["extra"] as Record<string, unknown>) : {};
+      const split = extra["split"] && typeof extra["split"] === "object" ? (extra["split"] as Record<string, unknown>) : null;
+      const splitParentDid = split ? asIdString(split["parentId"]) : null;
+      const splitSiid = split && typeof split["moduleId"] === "number" ? Math.trunc(split["moduleId"]) : null;
       out.push({
         did,
         name: typeof rec["name"] === "string" ? rec["name"] : model,
         model,
         isOnline: typeof rec["isOnline"] === "boolean" ? rec["isOnline"] : true,
         specType: typeof rec["spec_type"] === "string" ? rec["spec_type"] : null,
+        ...(splitParentDid && splitSiid !== null ? { splitParentDid, splitSiid } : {}),
       });
     }
     return out;
@@ -390,26 +444,68 @@ export class MiCloudClient {
     const rooms: MiRoom[] = [];
     for (const home of homelist) {
       if (!home || typeof home !== "object") continue;
-      const roomlist = (home as Record<string, unknown>)["roomlist"];
-      if (!Array.isArray(roomlist)) continue;
-      for (const rm of roomlist) {
-        if (!rm || typeof rm !== "object") continue;
-        const r = rm as Record<string, unknown>;
-        const id = asIdString(r["id"]);
-        if (!id) continue;
-        const rawDids = Array.isArray(r["dids"]) ? r["dids"] : [];
-        const dids = rawDids.map(asIdString).filter((d): d is string => d !== null);
-        rooms.push({
-          id,
-          name: typeof r["name"] === "string" ? r["name"] : "",
-          dids,
-        });
+      const h = home as Record<string, unknown>;
+      const homeId = asIdString(h["id"]) ?? "";
+      const homeName = typeof h["name"] === "string" ? h["name"] : "";
+      const roomlist = h["roomlist"];
+      if (Array.isArray(roomlist)) {
+        for (const rm of roomlist) {
+          if (!rm || typeof rm !== "object") continue;
+          const r = rm as Record<string, unknown>;
+          const id = asIdString(r["id"]);
+          if (!id) continue;
+          const rawDids = Array.isArray(r["dids"]) ? r["dids"] : [];
+          const dids = rawDids.map(asIdString).filter((d): d is string => d !== null);
+          rooms.push({
+            id,
+            name: typeof r["name"] === "string" ? r["name"] : "",
+            dids,
+            homeId,
+            homeName,
+          });
+        }
+      }
+      const homeDids = Array.isArray(h["dids"])
+        ? h["dids"].map(asIdString).filter((d): d is string => d !== null)
+        : [];
+      if (homeId && homeDids.length > 0) {
+        rooms.push({ id: `home_${homeId}`, name: "", dids: homeDids, homeId, homeName });
       }
     }
     return rooms;
   }
 
+  /**
+   * `v2/home/device_list_page` also returns the split keys of multi-key Mesh panels, which
+   * `home/device_list` omits even with `get_split_device`; fall back to the latter on failure.
+   */
   async deviceList(): Promise<MiDeviceRecord[]> {
+    try {
+      return await this.deviceListPaged();
+    } catch (err) {
+      if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
+      return this.legacyDeviceList();
+    }
+  }
+
+  private async deviceListPaged(): Promise<MiDeviceRecord[]> {
+    const records: MiDeviceRecord[] = [];
+    let startDid = "";
+    for (let page = 0; page < 20; page++) {
+      const data: Record<string, unknown> = { get_split_device: true, support_smart_home: true, limit: 200 };
+      if (startDid) data["start_did"] = startDid;
+      const res = await this.request("v2/home/device_list_page", data);
+      records.push(...MiCloudClient.parseDeviceList(res));
+      const obj = res && typeof res === "object" ? (res as Record<string, unknown>) : {};
+      const next = asIdString(obj["next_start_did"]) ?? "";
+      if (obj["has_more"] !== true || !next || next === startDid) break;
+      startDid = next;
+    }
+    const seen = new Set<string>();
+    return records.filter((r) => !seen.has(r.did) && (seen.add(r.did), true));
+  }
+
+  private async legacyDeviceList(): Promise<MiDeviceRecord[]> {
     const res = await this.request("home/device_list", {
       getVirtualModel: true,
       getHuamiDevices: 1,
@@ -1021,17 +1117,24 @@ export const MiotSynthesizer = {
       }
     }
 
+    // A panel whose keys are listed as split devices is shown through those keys only.
+    const splitParents = new Set(devices.map((d) => d.splitParentDid).filter((d): d is string => !!d));
+
     const smartDevices: SmartDevice[] = [];
     const readings: EnvironmentReading[] = [];
 
     for (const record of devices) {
+      if (splitParents.has(record.did)) continue;
       const spec = specs[record.model] ?? inferFallbackSpec(record);
-      const built =
-        this.buildDeviceKind(record.did, spec, values) ??
-        this.buildDeviceKind(record.did, inferFallbackSpec(record), values);
+      const built = record.splitParentDid
+        ? this.buildDeviceKind(miotDid(record), specForRecord(record, spec), values)
+        : this.buildDeviceKind(record.did, spec, values) ??
+          this.buildDeviceKind(record.did, inferFallbackSpec(record), values);
       if (!built) continue;
 
-      const room = roomByDid.get(record.did);
+      const room =
+        roomByDid.get(record.did) ??
+        (record.splitParentDid ? roomByDid.get(record.splitParentDid) : undefined);
       const roomName = room?.name.trim() || "全屋";
       const roomId = room ? `room_${room.id}` : "other";
 
@@ -1100,7 +1203,7 @@ export const MiotSynthesizer = {
         return Reflect.get(target, prop);
       },
     });
-    this.buildDeviceKind(device.did, spec, proxyValues);
+    this.buildDeviceKind(miotDid(device), specForRecord(device, spec), proxyValues);
     return touched;
   },
 
@@ -1190,6 +1293,7 @@ export const MiotSynthesizer = {
           ? Math.max(0, Math.min(100, Math.round(maxBri > 0 && maxBri !== 100 ? (briNum / maxBri) * 100 : briNum)))
           : null;
 
+      const isLightGroup = did.startsWith("group.");
       return {
         kind: "light",
         entityId: makeMiotAddress(did, primaryService.iid),
@@ -1198,8 +1302,8 @@ export const MiotSynthesizer = {
         colorTempKelvin: typeof ct?.val === "number" ? Math.round(ct.val) : null,
         minKelvin: Math.round(ct?.prop.valueRange?.[0] ?? 2700),
         maxKelvin: Math.round(ct?.prop.valueRange?.[1] ?? 6500),
-        currentEffect,
-        availableEffects: mode?.prop.valueList?.map((i) => i.description) ?? [],
+        currentEffect: isLightGroup ? null : currentEffect,
+        availableEffects: isLightGroup ? [] : (mode?.prop.valueList?.map((i) => i.description) ?? []),
       };
     }
 

@@ -393,8 +393,10 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
     /// Whether this device has an expandable secondary control drawer
     public var hasDetailDrawer: Bool {
         switch kind {
-        case .light, .climate, .fan, .plug, .fridge, .vacuum, .speaker, .tv:
+        case .light, .climate, .fan, .fridge, .vacuum, .speaker, .tv:
             return true
+        case .plug(let s):
+            return s.powerWatts != nil || s.energyKwh != nil || s.childLockEntityId != nil
         case .sensor:
             return false
         }
@@ -417,6 +419,12 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
         case .plug(let s):
             if name.contains("咖啡") {
                 return s.isOn ? "cup.and.heat.waves.fill" : "cup.and.saucer.fill"
+            }
+            if name.contains("灯") {
+                return s.isOn ? "lightbulb.fill" : "lightbulb"
+            }
+            if model.contains(".switch.") {
+                return s.isOn ? "lightswitch.on.fill" : "lightswitch.off"
             }
             return s.isOn ? "powerplug.fill" : "powerplug"
         case .fridge:
@@ -459,11 +467,12 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
         case .climate(let s):
             if !s.isOn || s.hvacMode == "off" { return L10n.tr("已关闭", "Off") }
             let modeLabel = Self.localizeHVACMode(s.hvacMode)
-            let tempStr = String(format: "%.0f°C", s.targetTemperature)
+            // Stored and stepped in Celsius; only the digits shown follow the display unit (#52).
+            let tempStr = L10n.temperature(s.targetTemperature)
             if let cur = s.currentTemperature {
                 return L10n.tr(
-                    "\(modeLabel) \(tempStr) · 室温 \(String(format: "%.0f°", cur))",
-                    "\(modeLabel) \(tempStr) · Room \(String(format: "%.0f°", cur))"
+                    "\(modeLabel) \(tempStr) · 室温 \(L10n.temperature(cur))",
+                    "\(modeLabel) \(tempStr) · Room \(L10n.temperature(cur))"
                 )
             }
             return "\(modeLabel) · \(tempStr)"
@@ -491,9 +500,9 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
             return L10n.tr("已开启", "On")
 
         case .fridge(let s):
-            let cStr = s.fridgeCurrentTemp.map { String(format: L10n.tr("冷藏 %.0f°", "Fridge %.0f°"), $0) }
+            let cStr = s.fridgeCurrentTemp.map { L10n.format("冷藏 %@", "Fridge %@", L10n.temperature($0)) }
                 ?? L10n.tr("冷藏 --", "Fridge --")
-            let fStr = s.freezerCurrentTemp.map { String(format: L10n.tr("冷冻 %.0f°", "Freezer %.0f°"), $0) }
+            let fStr = s.freezerCurrentTemp.map { L10n.format("冷冻 %@", "Freezer %@", L10n.temperature($0)) }
                 ?? L10n.tr("冷冻 --", "Freezer --")
             return "\(cStr) · \(fStr)"
 
@@ -536,7 +545,7 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
 
         case .sensor(let s):
             if let t = s.temperature, let h = s.humidity {
-                return String(format: "%.1f°C · %.0f%%", t, h)
+                return "\(L10n.temperature(t, fractionDigits: 1)) · \(String(format: "%.0f%%", h))"
             }
             if let text = s.statusText {
                 if let bat = s.battery {
@@ -552,6 +561,16 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
         switch effect {
         case "Day": return L10n.tr("日光", "Daylight")
         case "Night": return L10n.tr("月光", "Moonlight")
+        case "None": return L10n.tr("无", "None")
+        case "Warmth": return L10n.tr("温馨", "Warmth")
+        case "Tv", "TV": return L10n.tr("观影", "TV")
+        case "Reading": return L10n.tr("阅读", "Reading")
+        case "Computer": return L10n.tr("电脑", "Computer")
+        case "Hospitality": return L10n.tr("会客", "Hospitality")
+        case "Entertainment": return L10n.tr("娱乐", "Entertainment")
+        case "Wakeup": return L10n.tr("起床", "Wake Up")
+        case "Dusk": return L10n.tr("黄昏", "Dusk")
+        case "Sleep": return L10n.tr("睡眠", "Sleep")
         default: return effect
         }
     }

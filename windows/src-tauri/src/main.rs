@@ -2,12 +2,13 @@
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{LazyLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent,
 };
@@ -16,11 +17,206 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 static LAST_FOCUS_LOSS_MS: AtomicU64 = AtomicU64::new(0);
 static PIN_POPOVER: AtomicBool = AtomicBool::new(false);
 
+/// Hosts the frontend configured (AI endpoint, Home Assistant, LG TV). Xiaomi's own
+/// API hosts are compiled in below; everything else must be added through
+/// `set_allowed_hosts` before `native_http` will talk to it (#29).
+static EXTRA_ALLOWED_HOSTS: LazyLock<RwLock<HashSet<String>>> =
+    LazyLock::new(|| RwLock::new(HashSet::new()));
+
+const BUILT_IN_HOST_SUFFIXES: &[&str] = &[
+    "account.xiaomi.com",
+    "api.io.mi.com",
+    "miot-spec.org",
+    // Public release metadata for the update check (#39); no credentials are sent.
+    "api.github.com",
+];
+
+/// Windows release page opened from the tray/update row (#39).
+const RELEASE_PAGE_URL: &str = "https://github.com/jryang1997/MenuBarMijia/releases/latest";
+
+fn normalize_host(raw: &str) -> String {
+    raw.trim()
+        .trim_end_matches('.')
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase()
+}
+
+fn normalize_extra_host(raw: &str) -> Option<String> {
+    let host = normalize_host(raw);
+    if host.is_empty() || host.len() > 253 {
+        return None;
+    }
+    if host.contains('/')
+        || host.contains('@')
+        || host.contains('?')
+        || host.contains('#')
+        || host.contains(' ')
+    {
+        return None;
+    }
+    if host
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_'))
+    {
+        Some(host)
+    } else {
+        None
+    }
+}
+
+fn host_allowed(host: &str, extra: &HashSet<String>) -> bool {
+    let host = normalize_host(host);
+    if host.is_empty() {
+        return false;
+    }
+    if extra.contains(&host) {
+        return true;
+    }
+    BUILT_IN_HOST_SUFFIXES
+        .iter()
+        .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")))
+}
+
+fn check_url_allowed(url: &reqwest::Url, extra: &HashSet<String>) -> Result<(), String> {
+    match url.scheme() {
+        "http" | "https" => {}
+        scheme => return Err(format!("native_http 只允许 http/https 地址：{scheme}")),
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "native_http 地址缺少主机名".to_string())?;
+    if host_allowed(host, extra) {
+        Ok(())
+    } else {
+        Err(format!("native_http 拒绝访问未授权主机：{host}"))
+    }
+}
+
+fn allowed_hosts_snapshot() -> Result<HashSet<String>, String> {
+    EXTRA_ALLOWED_HOSTS
+        .read()
+        .map(|hosts| hosts.clone())
+        .map_err(|_| "host allowlist unavailable".to_string())
+}
+
+const CREDENTIAL_SERVICE: &str = "com.jryang.menubarmijia";
+const CREDENTIAL_NAMES: &[&str] = &["mi_session", "ha_token", "assistant_api_key"];
+
+/// Fixed credential names only: this must not become a generic key/value store (#28).
+fn allowed_credential_name(name: &str) -> Result<&str, String> {
+    if CREDENTIAL_NAMES.contains(&name) {
+        return Ok(name);
+    }
+    if let Some(suffix) = name.strip_prefix("assistant_api_key_") {
+        if !suffix.is_empty()
+            && suffix.len() <= 48
+            && suffix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Ok(name);
+        }
+    }
+    Err(format!("不允许的凭据名称：{name}"))
+}
+
+fn credential_entry(name: &str) -> Result<keyring::Entry, String> {
+    let name = allowed_credential_name(name)?;
+    keyring::Entry::new(CREDENTIAL_SERVICE, name)
+        .map_err(|error| format!("无法打开 Windows 凭据管理器：{error}"))
+}
+
 fn now_epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Rebuilds the tray menu, adding the "有新版本" entry only when a release is known (#39).
+fn build_tray_menu(app: &AppHandle, update_version: Option<&str>) -> tauri::Result<Menu<tauri::Wry>> {
+    let mut builder = MenuBuilder::new(app).text("toggle", "打开/隐藏控制中心 (Alt+M)");
+    if let Some(version) = update_version {
+        builder = builder.text("update", format!("有新版本 v{version}，点击查看"));
+    }
+    builder.text("quit", "退出 MenuBarMijia").build()
+}
+
+/// The only external URL the frontend may open: a MenuBarMijia release page on GitHub.
+fn validated_release_url(raw: &str) -> Result<String, String> {
+    let url = reqwest::Url::parse(raw).map_err(|_| "更新页面地址无效".to_string())?;
+    if url.scheme() != "https" {
+        return Err("更新页面只允许 https 地址".to_string());
+    }
+    let host = url
+        .host_str()
+        .map(normalize_host)
+        .unwrap_or_default();
+    if host != "github.com" {
+        return Err(format!("拒绝打开非 GitHub 地址：{host}"));
+    }
+    if !url.path().starts_with("/jryang1997/MenuBarMijia/releases") {
+        return Err("拒绝打开非 MenuBarMijia 发布页".to_string());
+    }
+    Ok(url.to_string())
+}
+
+#[cfg(windows)]
+#[link(name = "shell32")]
+extern "system" {
+    fn ShellExecuteW(
+        hwnd: *mut core::ffi::c_void,
+        operation: *const u16,
+        file: *const u16,
+        parameters: *const u16,
+        directory: *const u16,
+        show_cmd: i32,
+    ) -> isize;
+}
+
+#[cfg(windows)]
+fn open_url_in_browser(url: &str) {
+    use std::os::windows::ffi::OsStrExt;
+
+    let wide = |value: &str| -> Vec<u16> {
+        std::ffi::OsStr::new(value)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    };
+    let operation = wide("open");
+    let file = wide(url);
+    // ShellExecuteW returns a value > 32 on success; a failure has no useful recovery here.
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn open_url_in_browser(_url: &str) {}
+
+#[tauri::command]
+fn open_release_page(url: String) -> Result<(), String> {
+    let target = validated_release_url(&url)?;
+    open_url_in_browser(&target);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_update_available(app: AppHandle, version: Option<String>) -> Result<(), String> {
+    let tray = app
+        .tray_by_id("main-tray")
+        .ok_or_else(|| "托盘尚未就绪".to_string())?;
+    let menu = build_tray_menu(&app, version.as_deref()).map_err(|error| error.to_string())?;
+    tray.set_menu(Some(menu)).map_err(|error| error.to_string())
 }
 
 #[derive(Serialize)]
@@ -39,8 +235,37 @@ async fn native_http(
     follow_redirects: Option<bool>,
     timeout_ms: Option<u64>,
 ) -> Result<NativeHttpResponse, String> {
-    let policy = if follow_redirects.unwrap_or(true) {
-        reqwest::redirect::Policy::limited(5)
+    // Every request, including frontend-provided URLs, must hit an allowed host (#29).
+    let allowed_hosts = allowed_hosts_snapshot()?;
+    let parsed_url = reqwest::Url::parse(&url).map_err(|e| format!("native_http 地址无效：{e}"))?;
+    check_url_allowed(&parsed_url, &allowed_hosts)?;
+
+    let follow = follow_redirects.unwrap_or(true);
+    let policy = if follow {
+        let redirect_hosts = allowed_hosts.clone();
+        let original_host = parsed_url
+            .host_str()
+            .map(normalize_host)
+            .unwrap_or_default();
+        reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 5 {
+                return attempt.stop();
+            }
+            let next_host = attempt
+                .url()
+                .host_str()
+                .map(normalize_host)
+                .unwrap_or_default();
+            // No cross-host redirects: a redirect must not turn an allowlisted URL
+            // into a request to a different server (and must still be allowlisted).
+            if next_host == original_host
+                && check_url_allowed(attempt.url(), &redirect_hosts).is_ok()
+            {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        })
     } else {
         reqwest::redirect::Policy::none()
     };
@@ -53,15 +278,25 @@ async fn native_http(
 
     let verb = method.unwrap_or_else(|| "GET".to_string()).to_uppercase();
     let mut req = match verb.as_str() {
+        "GET" => client.get(&url),
         "POST" => client.post(&url),
         "PUT" => client.put(&url),
+        "PATCH" => client.patch(&url),
         "DELETE" => client.delete(&url),
-        _ => client.get(&url),
+        other => return Err(format!("native_http 不支持的方法：{other}")),
     };
 
     if let Some(hdrs) = headers {
         let mut map = HeaderMap::new();
         for (k, v) in hdrs {
+            // Request framing is owned by reqwest; letting the frontend set these
+            // could smuggle a second request past the URL allowlist.
+            if matches!(
+                k.to_ascii_lowercase().as_str(),
+                "host" | "content-length" | "transfer-encoding" | "connection" | "upgrade"
+            ) {
+                continue;
+            }
             if let (Ok(name), Ok(val)) = (HeaderName::from_str(&k), HeaderValue::from_str(&v)) {
                 map.insert(name, val);
             }
@@ -75,6 +310,11 @@ async fn native_http(
 
     let resp = req.send().await.map_err(|e| e.to_string())?;
     let status = resp.status().as_u16();
+    // A stopped redirect comes back as a 3xx here; surfacing it as an error is
+    // clearer than handing the frontend a response from a host it may not use.
+    if follow && resp.status().is_redirection() && status != 304 {
+        return Err("native_http 拒绝跨主机或未授权重定向".to_string());
+    }
 
     let mut out_headers: HashMap<String, String> = HashMap::new();
     for (name, val) in resp.headers().iter() {
@@ -98,6 +338,54 @@ async fn native_http(
     })
 }
 
+/// Replaces the user-configured host allowlist. Called with the AI endpoint and HA
+/// address from the frontend whenever settings change (#29).
+#[tauri::command]
+fn set_allowed_hosts(hosts: Vec<String>) -> Result<(), String> {
+    if hosts.len() > 64 {
+        return Err("host allowlist too long".to_string());
+    }
+    let normalized: HashSet<String> = hosts
+        .iter()
+        .filter_map(|host| normalize_extra_host(host))
+        .collect();
+    let mut guard = EXTRA_ALLOWED_HOSTS
+        .write()
+        .map_err(|_| "host allowlist unavailable".to_string())?;
+    *guard = normalized;
+    Ok(())
+}
+
+#[tauri::command]
+fn secure_store_get(name: String) -> Result<Option<String>, String> {
+    let entry = credential_entry(&name)?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("读取 Windows 凭据失败：{error}")),
+    }
+}
+
+#[tauri::command]
+fn secure_store_set(name: String, value: String) -> Result<(), String> {
+    if value.is_empty() {
+        return secure_store_delete(name);
+    }
+    let entry = credential_entry(&name)?;
+    entry
+        .set_password(&value)
+        .map_err(|error| format!("写入 Windows 凭据失败：{error}"))
+}
+
+#[tauri::command]
+fn secure_store_delete(name: String) -> Result<(), String> {
+    let entry = credential_entry(&name)?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("删除 Windows 凭据失败：{error}")),
+    }
+}
+
 #[tauri::command]
 fn hide_panel(app: AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -113,6 +401,27 @@ fn quit_app(app: AppHandle) {
 #[tauri::command]
 fn set_pin_popover(pin: bool) {
     PIN_POPOVER.store(pin, Ordering::SeqCst);
+}
+
+/// Resizes the popover to the chosen panel height (0 = fill the screen above the taskbar),
+/// keeping its bottom edge where it was so it stays anchored to the tray.
+#[tauri::command]
+fn set_panel_height(app: AppHandle, height: f64) {
+    let Some(window) = app.get_webview_window("main") else { return };
+    let monitor = window.current_monitor().ok().flatten().or_else(|| window.primary_monitor().ok().flatten());
+    let scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
+    let screen_h = monitor.as_ref().map(|m| m.size().height as f64 / scale).unwrap_or(900.0);
+    let max_h = (screen_h - 54.0 - 24.0).max(480.0);
+    let target = if height <= 0.0 { max_h } else { height.min(max_h) };
+
+    let old_pos = window.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
+    let old_size = window.outer_size().unwrap_or(PhysicalSize::new(360, 520));
+    let width = old_size.width as f64 / scale;
+    let _ = window.set_size(tauri::LogicalSize::new(width, target));
+    let new_h = (target * scale) as i32;
+    let top = monitor.as_ref().map(|m| m.position().y).unwrap_or(0) + (12.0 * scale) as i32;
+    let y = (old_pos.y + old_size.height as i32 - new_h).max(top);
+    let _ = window.set_position(PhysicalPosition::new(old_pos.x, y));
 }
 
 fn position_popover(window: &WebviewWindow, anchor: Option<PhysicalPosition<f64>>) {
@@ -191,9 +500,16 @@ fn main() {
         )
         .invoke_handler(tauri::generate_handler![
             native_http,
+            set_allowed_hosts,
+            secure_store_get,
+            secure_store_set,
+            secure_store_delete,
             hide_panel,
             quit_app,
-            set_pin_popover
+            set_panel_height,
+            set_pin_popover,
+            set_update_available,
+            open_release_page
         ])
         .setup(move |app| {
             let _ = app.global_shortcut().register(alt_m);
@@ -211,10 +527,7 @@ fn main() {
                 });
             }
 
-            let toggle_item =
-                MenuItem::with_id(app, "toggle", "打开/隐藏控制中心 (Alt+M)", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "退出 MenuBarMijia", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&toggle_item, &quit_item])?;
+            let menu = build_tray_menu(app.handle(), None)?;
 
             let mut tray_builder = TrayIconBuilder::with_id("main-tray")
                 .tooltip("MenuBarMijia · 菜单栏米家 (Alt+M)")
@@ -222,6 +535,11 @@ fn main() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "toggle" => toggle_main_window(app, None, false),
+                    "update" => {
+                        if let Ok(url) = validated_release_url(RELEASE_PAGE_URL) {
+                            open_url_in_browser(&url);
+                        }
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -246,4 +564,137 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running MenuBarMijia Windows application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn extra(hosts: &[&str]) -> HashSet<String> {
+        hosts
+            .iter()
+            .filter_map(|host| normalize_extra_host(host))
+            .collect()
+    }
+
+    fn allows(url: &str, hosts: &[&str]) -> bool {
+        let parsed = reqwest::Url::parse(url).expect("test URL");
+        check_url_allowed(&parsed, &extra(hosts)).is_ok()
+    }
+
+    #[test]
+    fn native_http_invoke_rejects_an_unconfigured_host() {
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![native_http])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("isolated IPC application");
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("isolated IPC window");
+        let response = tauri::test::get_ipc_response(
+            &window,
+            tauri::webview::InvokeRequest {
+                cmd: "native_http".into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "http://tauri.localhost".parse().expect("local app origin"),
+                body: tauri::ipc::InvokeBody::Json(serde_json::json!({
+                    "url": "https://not-configured.invalid/private",
+                    "method": "POST",
+                    "headers": {"Authorization": "Bearer isolated-test-value"},
+                    "body": "private-data",
+                    "timeoutMs": 100
+                })),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        );
+        let error = response.expect_err("unconfigured hosts must fail before networking");
+        let message = error.as_str().expect("policy error returned to the frontend");
+        assert!(message.contains("not-configured.invalid"), "unexpected IPC error: {message}");
+        assert!(message.contains("拒绝访问未授权主机"), "request reached transport: {message}");
+    }
+
+    #[test]
+    fn allows_only_xiaomi_api_and_configured_hosts() {
+        assert!(allows("https://api.io.mi.com/app/home/device_list", &[]));
+        assert!(allows("https://de.api.io.mi.com/app/home/device_list", &[]));
+        assert!(allows(
+            "https://account.xiaomi.com/longPolling/loginUrl",
+            &[]
+        ));
+        assert!(allows("https://lp.account.xiaomi.com/lp/s?d=x", &[]));
+        assert!(allows("https://miot-spec.org/miot-spec-v2/instance", &[]));
+        assert!(allows(
+            "https://api.deepseek.com/v1/chat/completions",
+            &["api.deepseek.com"]
+        ));
+        assert!(allows("http://192.168.1.8:8123/api/", &["192.168.1.8"]));
+
+        assert!(!allows("https://evil.example/steal", &[]));
+        assert!(!allows("https://api.io.mi.com.evil.example/app", &[]));
+        assert!(!allows(
+            "https://api.deepseek.com.evil.example/v1",
+            &["api.deepseek.com"]
+        ));
+        assert!(!allows("file:///C:/Windows/win.ini", &[]));
+    }
+
+    #[test]
+    fn normalizes_configured_hosts_and_rejects_urls() {
+        assert_eq!(
+            normalize_extra_host(" API.DeepSeek.com. "),
+            Some("api.deepseek.com".to_string())
+        );
+        assert_eq!(normalize_extra_host("[::1]"), Some("::1".to_string()));
+        assert_eq!(normalize_extra_host("https://evil.example/path"), None);
+        assert_eq!(normalize_extra_host("evil.example/path"), None);
+        assert_eq!(normalize_extra_host(""), None);
+    }
+
+    #[test]
+    fn credential_names_are_limited_to_known_entries() {
+        assert_eq!(
+            allowed_credential_name("mi_session").ok(),
+            Some("mi_session")
+        );
+        assert_eq!(allowed_credential_name("ha_token").ok(), Some("ha_token"));
+        assert_eq!(
+            allowed_credential_name("assistant_api_key").ok(),
+            Some("assistant_api_key")
+        );
+        assert_eq!(
+            allowed_credential_name("assistant_api_key_openrouter").ok(),
+            Some("assistant_api_key_openrouter")
+        );
+        assert!(allowed_credential_name("arbitrary_key").is_err());
+        assert!(allowed_credential_name("assistant_api_key_").is_err());
+        assert!(allowed_credential_name("assistant_api_key_a/b").is_err());
+    }
+
+    #[test]
+    fn allows_the_public_github_release_api_only() {
+        assert!(allows(
+            "https://api.github.com/repos/jryang1997/MenuBarMijia/releases/latest",
+            &[]
+        ));
+        // The browser-facing host is opened through the OS, never proxied by native_http.
+        assert!(!allows("https://github.com/jryang1997/MenuBarMijia/releases", &[]));
+        assert!(!allows("https://api.github.com.evil.example/latest", &[]));
+    }
+
+    #[test]
+    fn only_opens_menu_barmijia_release_pages() {
+        assert!(validated_release_url(RELEASE_PAGE_URL).is_ok());
+        assert!(validated_release_url(
+            "https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.7"
+        )
+        .is_ok());
+
+        assert!(validated_release_url("http://github.com/jryang1997/MenuBarMijia/releases").is_err());
+        assert!(validated_release_url("https://evil.example/jryang1997/MenuBarMijia/releases").is_err());
+        assert!(validated_release_url("https://github.com/other/repo/releases").is_err());
+        assert!(validated_release_url("https://github.com/jryang1997/MenuBarMijia").is_err());
+        assert!(validated_release_url("javascript:alert(1)").is_err());
+    }
 }

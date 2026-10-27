@@ -1,12 +1,17 @@
 #!/bin/bash
 # 在群晖 NAS 上以 root 运行：部署 Home Assistant 容器，并放入米家/美的集成。
 # 由 Mac 上的 deploy_ha.sh 上传并调用，不需要手动运行。
+# 用法：HA_VERSION=… HA_IMAGE_DIGEST=sha256:… bash remote_setup.sh <工作目录>
+#   工作目录由 deploy_ha.sh 用 mktemp -d 生成（仅 root 可读，#31）；手动运行不传目录时退回 /tmp/ha_setup。
 set -u
 
-WORK=/tmp/ha_setup
+WORK="${1:-/tmp/ha_setup}"
 NAME=homeassistant
 FORCE_NEW="${FORCE_NEW:-0}"
-OFFICIAL_ONLY="${OFFICIAL_ONLY:-0}"
+# 镜像按 digest 钉住（#31）：这两个值由 deploy_ha.sh 传入；手动运行时必须自己提供，
+# 或者接受下面的默认值（与仓库 deploy_ha.sh 保持一致，升级时同步更新）。
+HA_VERSION="${HA_VERSION:-2026.10.4}"
+HA_IMAGE_DIGEST="${HA_IMAGE_DIGEST:-sha256:23f4dfbb69ce76315dbc4de7915504f1c2dcecd7ca2648113a493a385972e133}"
 
 say()  { printf '\n\033[1;34m▶ %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m✔ %s\033[0m\n' "$*"; }
@@ -69,22 +74,24 @@ for comp in xiaomi_home midea_ac_lan; do
   ok "$comp 版本 $(grep -o '"version": *"[^"]*"' "$BASE/config/custom_components/$comp/manifest.json" | cut -d'"' -f4)"
 done
 
-# ---------- 4. 拉取镜像（默认依次尝试国内第三方镜像，最后回落官方源；OFFICIAL_ONLY=1 只用官方源） ----------
-say "下载 Home Assistant 镜像（约 1.5GB，视网络需要几分钟到十几分钟）"
+# ---------- 4. 拉取镜像（按 digest 钉住，内容不可变；默认只用官方源，#31） ----------
+# deploy_ha.sh 会传 HA_VERSION 与 HA_IMAGE_DIGEST 进来；手动运行时也可自己设置。
+# 按摘要拉取意味着任何镜像站都只能原样搬运这份内容，替换/投毒会在摘要校验处失败。
+say "下载 Home Assistant $HA_VERSION 镜像（约 1.5GB，视网络需要几分钟到十几分钟）"
 TARGET=homeassistant/home-assistant:stable
+IMAGE="ghcr.io/home-assistant/home-assistant@${HA_IMAGE_DIGEST}"
 PULLED=""
-OFFICIAL_SRCS="ghcr.io/home-assistant/home-assistant:stable homeassistant/home-assistant:stable"
-if [ "$OFFICIAL_ONLY" = "1" ]; then
-  SRCS="$OFFICIAL_SRCS"
-  ok "OFFICIAL_ONLY=1：只使用 ghcr.io 与 Docker Hub 官方源"
+# 默认只从官方源拉。网络确实不通且你接受第三方镜像站时，才显式 MIRROR_FALLBACK=1
+#（内容仍由摘要校验保证，但请理解镜像站能看到你的拉取行为）。
+if [ "${MIRROR_FALLBACK:-0}" = "1" ]; then
+  warn "MIRROR_FALLBACK=1：官方源失败后改用第三方镜像站（内容按摘要校验）"
+  SRCS="ghcr.m.daocloud.io/home-assistant/home-assistant@${HA_IMAGE_DIGEST}
+    docker.m.daocloud.io/homeassistant/home-assistant@${HA_IMAGE_DIGEST}
+    dockerproxy.net/homeassistant/home-assistant@${HA_IMAGE_DIGEST}
+    $IMAGE"
 else
-  SRCS="ghcr.m.daocloud.io/home-assistant/home-assistant:stable
-    ghcr.nju.edu.cn/home-assistant/home-assistant:stable
-    docker.m.daocloud.io/homeassistant/home-assistant:stable
-    ghcr.1ms.run/home-assistant/home-assistant:stable
-    dockerproxy.net/homeassistant/home-assistant:stable
-    docker.1ms.run/homeassistant/home-assistant:stable
-    $OFFICIAL_SRCS"
+  ok "默认只使用官方源 ghcr.io；如拉取失败可加 MIRROR_FALLBACK=1 重试"
+  SRCS="$IMAGE"
 fi
 for src in $SRCS
 do
@@ -93,12 +100,15 @@ do
   warn "这个源失败，换下一个"
 done
 [ -n "$PULLED" ] || die "所有镜像源都失败了，请带上以上输出到 GitHub Issues 反馈。"
-[ "$PULLED" != "$TARGET" ] && "$DOCKER" tag "$PULLED" "$TARGET"
-ok "镜像就绪：$("$DOCKER" inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$TARGET")"
+"$DOCKER" tag "$PULLED" "$TARGET"
+GOT_VERSION=$("$DOCKER" inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$TARGET")
+[ "$GOT_VERSION" = "$HA_VERSION" ] || die "镜像版本不匹配：期望 $HA_VERSION，实际 $GOT_VERSION。说明 HA_IMAGE_DIGEST 与 HA_VERSION 没有配套更新，请修正后再跑。"
+ok "镜像就绪：$HA_VERSION（摘要 ${HA_IMAGE_DIGEST#sha256:}）"
 
 # ---------- 5. 启动容器 ----------
 say "启动 Home Assistant"
 "$DOCKER" rm -f "$NAME" >/dev/null 2>&1
+# host 网络：HA 依靠它做 SSDP/mDNS 发现与手机端广播；配合 NAS 防火墙只放行 8123/5353/1900 使用。
 "$DOCKER" run -d \
   --name "$NAME" \
   --restart unless-stopped \

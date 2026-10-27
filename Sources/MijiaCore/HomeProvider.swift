@@ -4,6 +4,8 @@ import os
 public enum HomeBackend: String, CaseIterable, Identifiable, Sendable {
     case homeAssistant = "homeAssistant"
     case xiaomiCloud = "xiaomiCloud"
+    /// A built-in virtual home that works without an account and never touches the network (#47).
+    case demo = "demo"
 
     public var id: String { rawValue }
 
@@ -11,6 +13,7 @@ public enum HomeBackend: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .homeAssistant: return "Home Assistant"
         case .xiaomiCloud: return L10n.tr("米家云端直连", "Xiaomi Cloud Direct")
+        case .demo: return L10n.tr("演示模式", "Demo Mode")
         }
     }
 }
@@ -51,6 +54,13 @@ public protocol HomeProvider: Sendable {
     func events() -> AsyncStream<HomeProviderEvent>
     func execute(_ command: DeviceCommand) async throws
     func refreshNow() async
+    /// Tells a polling provider whether the panel is open and the Mac is awake, so it can slow down or pause (#26).
+    func setPollingContext(_ context: PollingContext) async
+}
+
+extension HomeProvider {
+    /// Push-based providers (Home Assistant) have nothing to slow down.
+    public func setPollingContext(_ context: PollingContext) async {}
 }
 
 // MARK: - Live Home Assistant WebSocket + REST Provider
@@ -66,16 +76,23 @@ public actor HAWebSocketProvider: HomeProvider {
     private var activeWebSocket: URLSessionWebSocketTask?
 
     private var snapshot = HAHomeSnapshot()
-    private let onDiscoveredInstance: (@Sendable (HADiscoveredInstance) -> Void)?
+    /// Told about another Home Assistant address found after repeated disconnects. The provider never
+    /// switches by itself: the token only goes to a new address after the user agrees (#18).
+    private let onAddressSuggestion: (@Sendable (HADiscoveredInstance) -> Void)?
+    private var lastRediscoveryAt: Date?
+    /// Test seam for the LAN scan after a disconnect.
+    private let rediscover: @Sendable (String) async -> [HADiscoveredInstance]
 
     public init(
         baseURLString: String,
         token: String,
-        onDiscoveredInstance: (@Sendable (HADiscoveredInstance) -> Void)? = nil
+        onAddressSuggestion: (@Sendable (HADiscoveredInstance) -> Void)? = nil,
+        rediscover: @escaping @Sendable (String) async -> [HADiscoveredInstance] = { await HADiscovery.discoverOnLAN(currentURLHint: $0) }
     ) {
         self.baseURLString = Self.normalizeBaseURL(baseURLString)
         self.token = token
-        self.onDiscoveredInstance = onDiscoveredInstance
+        self.onAddressSuggestion = onAddressSuggestion
+        self.rediscover = rediscover
 
         // Bypass system proxies for direct LAN communication with NAS
         let config = URLSessionConfiguration.ephemeral
@@ -84,6 +101,9 @@ public actor HAWebSocketProvider: HomeProvider {
         config.waitsForConnectivity = false
         self.session = URLSession(configuration: config)
     }
+
+    /// The address the provider is using; it only changes through `updateCredentials`.
+    public var currentBaseURLString: String { baseURLString }
 
     public func updateCredentials(baseURLString: String, token: String) {
         self.baseURLString = Self.normalizeBaseURL(baseURLString)
@@ -133,6 +153,7 @@ public actor HAWebSocketProvider: HomeProvider {
 
     private func runConnectionLoop() async {
         var backoffSeconds: Double = 0.8
+        var consecutiveFailures = 0
         while !Task.isCancelled {
             if token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 continuation?.yield(.statusChanged(.disconnected(L10n.tr("请在设置中配置访问令牌", "Configure your access token in Settings"))))
@@ -142,6 +163,7 @@ public actor HAWebSocketProvider: HomeProvider {
             do {
                 try await connectAndListen()
                 backoffSeconds = 0.8
+                consecutiveFailures = 0
             } catch {
                 if Task.isCancelled { break }
                 if case HomeProviderError.unauthorized = error {
@@ -149,13 +171,8 @@ public actor HAWebSocketProvider: HomeProvider {
                     logger.error("WebSocket unauthorized: \(msg, privacy: .public)")
                     continuation?.yield(.statusChanged(.disconnected(msg)))
                 } else {
-                    if let discovered = await HADiscovery.discoverOnLAN(currentURLHint: baseURLString).first,
-                       discovered.baseURL != baseURLString {
-                        logger.info("Auto-switched HA URL to discovered LAN instance: \(discovered.baseURL, privacy: .public)")
-                        self.baseURLString = discovered.baseURL
-                        onDiscoveredInstance?(discovered)
-                        continue
-                    }
+                    consecutiveFailures += 1
+                    await suggestOtherAddressIfDue(consecutiveFailures: consecutiveFailures)
                     let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                     logger.error("WebSocket disconnected: \(msg, privacy: .public)")
                     continuation?.yield(.statusChanged(.disconnected(msg)))
@@ -164,6 +181,18 @@ public actor HAWebSocketProvider: HomeProvider {
                 backoffSeconds = min(backoffSeconds * 1.8, 10.0)
             }
         }
+    }
+
+    /// After two failures in a row, looks for Home Assistant elsewhere on the network at most every
+    /// `HAAddressPolicy.rediscoveryInterval`, and only reports what it finds (#18).
+    private func suggestOtherAddressIfDue(consecutiveFailures: Int, now: Date = Date()) async {
+        guard let onAddressSuggestion, consecutiveFailures >= 2 else { return }
+        if let last = lastRediscoveryAt, now.timeIntervalSince(last) < HAAddressPolicy.rediscoveryInterval { return }
+        lastRediscoveryAt = now
+        let current = baseURLString
+        guard let candidate = await rediscover(current).first(where: { Self.normalizeBaseURL($0.baseURL) != current }) else { return }
+        logger.info("Found another Home Assistant address; asking the user before switching: \(candidate.baseURL, privacy: .public)")
+        onAddressSuggestion(candidate)
     }
 
     private func connectAndListen() async throws {
@@ -407,52 +436,5 @@ public actor HAWebSocketProvider: HomeProvider {
             wsStr = "ws://" + wsStr.dropFirst("http://".count)
         }
         return URL(string: "\(wsStr)/api/websocket")
-    }
-}
-
-// MARK: - Mock Provider for Testing & Instant Previews
-
-public actor MockHomeProvider: HomeProvider {
-    private var snapshot: SynthesizedHome
-    private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
-    public private(set) var executedCommands: [DeviceCommand] = []
-    public var shouldFailCommands: Bool = false
-
-    public init(snapshot: SynthesizedHome = .init()) {
-        self.snapshot = snapshot
-    }
-
-    public func setShouldFail(_ fail: Bool) {
-        self.shouldFailCommands = fail
-    }
-
-    public nonisolated func events() -> AsyncStream<HomeProviderEvent> {
-        AsyncStream { cont in
-            Task {
-                await self.register(cont)
-            }
-        }
-    }
-
-    private func register(_ cont: AsyncStream<HomeProviderEvent>.Continuation) {
-        self.continuation = cont
-        cont.yield(.statusChanged(.connected))
-        cont.yield(.snapshotUpdated(snapshot))
-    }
-
-    public func execute(_ command: DeviceCommand) async throws {
-        if shouldFailCommands {
-            throw HomeProviderError.serviceCallFailed(500, "模拟网络失败")
-        }
-        executedCommands.append(command)
-    }
-
-    public func refreshNow() async {
-        continuation?.yield(.snapshotUpdated(snapshot))
-    }
-
-    public func updateSnapshot(_ next: SynthesizedHome) {
-        self.snapshot = next
-        continuation?.yield(.snapshotUpdated(next))
     }
 }

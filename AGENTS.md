@@ -18,4 +18,4 @@ Read `CODING_STANDARDS.md` when reviewing diffs (`/code-review`) or modifying sy
 
 ### Build & verification
 
-Run `bash scripts/check.sh` for secret scan, mechanical lints, and `swift test`. Run `bash scripts/build_app.sh` to package, sign, and restart `MenuBarMijia.app`.
+Run `bash scripts/check.sh` for secret scan, mechanical lints, and `swift test`. Run `bash scripts/build_app.sh` to package, sign, and restart `MenuBarMijia.app`. Run `swift scripts/generate_app_icon.swift` when modifying `Resources/AppIcon/AppIcon-*.svg` to regenerate macOS `.icns`, `Assets.car`, README logos, and Windows Tauri icons.

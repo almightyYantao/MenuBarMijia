@@ -10,8 +10,8 @@ public enum DelayPhrase {
 
     private static let number = #"([0-9]+|[零一二两三四五六七八九十]+|半)"#
     private static let unit = #"(个半|个)?(秒钟|秒|分钟|分|小时|钟头)(半)?"#
-    private static let leading = try! NSRegularExpression(pattern: #"^(过|等)?"# + number + unit + #"(以后|之后|后)?"#)
-    private static let trailing = try! NSRegularExpression(pattern: #"[，,\s]*"# + number + unit + #"(以后|之后|后)$"#)
+    private static let leading = try! NSRegularExpression(pattern: #"^(过|等)?"# + number + #"\s*"# + unit + #"(以后|之后|后)?"#)
+    private static let trailing = try! NSRegularExpression(pattern: #"[，,\s]*"# + number + #"\s*"# + unit + #"(以后|之后|后)$"#)
     private static let enLeading = try! NSRegularExpression(
         pattern: #"^(?:in|after)\s+(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\b[,\s]*"#,
         options: [.caseInsensitive]

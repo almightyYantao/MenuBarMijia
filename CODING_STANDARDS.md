@@ -39,7 +39,7 @@ In `ControlCenterPanel` when `isCompactGridMode` is active:
 
 When adding or changing spoken command, delay, undo, MIoT synthesis, MIoT command mapping, or AI provider preset rules in `Sources/MijiaCore/LocalIntentParser.swift`, `Sources/MijiaCore/AssistantSchedule.swift`, `Sources/MijiaCore/AssistantConfig.swift`, `Sources/MijiaCore/MiCloud/MiotSynthesizer.swift`, `Sources/MijiaCore/MiCloud/MiotCommandMapper.swift`, `windows/src/core/assistant.ts`, or `windows/src/core/miCloudClient.ts`:
 
-- Add a representative test case to [`Tests/Fixtures/intent_golden.json`](Tests/Fixtures/intent_golden.json) or [`Tests/Fixtures/miot_golden.json`](Tests/Fixtures/miot_golden.json) so both `Tests/MijiaCoreTests/GoldenCorpusTests.swift` and `windows/tests/core.test.ts` assert the exact same behavior.
+- Add a representative test case to [`Tests/Fixtures/intent_golden.json`](Tests/Fixtures/intent_golden.json) or [`Tests/Fixtures/miot_golden.json`](Tests/Fixtures/miot_golden.json) so both `Tests/MijiaCoreTests/GoldenCorpusTests.swift` and `windows/tests/core.test.ts` assert the exact same behavior. AI provider preset rules (domain matching, which hosts may receive API keys) live in [`Tests/Fixtures/provider_golden.json`](Tests/Fixtures/provider_golden.json); Mi cloud region codes/order in [`Tests/Fixtures/region_golden.json`](Tests/Fixtures/region_golden.json); the Jev `/v1/systemone` request skeleton in [`Tests/Fixtures/ai_request_golden.json`](Tests/Fixtures/ai_request_golden.json) — all asserted by `Tests/MijiaCoreTests/GoldenCorpusTests.swift` and `windows/tests/core.test.ts`.
 - Keep `AssistantProviderPreset.allCases.map(\.rawValue)` (macOS) and `ASSISTANT_PROVIDER_PRESETS.map(p => p.id)` (Windows) identical in order and membership, and isolate user-saved API keys per provider (`KeychainHelper.assistantProviderAPIKeyAccount(for:)`).
 - Never let one platform silently diverge on Chinese or English command parsing, delay limits (`<= 86400s`), unknown-word fallback (`nil` / `null`), MIoT `0`/`1` boolean coercion, multi-service property resolution, or command range/step clamping.
 
@@ -49,6 +49,7 @@ When modifying `ScheduledCommand` or `HomeStore+Assistant.swift`:
 
 - Persist both `scheduledCommands` and unconfirmed `missedScheduledCommands` to `UserDefaults` (`ScheduledCommand.storageKey`) on every schedule, fire, restore, confirm, dismiss, or cancel transition.
 - Never auto-execute an expired timer silently on launch; keep it in `missedScheduledCommands` (and on disk across restarts) until the user explicitly confirms (`runMissedScheduledCommand`) or dismisses (`dismissMissedScheduledCommand`).
+- The same applies after the Mac sleeps: `Task.sleep` keeps counting during sleep, so a timer task can wake up long after its `fireDate`. A timer that wakes more than `HomeStore.lateTimerGrace` (60 s) late goes to `missedScheduledCommands` instead of running. Tests simulate this with `assistantNow`.
 
 ## 8. macOS 14+ Adaptive Glass Boundary
 

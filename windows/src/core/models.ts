@@ -1,3 +1,6 @@
+import { t } from "./i18n.js";
+import { formatTemperature } from "./temperature.js";
+
 export type HomeBackend = "xiaomiCloud" | "homeAssistant";
 
 export type ConnectionStatus =
@@ -172,6 +175,53 @@ export interface ScheduledCommand {
   readonly reply: string;
 }
 
+/** Plugs often power a router, fridge or NAS, and 全关 should not send a cleaning vacuum home (#23). */
+export function joinsAllOffByDefault(device: SmartDevice): boolean {
+  return device.kind.kind !== "plug" && device.kind.kind !== "vacuum";
+}
+
+export function joinsAllOff(device: SmartDevice, overrides: Readonly<Record<string, boolean>>): boolean {
+  return overrides[device.id] ?? joinsAllOffByDefault(device);
+}
+
+/** What 全关 turns off: the devices on screen that are on and take part in 全关. */
+export function allOffTargets(
+  visible: readonly SmartDevice[],
+  overrides: Readonly<Record<string, boolean>>
+): SmartDevice[] {
+  return visible.filter((d) => isDeviceActiveOn(d) && joinsAllOff(d, overrides));
+}
+
+/** A timer that comes due more than this late (the PC slept, the app was frozen) waits for the user (#22). */
+export const LATE_TIMER_GRACE_MS = 60_000;
+
+/** Splits timers into ones to run now, ones that were missed, and ones still counting down. */
+export function partitionDueTimers(
+  items: readonly ScheduledCommand[],
+  nowMs: number,
+  graceMs = LATE_TIMER_GRACE_MS
+): { run: ScheduledCommand[]; missed: ScheduledCommand[]; remaining: ScheduledCommand[] } {
+  const run: ScheduledCommand[] = [];
+  const missed: ScheduledCommand[] = [];
+  const remaining: ScheduledCommand[] = [];
+  for (const item of items) {
+    if (item.fireTimestampMs > nowMs) remaining.push(item);
+    else if (nowMs - item.fireTimestampMs > graceMs) missed.push(item);
+    else run.push(item);
+  }
+  return { run, missed, remaining };
+}
+
+/** Xiaomi cloud refresh while the panel is open (#26). Matches macOS PollingPolicy.panelOpenInterval. */
+export const CLOUD_REFRESH_VISIBLE_MS = 6_000;
+export const CLOUD_REFRESH_HIDDEN_MS = 60_000;
+
+/** True when the last cloud refresh is older than the interval for the panel's visibility. */
+export function cloudRefreshDue(nowMs: number, lastRefreshMs: number | null, panelVisible: boolean): boolean {
+  if (lastRefreshMs === null) return true;
+  return nowMs - lastRefreshMs >= (panelVisible ? CLOUD_REFRESH_VISIBLE_MS : CLOUD_REFRESH_HIDDEN_MS);
+}
+
 export function isDeviceActiveOn(device: SmartDevice): boolean {
   switch (device.kind.kind) {
     case "light":
@@ -191,19 +241,16 @@ export function isDeviceActiveOn(device: SmartDevice): boolean {
 }
 
 export function deviceStatusSummary(device: SmartDevice): string {
-  if (!device.isOnline) return "离线";
+  if (!device.isOnline) return t("离线");
   const k = device.kind;
   switch (k.kind) {
     case "light": {
-      if (!k.isOn) return "已关闭";
-      const parts: string[] = ["已开启"];
+      if (!k.isOn) return t("已关闭");
+      const parts: string[] = [t("已开启")];
       if (k.currentEffect) {
+        const effect = k.currentEffect.toLowerCase();
         parts.push(
-          k.currentEffect.toLowerCase() === "night"
-            ? "月光"
-            : k.currentEffect.toLowerCase() === "day"
-              ? "日光"
-              : k.currentEffect
+          effect === "night" ? t("月光") : effect === "day" ? t("日光") : k.currentEffect
         );
       }
       if (k.brightnessPercent !== null) parts.push(`${k.brightnessPercent}%`);
@@ -212,47 +259,51 @@ export function deviceStatusSummary(device: SmartDevice): string {
     }
     case "climate": {
       const modeMap: Record<string, string> = {
-        cool: "制冷",
-        heat: "制热",
-        dry: "除湿",
-        fan_only: "送风",
-        auto: "自动",
-        off: "已关闭",
+        cool: t("制冷"),
+        heat: t("制热"),
+        dry: t("除湿"),
+        fan_only: t("送风"),
+        auto: t("自动"),
+        off: t("已关闭"),
       };
       if (!k.isOn || k.hvacMode === "off") {
-        return k.currentTemperature !== null ? `已关闭 · 室温 ${k.currentTemperature}°C` : "已关闭";
+        return k.currentTemperature !== null
+          ? t("已关闭 · 室温 {temp}", { temp: formatTemperature(k.currentTemperature) })
+          : t("已关闭");
       }
       const modeLabel = modeMap[k.hvacMode] ?? k.hvacMode;
-      const roomPart = k.currentTemperature !== null ? ` · 室温 ${k.currentTemperature}°C` : "";
-      return `${modeLabel} ${k.targetTemperature}°C${roomPart}`;
+      const roomPart = k.currentTemperature !== null
+        ? ` · ${t("室温 {temp}", { temp: formatTemperature(k.currentTemperature) })}`
+        : "";
+      return `${modeLabel} ${formatTemperature(k.targetTemperature)}${roomPart}`;
     }
     case "fan": {
-      if (!k.isOn) return "已关闭";
-      const parts: string[] = ["运行中"];
+      if (!k.isOn) return t("已关闭");
+      const parts: string[] = [t("运行中")];
       if (k.presetMode) parts.push(k.presetMode);
-      if (k.isOscillating) parts.push("摇头");
+      if (k.isOscillating) parts.push(t("摇头"));
       return parts.join(" · ");
     }
     case "plug": {
-      if (!k.isOn) return "已断电";
-      return k.powerWatts !== null ? `供电中 · ${k.powerWatts.toFixed(1)}W` : "供电中";
+      if (!k.isOn) return t("已断电");
+      return k.powerWatts !== null ? t("供电中 · {watts}W", { watts: k.powerWatts.toFixed(1) }) : t("供电中");
     }
     case "vacuum": {
       const map: Record<string, string> = {
-        cleaning: "清扫中",
-        paused: "已暂停",
-        returning: "回充中",
-        docked: "充电座待命",
-        idle: "待命",
+        cleaning: t("清扫中"),
+        paused: t("已暂停"),
+        returning: t("回充中"),
+        docked: t("充电座待命"),
+        idle: t("待命"),
       };
       const base = map[k.status] ?? k.status;
       return k.battery !== null ? `${base} · ${k.battery}%` : base;
     }
     case "sensor": {
       const parts: string[] = [];
-      if (k.temperature !== null) parts.push(`${k.temperature.toFixed(1)}°C`);
+      if (k.temperature !== null) parts.push(formatTemperature(k.temperature, undefined, 1));
       if (k.humidity !== null) parts.push(`${Math.round(k.humidity)}%`);
-      return parts.length > 0 ? parts.join(" · ") : "在线";
+      return parts.length > 0 ? parts.join(" · ") : t("在线");
     }
     default: {
       const _exhaustive: never = k;
