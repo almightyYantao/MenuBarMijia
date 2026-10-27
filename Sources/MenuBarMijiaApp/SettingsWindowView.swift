@@ -151,6 +151,7 @@ private struct GeneralSettingsTab: View {
     @State private var launchAtLogin: Bool = (SMAppService.mainApp.status == .enabled)
     @State private var showNotificationRationale = false
     @AppStorage(SoundFeedback.storageKey) private var soundFeedbackEnabled = false
+    @AppStorage(TemperatureUnitPreference.storageKey) private var temperatureUnitRaw = TemperatureUnitPreference.system.rawValue
 
     private var notifications: NotificationPermissionState { .shared }
     private var hotkey: HotkeySettingsState { .shared }
@@ -173,6 +174,20 @@ private struct GeneralSettingsTab: View {
                         ) {
                             ForEach(AppLanguagePreference.allCases) { pref in
                                 Text(pref.label).tag(pref)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 176)
+                        .controlSize(.small)
+                    }
+
+                    HStack {
+                        Text(L10n.tr("温度单位", "Temperature Unit"))
+                            .font(.system(size: 12))
+                        Spacer()
+                        Picker("", selection: $temperatureUnitRaw) {
+                            ForEach(TemperatureUnitPreference.allCases) { unit in
+                                Text(unit.title).tag(unit.rawValue)
                             }
                         }
                         .labelsHidden()
@@ -360,6 +375,9 @@ private struct GeneralSettingsTab: View {
                     }
                 }
 
+                AutomationSettingsSection(store: store)
+                EnergySettingsSection(store: store)
+
                 if !store.hiddenDevices.isEmpty {
                     SettingsSection(title: L10n.tr("已隐藏的设备 (\(store.hiddenDevices.count))", "Hidden Devices (\(store.hiddenDevices.count))")) {
                         ForEach(store.hiddenDevices) { dev in
@@ -511,10 +529,19 @@ private struct ConnectionSettingsTab: View {
                                     }
                                 }
                             }
-                            TextField("http://homeassistant.local:8123", text: $urlDraft)
+                            TextField("https://your-home.ui.nabu.casa", text: $urlDraft)
                                 .textFieldStyle(.roundedBorder)
                                 .controlSize(.small)
                                 .font(.system(size: 11.5, design: .monospaced))
+                            if let address = URL(string: HAWebSocketProvider.normalizeBaseURL(urlDraft)),
+                               address.scheme == "http",
+                               let host = address.host,
+                               !["localhost", "127.0.0.1", "::1", "[::1]"].contains(host.lowercased()) {
+                                Label(L10n.tr("令牌将以明文在网络上传输，建议使用 HTTPS 或 Nabu Casa 地址。", "Your token will travel unencrypted. Use HTTPS or a Nabu Casa address."), systemImage: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.orange)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
 
                         VStack(alignment: .leading, spacing: 4) {
@@ -987,6 +1014,7 @@ struct LGWebOSSettingsSection: View {
     @State private var hostDraft: String = ""
     @State private var macDraft: String = ""
     @State private var isScanning: Bool = false
+    @State private var confirmsTrustReset = false
 
     var body: some View {
         let _ = store.effectiveLanguage
@@ -1072,6 +1100,20 @@ struct LGWebOSSettingsSection: View {
                         store.triggerLGWebOSPairing()
                     }
                     .buttonStyle(PillActionButtonStyle())
+
+                    Button(L10n.tr("重新信任电视", "Trust TV Again")) {
+                        confirmsTrustReset = true
+                    }
+                    .buttonStyle(PillActionButtonStyle())
+                    .alert(L10n.tr("清除已保存的电视身份？", "Clear the saved TV identity?"), isPresented: $confirmsTrustReset) {
+                        Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
+                        Button(L10n.tr("重新配对", "Pair Again"), role: .destructive) {
+                            saveDrafts()
+                            store.resetLGWebOSTrustAndPair()
+                        }
+                    } message: {
+                        Text(L10n.tr("请先核对电视 IP。确认后将清除旧证书和配对密钥，下次连接会信任新的证书，并要求在电视上重新确认。", "Verify the TV IP first. This clears the saved certificate and pairing key, trusts the certificate on the next connection, and requires confirmation on the TV."))
+                    }
 
                     Spacer()
 

@@ -10,6 +10,8 @@ public struct DeviceCardView: View {
     @AppStorage(DeviceLayoutPrefs.storageKey) private var tileSizesRaw: String = "{}"
     @AppStorage(GroupPrefs.groupsKey) private var groupsRaw: String = "[]"
     @AppStorage(GroupPrefs.mapKey) private var groupMapRaw: String = "{}"
+    /// Observed so a temperature-unit change in Settings re-renders open cards (#52).
+    @AppStorage(TemperatureUnitPreference.storageKey) private var temperatureUnitRaw = TemperatureUnitPreference.system.rawValue
 
     public let device: SmartDevice
     public let store: HomeStore
@@ -780,7 +782,7 @@ public struct DeviceCardView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Button {
-                    store.stepClimateTemperature(device.id, delta: -spec.step)
+                    store.stepClimateTemperature(device.id, delta: -L10n.celsiusStep(spec.step))
                 } label: {
                     Image(systemName: "minus")
                         .font(.system(size: 13, weight: .bold))
@@ -794,11 +796,11 @@ public struct DeviceCardView: View {
                 Spacer()
 
                 VStack(spacing: 1) {
-                    Text(String(format: "%.0f°C", spec.targetTemperature))
+                    Text(L10n.temperature(spec.targetTemperature))
                         .font(.system(size: 22, weight: .bold, design: .rounded))
                         .monospacedDigit()
                     if let cur = spec.currentTemperature {
-                        Text(String(format: L10n.tr("当前室温 %.1f°C", "Room %.1f°C"), cur))
+                        Text(L10n.format("当前室温 %@", "Room %@", L10n.temperature(cur, fractionDigits: 1)))
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(.secondary)
                     } else {
@@ -811,7 +813,7 @@ public struct DeviceCardView: View {
                 Spacer()
 
                 Button {
-                    store.stepClimateTemperature(device.id, delta: spec.step)
+                    store.stepClimateTemperature(device.id, delta: L10n.celsiusStep(spec.step))
                 } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 13, weight: .bold))
@@ -962,7 +964,7 @@ public struct DeviceCardView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 if let actual {
-                    Text(String(format: L10n.tr("实测 %.0f°C", "Actual %.0f°C"), actual))
+                    Text(L10n.format("实测 %@", "Actual %@", L10n.temperature(actual)))
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
@@ -981,7 +983,7 @@ public struct DeviceCardView: View {
 
                 Spacer()
 
-                Text(String(format: "%.0f°C", target))
+                Text(L10n.temperature(target))
                     .font(.system(size: 13.5, weight: .bold, design: .rounded))
                     .monospacedDigit()
 

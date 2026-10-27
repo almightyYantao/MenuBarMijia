@@ -222,7 +222,7 @@ public struct OnboardingGuideView: View {
             } else if store.homeBackend == .homeAssistant {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
-                        TextField("http://homeassistant.local:8123", text: $haURLDraft)
+                        TextField("https://your-home.ui.nabu.casa", text: $haURLDraft)
                             .textFieldStyle(.roundedBorder)
                             .controlSize(.small)
                             .font(.system(size: 11, design: .monospaced))
@@ -240,6 +240,16 @@ public struct OnboardingGuideView: View {
                         }
                         .buttonStyle(PillActionButtonStyle())
                         .disabled(store.isDiscoveringHA)
+                    }
+
+                    if let address = URL(string: HAWebSocketProvider.normalizeBaseURL(haURLDraft)),
+                       address.scheme == "http",
+                       let host = address.host,
+                       !["localhost", "127.0.0.1", "::1", "[::1]"].contains(host.lowercased()) {
+                        Label(L10n.tr("令牌将以明文在网络上传输，建议使用 HTTPS 或 Nabu Casa 地址。", "Your token will travel unencrypted. Use HTTPS or a Nabu Casa address."), systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     if let firstHA = store.discoveredHAInstances.first {

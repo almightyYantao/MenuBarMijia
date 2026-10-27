@@ -9,6 +9,8 @@ struct ClimatePanelModule: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.effectiveReduceMotion) private var reduceMotion
     @Namespace private var modeNamespace
+    /// Observed so a temperature-unit change in Settings re-renders the strip (#52).
+    @AppStorage(TemperatureUnitPreference.storageKey) private var temperatureUnitRaw = TemperatureUnitPreference.system.rawValue
 
     let device: SmartDevice
     let spec: ClimateSpec
@@ -110,28 +112,30 @@ struct ClimatePanelModule: View {
             .buttonStyle(.plain)
             .skinHelp(L10n.tr("展开模式与风速", "Show modes and fan speed"))
 
-            stepButton(symbol: "minus", delta: -spec.step)
+            stepButton(symbol: "minus", delta: -L10n.celsiusStep(spec.step))
 
             HStack(alignment: .firstTextBaseline, spacing: 0) {
-                Text(formatted(spec.targetTemperature))
+                Text(L10n.temperatureValue(spec.targetTemperature))
                     .font(.system(size: 24, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .contentTransition(.numericText(value: spec.targetTemperature))
-                Text("°")
+                Text(L10n.temperatureSymbol)
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
                     .foregroundStyle(muted)
             }
             .foregroundStyle(fg)
             .frame(minWidth: 44)
 
-            stepButton(symbol: "plus", delta: spec.step)
+            stepButton(symbol: "plus", delta: L10n.celsiusStep(spec.step))
         }
     }
 
     private var statusLine: String {
         guard isRunning else { return L10n.tr("已关闭", "Off") }
         var parts = [SmartDevice.localizeHVACMode(spec.hvacMode)]
-        if let cur = spec.currentTemperature { parts.append(String(format: L10n.tr("室温 %.1f°", "Room %.1f°"), cur)) }
+        if let cur = spec.currentTemperature {
+            parts.append(L10n.format("室温 %@", "Room %@", L10n.temperature(cur, fractionDigits: 1)))
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -254,9 +258,5 @@ struct ClimatePanelModule: View {
         case "auto": return "a.circle.fill"
         default: return "circle"
         }
-    }
-
-    private func formatted(_ t: Double) -> String {
-        t.rounded() == t ? String(format: "%.0f", t) : String(format: "%.1f", t)
     }
 }

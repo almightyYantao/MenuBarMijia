@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Carbon
 import MijiaCore
 
 public struct ControlCenterPanel: View {
@@ -27,6 +28,10 @@ public struct ControlCenterPanel: View {
     @State private var liveGroupMap: [String: String]?
     @AppStorage(GroupPrefs.aliasesKey) private var aliasesRaw: String = "{}"
     @State private var layoutUI = LayoutUIState.shared
+    /// #60: type-to-search. The query lives outside `@State` because the app-wide key monitor
+    /// (`PanelSearchKeyboard`) has to read and write it before AppKit dispatches the event.
+    @State private var search = PanelSearchState.shared
+    @FocusState private var isSearchFieldFocused: Bool
     @Environment(\.effectiveReduceMotion) private var reduceMotion
     @Environment(\.effectiveReduceTransparency) private var reduceTransparency
     /// Opens the ⌘, Settings window; the popover no longer hosts the long form (#42).
@@ -137,21 +142,23 @@ public struct ControlCenterPanel: View {
         .offset(y: isPresented || reduceMotion ? 0 : -10)
         .opacity(isPresented || reduceMotion ? 1 : 0)
         .blur(radius: isPresented || reduceMotion ? 0 : 6)
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
-            guard !isPresented else { return }
+        .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didShowNotification)) { _ in
             withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true }
-        }
-        // Reset only when the panel is really hidden. Resigning key also happens when a context
-        // menu opens, and resetting then left the panel at opacity 0 (a blank window).
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { note in
-            guard let w = note.object as? NSWindow, w.className.contains("MenuBarExtra") else { return }
-            if !w.occlusionState.contains(.visible) { isPresented = false }
-            else if !isPresented { withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true } }
         }
         .onAppear {
             SettingsWindowOpener.shared.open = { openSettings() }
             syncMenuBarWindowSize()
             withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isPresented = true }
+        }
+        // The panel tree survives a close, so a half-typed query would come back on the next open.
+        .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didHideNotification)) { _ in
+            isPresented = false
+            search.end()
+            isSearchFieldFocused = false
+        }
+        // Leaving search puts the caret back on the panel, so Esc closes it instead of resigning the field.
+        .onChange(of: search.isSearching) { _, searching in
+            if !searching { isSearchFieldFocused = false }
         }
         // Mi cloud polls every 6 s only while the panel is on screen (#26).
         .onChange(of: isPresented) { _, visible in store.setPanelVisible(visible) }
@@ -164,16 +171,7 @@ public struct ControlCenterPanel: View {
     }
 
     private func syncMenuBarWindowSize() {
-        let target = NSSize(width: Self.panelWidth, height: panelHeight)
-        guard let window = NSApp.windows.first(where: { $0.className.contains("MenuBarExtra") }) else { return }
-        let oldFrame = window.frame
-        let newRect = window.frameRect(forContentRect: NSRect(origin: .zero, size: target))
-        guard abs(oldFrame.width - newRect.width) > 0.5 || abs(oldFrame.height - newRect.height) > 0.5 else { return }
-        let newOrigin = NSPoint(
-            x: (oldFrame.midX - newRect.width / 2).rounded(),
-            y: oldFrame.maxY - newRect.height
-        )
-        window.setFrame(NSRect(origin: newOrigin, size: newRect.size), display: true, animate: false)
+        MenuBarPanelController.shared.updatePanelSize(width: Self.panelWidth, height: panelHeight)
     }
 
     // MARK: - Main Dashboard
@@ -205,9 +203,18 @@ public struct ControlCenterPanel: View {
                     .transition(AppleMotion.drawerTransition)
             }
 
-            roomFilterBar
-                .padding(.horizontal, 14)
-                .padding(.bottom, 8)
+            // #60: while a search is open the query bar replaces the room pills, so the empty-query
+            // layout is untouched and results are not silently narrowed by the selected room.
+            if search.isSearching {
+                searchBar
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 8)
+                    .transition(AppleMotion.drawerTransition)
+            } else {
+                roomFilterBar
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 8)
+            }
 
             Divider()
                 .overlay(Color.primary.opacity(0.07))
@@ -219,7 +226,9 @@ public struct ControlCenterPanel: View {
                 )
 
                 VStack(alignment: .leading, spacing: 11) {
-                    if store.filteredDevices.isEmpty {
+                    if search.isSearching {
+                        searchResultsList(results: searchResults)
+                    } else if store.filteredDevices.isEmpty {
                         emptyStateView
                     } else {
                         ForEach(sections) { section in
@@ -261,6 +270,140 @@ public struct ControlCenterPanel: View {
                 .padding(.vertical, 9)
         }
         .animation(AppleMotion.snappySpring, value: store.isShowingAssistantBar)
+    }
+
+    // MARK: - Search (#60)
+
+    /// Ranked results for the current query. While the bar is open but still empty, every searchable
+    /// device is listed in the panel's own order, so opening search never reshuffles the page.
+    private var searchResults: [SmartDevice] {
+        search.results(store: store)
+    }
+
+    private var searchBar: some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        return HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            TextField(
+                L10n.tr("搜索设备、房间或拼音首字母（sfd → 书房灯）", "Search devices, rooms or pinyin initials (sfd → 书房灯)"),
+                text: Binding(
+                    get: { search.query },
+                    set: { search.query = $0 }
+                )
+            )
+            .textFieldStyle(.plain)
+            .font(.system(size: 12, weight: .medium))
+            .focused($isSearchFieldFocused)
+            .onSubmit { submitSearch() }
+            .onChange(of: isSearchFieldFocused) { _, focused in search.isFieldFocused = focused }
+
+            if !search.query.isEmpty {
+                Button {
+                    withAnimation(AppleMotion.snappySpring) { search.query = "" }
+                    search.focusRequest &+= 1
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(L10n.tr("清空搜索", "Clear search")))
+            }
+
+            Text(searchCountLabel)
+                .font(.system(size: 10.5, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(shape.fill(Color.primary.opacity(0.06)))
+        .overlay(shape.strokeBorder(Color.accentColor.opacity(isSearchFieldFocused ? 0.55 : 0.16), lineWidth: 0.8))
+        .onChange(of: search.focusRequest) { _, _ in
+            Task { @MainActor in isSearchFieldFocused = true }
+        }
+        .onAppear {
+            if search.focusRequest > 0 { Task { @MainActor in isSearchFieldFocused = true } }
+        }
+        .accessibilityElement(children: .contain)
+        .skinHelp(L10n.tr(
+            "打字即可过滤；⌘F 聚焦搜索框，↑↓ 选择，回车开关，→ 展开详情，Esc 清空后再按 Esc 关闭面板",
+            "Type to filter; ⌘F focuses the field, ↑↓ selects, Return toggles, → expands, Esc clears, then closes"
+        ))
+    }
+
+    private var searchCountLabel: String {
+        let count = searchResults.count
+        return count == 1 ? L10n.tr("1 台", "1 device") : L10n.tr("\(count) 台", "\(count) devices")
+    }
+
+    /// Return inside the field: same rules as the global key monitor (toggle, or run an instruction).
+    private func submitSearch() {
+        let results = searchResults
+        if search.isExplicitSelection, let device = search.selected(in: results) {
+            toggleSearchResult(device)
+            return
+        }
+        if PanelSearch.kind(of: search.query, devices: store.devices, scenes: store.scenes) == .command {
+            PanelSearchKeyboard.runCommand(search.query, store: store, state: search)
+            return
+        }
+        guard let device = search.selected(in: results) else { return }
+        toggleSearchResult(device)
+    }
+
+    private func toggleSearchResult(_ device: SmartDevice) {
+        withAnimation(AppleMotion.snappySpring) { store.togglePrimary(device) }
+        if device.isOnline { SoundFeedback.playSuccess() }
+    }
+
+    @ViewBuilder
+    private func searchResultsList(results: [SmartDevice]) -> some View {
+        if results.isEmpty {
+            VStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 20))
+                    .foregroundStyle(.secondary)
+                Text(L10n.tr("没有匹配的设备", "No matching devices"))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary)
+                if PanelSearch.kind(of: search.query, devices: store.devices, scenes: store.scenes) == .command {
+                    Text(L10n.tr("回车把这句交给助手执行", "Press Return to run this as a command"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(search.query.isEmpty
+                        ? L10n.tr("输入设备名、房间或拼音首字母", "Type a device, room or pinyin initials")
+                        : L10n.tr("试试房间名「书房」或首字母「sfd」", "Try a room (书房) or initials (sfd)"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 30)
+        } else {
+            let quickIndexMap = Dictionary(
+                uniqueKeysWithValues: results.prefix(9).enumerated().map { ($1.id, $0 + 1) }
+            )
+            VStack(alignment: .leading, spacing: 7) {
+                Text(L10n.tr("搜索结果", "Results"))
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 3)
+
+                // The highlight is the keyboard selection, drawn as the card's own focus ring would be.
+                deviceCollectionView(
+                    devices: results,
+                    showRoomBadge: true,
+                    quickIndexMap: quickIndexMap,
+                    highlightId: search.selected(in: results)?.id,
+                    sortByUserOrder: false
+                )
+            }
+        }
     }
 
     // MARK: - Layout Editing
@@ -510,6 +653,9 @@ public struct ControlCenterPanel: View {
     private var tileDragGesture: some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(TileSpace.name))
             .onChanged { d in
+                // A filtered list is ranked, not ordered: the long-press "edit layout" would let a
+                // search result be dragged into the saved order. Cards stay tappable instead.
+                guard !search.isSearching else { return }
                 let moved = hypot(d.translation.width, d.translation.height)
                 if draggingId == nil {
                     if isEditingLayout {
@@ -690,14 +836,21 @@ public struct ControlCenterPanel: View {
         return result
     }
 
+    /// Cards for one collection. Search results pass `sortByUserOrder: false`, so rank wins over the
+    /// saved layout order.
     @ViewBuilder
     private func deviceCollectionView(
         devices: [SmartDevice],
         showRoomBadge: Bool,
-        quickIndexMap: [String: Int]
+        quickIndexMap: [String: Int],
+        highlightId: String? = nil,
+        sortByUserOrder: Bool = true
     ) -> some View {
         let aliases = GroupPrefs.map(aliasesRaw)
-        let ordered = DeviceLayoutPrefs.apply(order: currentOrder, to: devices).map { dev -> SmartDevice in
+        let source = sortByUserOrder
+            ? DeviceLayoutPrefs.apply(order: currentOrder, to: devices)
+            : devices
+        let ordered = source.map { dev -> SmartDevice in
             guard let alias = aliases[dev.id] else { return dev }
             var d = dev
             d.name = alias
@@ -720,6 +873,19 @@ public struct ControlCenterPanel: View {
                 .frame(height: bento && span < 6 ? 92 : nil)
                 .frame(maxHeight: .infinity, alignment: .top)
                 .modifier(editable(dev))
+                .overlay {
+                    if highlightId == dev.id {
+                        RoundedRectangle(
+                            cornerRadius: skin.isClassic ? 14 : (palette.capsuleTiles ? 26 : palette.tileRadius),
+                            style: .continuous
+                        )
+                        .strokeBorder(
+                            skin.isClassic ? Color.accentColor.opacity(0.85) : palette.accent.opacity(0.85),
+                            lineWidth: 1.6
+                        )
+                        .allowsHitTesting(false)
+                    }
+                }
                 // Measured outside the jiggle/drag effects: those transforms would otherwise change the
                 // reported frame every animation frame and re-layout the whole panel continuously.
                 .background {
@@ -1499,6 +1665,22 @@ public struct ControlCenterPanel: View {
                 .skinHelp(L10n.tr("撤销上一步（10 分钟内有效）", "Undo the last assistant action (valid for 10 minutes)"))
             }
 
+            // #60: the panel has no visible search field until you type, so the footer advertises it.
+            if !search.isSearching {
+                Button {
+                    search.begin()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(.primary.opacity(0.72))
+                        .frame(width: 24, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(L10n.tr("搜索设备", "Search devices")))
+                .skinHelp(L10n.tr("搜索设备、房间或拼音首字母（⌘F）", "Search devices, rooms or pinyin initials (⌘F)"))
+            }
+
             Button {
                 store.refreshNow()
             } label: {
@@ -1554,6 +1736,220 @@ public struct ControlCenterPanel: View {
             return L10n.tr("正在连接 (\(store.serverHostSummary))…", "Connecting (\(store.serverHostSummary))…")
         case .disconnected(let reason):
             return L10n.tr("未连接：\(reason)", "Disconnected: \(reason)")
+        }
+    }
+}
+
+// MARK: - Search State (#60)
+
+/// The panel's search, shared between the SwiftUI tree and the app-wide key monitor.
+///
+/// The panel keeps arrow keys, Return, Esc, Space and the 1–9 shortcuts in
+/// `HotkeyAndNotificationManager`'s local key monitor, which runs before any SwiftUI view can see
+/// the event. So the query cannot live in `@State` alone: it has to be readable (and writable) from
+/// that monitor, while the field itself stays a normal `TextField` so IME, paste and selection work.
+@MainActor
+@Observable
+final class PanelSearchState {
+    static let shared = PanelSearchState()
+
+    /// What the user typed. Empty means "no query" but says nothing about whether the bar is open.
+    var query: String = "" {
+        didSet {
+            guard query != oldValue else { return }
+            // A new query restarts the highlight at the best match.
+            selectionId = nil
+            isExplicitSelection = false
+        }
+    }
+    /// The bar is on screen: ⌘F opens it without a query.
+    var isActive = false
+    /// Bumped to move the caret into the field; the panel focuses on every change.
+    var focusRequest = 0
+    /// The search field itself is first responder, so AppKit inserts text instead of the monitor.
+    var isFieldFocused = false
+    /// Highlighted result, or `nil` for "the best match".
+    private(set) var selectionId: String?
+    /// The user moved the highlight, so Return acts on it even when the text reads like a command.
+    private(set) var isExplicitSelection = false
+
+    var isSearching: Bool { isActive || !query.isEmpty }
+
+    func begin() {
+        isActive = true
+        focusRequest &+= 1
+    }
+
+    /// Esc step one: drop the query and leave search mode. The next Esc closes the panel.
+    func clear() {
+        end()
+    }
+
+    func end() {
+        query = ""
+        selectionId = nil
+        isExplicitSelection = false
+        isActive = false
+        isFieldFocused = false
+    }
+
+    /// Devices in the order the panel draws them, so ties keep the on-screen order.
+    func devices(store: HomeStore) -> [SmartDevice] {
+        let order = DeviceLayoutPrefs.decodeOrder(
+            UserDefaults.standard.string(forKey: DeviceLayoutPrefs.orderKey) ?? "[]"
+        )
+        return DeviceLayoutPrefs.apply(order: order, to: store.devices)
+    }
+
+    /// Search results for the current query: hidden and (optionally) offline devices are excluded,
+    /// the room filter is not applied, and ranked matches come first.
+    func results(store: HomeStore) -> [SmartDevice] {
+        let aliases = GroupPrefs.map(UserDefaults.standard.string(forKey: GroupPrefs.aliasesKey) ?? "{}")
+        return PanelSearch.results(
+            query,
+            devices: devices(store: store),
+            hiddenIds: store.hiddenDeviceIds,
+            hideOffline: store.hideOfflineDevices,
+            aliases: aliases
+        )
+    }
+
+    /// The highlighted device: the user's pick while it is still visible, else the best match.
+    func selected(in results: [SmartDevice]) -> SmartDevice? {
+        if let selectionId, let picked = results.first(where: { $0.id == selectionId }) { return picked }
+        return results.first
+    }
+
+    /// ↑/↓ through the results, wrapping at both ends.
+    func moveSelection(_ delta: Int, in results: [SmartDevice]) {
+        guard !results.isEmpty else { return }
+        let current = results.firstIndex { $0.id == selectionId } ?? (delta > 0 ? -1 : 0)
+        var next = current + delta
+        if next < 0 { next = results.count - 1 }
+        if next >= results.count { next = 0 }
+        selectionId = results[next].id
+        isExplicitSelection = true
+    }
+}
+
+/// Routes key presses into the panel's search before the panel's own shortcuts run (#60).
+///
+/// Returns `true` when the key belonged to the search and must not reach the existing keyboard
+/// ladder (device focus, quick-index digits, "/" for the assistant, "v" for dictation). With no
+/// search open and nothing typed, every key returns `false`, so the panel behaves exactly as before.
+@MainActor
+enum PanelSearchKeyboard {
+    /// Narrows an `NSEvent` down to the keys the search cares about.
+    static func key(for event: NSEvent) -> PanelSearchKey? {
+        let flags = event.modifierFlags
+        let command = flags.contains(.command)
+        let control = flags.contains(.control)
+        let option = flags.contains(.option)
+
+        let kind: PanelSearchKey.Kind
+        switch Int(event.keyCode) {
+        case kVK_UpArrow: kind = .up
+        case kVK_DownArrow: kind = .down
+        case kVK_LeftArrow: kind = .left
+        case kVK_RightArrow: kind = .right
+        case kVK_Return, kVK_ANSI_KeypadEnter: kind = .return
+        case kVK_Escape: kind = .escape
+        case kVK_Tab: kind = .tab
+        case kVK_Delete: kind = .delete
+        default:
+            // Only unmodified (or shift-modified) printing keys count as typing.
+            guard !control, !option else { return nil }
+            guard let characters = event.characters, !characters.isEmpty else { return nil }
+            guard characters.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
+            else { return nil }
+            kind = .character(characters)
+        }
+        return PanelSearchKey(kind: kind, hasCommand: command, hasControl: control, hasOption: option)
+    }
+
+    /// A text field other than the search field (assistant bar, layout rename) owns the keyboard.
+    private static var isOtherFieldFocused: Bool {
+        guard let responder = NSApp.keyWindow?.firstResponder else { return false }
+        return responder is NSTextView || responder is NSTextField
+    }
+
+    /// Handles the event and reports whether it was consumed.
+    @discardableResult
+    static func handle(_ event: NSEvent, store: HomeStore, state: PanelSearchState = .shared) -> Bool {
+        // The Settings window and every other window keep their own typing.
+        guard MenuBarPanelController.shared.isPanelWindow(NSApp.keyWindow) else { return false }
+        guard let key = key(for: event) else { return false }
+
+        // A text field that is not the search field (assistant bar, layout rename) owns the keyboard.
+        if isOtherFieldFocused, !state.isFieldFocused { return false }
+
+        let results = state.isSearching ? state.results(store: store) : []
+        let context = PanelSearchContext(
+            query: state.query,
+            isSearching: state.isSearching,
+            isFieldFocused: state.isFieldFocused,
+            hasSelection: state.selected(in: results) != nil,
+            hasExplicitSelection: state.isExplicitSelection,
+            queryKind: state.isSearching
+                ? PanelSearch.kind(of: state.query, devices: store.devices, scenes: store.scenes)
+                : .filter
+        )
+
+        switch PanelSearch.action(for: key, context: context) {
+        case .ignore:
+            return false
+
+        case .appendQuery(let text):
+            state.query += text
+            state.begin()
+            return true
+
+        case .deleteBackward:
+            if !state.query.isEmpty { state.query.removeLast() }
+            state.begin()
+            return true
+
+        case .clearQuery:
+            state.clear()
+            // Hand the keyboard back so the next Esc reaches the panel's own ladder (which closes it)
+            // instead of the text-field guard that only resigns first responder.
+            if isOtherFieldFocused { NSApp.keyWindow?.makeFirstResponder(nil) }
+            return true
+
+        case .focusField:
+            state.begin()
+            return true
+
+        case .moveSelection(let delta):
+            state.moveSelection(delta, in: results)
+            return true
+
+        case .toggleSelection:
+            guard let device = state.selected(in: results) else { return false }
+            withAnimation(AppleMotion.snappySpring) { store.togglePrimary(device) }
+            if device.isOnline { SoundFeedback.playSuccess() }
+            return true
+
+        case .expandSelection:
+            guard let device = state.selected(in: results) else { return false }
+            withAnimation(AppleMotion.snappySpring) { store.toggleExpanded(device.id) }
+            return true
+
+        case .runCommand:
+            runCommand(state.query, store: store, state: state)
+            return true
+        }
+    }
+
+    /// Return on an instruction: the pre-typed query goes through the same path as the assistant bar,
+    /// so local parsing, demo mode, API keys and cloud consent all behave as before.
+    static func runCommand(_ text: String, store: HomeStore, state: PanelSearchState = .shared) {
+        let utterance = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !utterance.isEmpty else { return }
+        state.end()
+        store.presentAssistantBar()
+        Task { @MainActor in
+            await store.runAssistantCommand(utterance)
         }
     }
 }

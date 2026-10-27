@@ -7,6 +7,8 @@ struct SensorCardView: View {
     @Environment(\.appSkin) private var skin
     @Environment(\.skinPalette) private var palette
     @Environment(\.colorScheme) private var colorScheme
+    /// Observed so a temperature-unit change in Settings re-renders open cards (#52).
+    @AppStorage(TemperatureUnitPreference.storageKey) private var temperatureUnitRaw = TemperatureUnitPreference.system.rawValue
 
     let device: SmartDevice
     let spec: SensorSpec
@@ -35,7 +37,7 @@ struct SensorCardView: View {
         }
         var parts: [String] = [device.name]
         if let t = spec.temperature {
-            parts.append(String(format: L10n.tr("温度 %.1f 度", "temperature %.1f"), t))
+            parts.append(L10n.format("温度 %@", "temperature %@", L10n.temperature(t, fractionDigits: 1)))
         }
         if let h = spec.humidity {
             parts.append(String(format: L10n.tr("湿度 %.0f%%", "humidity %.0f%%"), h))
@@ -116,12 +118,12 @@ struct SensorCardView: View {
 
     private func temperatureText(size: CGFloat) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 1) {
-            Text(spec.temperature.map { String(format: "%.1f", $0) } ?? "--")
+            Text(spec.temperature.map { L10n.temperatureValue($0, fractionDigits: 1) } ?? "--")
                 .font(.system(size: size, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .contentTransition(.numericText(value: spec.temperature ?? 0))
                 .foregroundStyle(fg)
-            Text("°C")
+            Text(L10n.temperatureSymbol)
                 .font(.system(size: size * 0.42, weight: .semibold, design: .rounded))
                 .foregroundStyle(muted)
         }
