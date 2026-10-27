@@ -4,9 +4,11 @@
 
 ## 基准与环境
 
-代码基准为 `ad6c72046ca4a7ca88d48ce57cc08da0b7351a55`。领取的 PR head `098de7d` 与基准的功能代码完全相同，只增加交接文档。本轮继续 `fix/audit-issues`，保留已有提交作者。
+代码基准为 `ad6c72046ca4a7ca88d48ce57cc08da0b7351a55`。本轮行为修复固定于 `8cd0fd64c69619e23d63e3d73473a2be3ceea1f9`。领取的 PR head `098de7d` 与基准的功能代码完全相同，只增加交接文档。本轮继续 `fix/audit-issues`，保留已有提交作者。
 
-本机为 arm64、macOS 27.0.1、Xcode 27.1、Swift 6.4。原始日志在本机私有目录 `~/Library/Logs/MenuBarMijia-qa/20261027-pr65/`，包含环境信息、前后检查、打包、快照原图、界面状态、决策与 Sol 记录。原始桌面截图和界面树不公开。
+本机为 arm64、macOS 27.0.1、Xcode 27.1、Swift 6.4。`8cd0fd6` 的后续 CI 已通过应用 Swift 6.3.3 编译，但元数据文件查找仍失败，尚未运行到快照步骤。正在收敛 Xcode 版本差异，不能把“编译修复”记成 CI 全绿。
+
+原始日志在本机私有目录 `~/Library/Logs/MenuBarMijia-qa/20261027-pr65/`，包含环境信息、前后检查、打包、快照原图、界面状态、决策与 Sol 记录。原始桌面截图和界面树不公开。
 
 ## 自动化与打包
 
@@ -14,13 +16,13 @@
 | --- | --- |
 | 原 CI | [40452691649](https://github.com/jryang1997/MenuBarMijia/actions/runs/40452691649) 的 Linux 四项核心断言失败，macOS 缺 App Intents 元数据；不是平台误报。 |
 | 本机初次完整检查 | `check-before.log`。核心 265 项有五项失败；App 25 项有 18 个问题。 |
-| 本轮完整检查 | `check-reviewed.log`。核心 266/266 通过；App 29 项只有两项图像测试失败，共 14 张图不匹配。其余 27 项通过，包括菜单栏控制器 16 项和新增快捷指令 4 项。整体命令仍非零退出。 |
+| 本轮完整检查 | `check-reviewed.log` 在 `e7118c0` 功能代码上运行。后续九处界面结果丢弃修正单独补跑 20 项，见 `ui-callers-after.log`。核心 266/266 通过；App 29 项只有两项图像测试失败，共 14 张图不匹配。其余 27 项通过，包括菜单栏控制器 16 项和新增快捷指令 4 项。整体命令仍非零退出。 |
 | Windows | `windows-core-after.log` 的 93/93 通过；`windows-build-after.log` 的 TypeScript 与 Vite 生产构建通过。共享定时语料包含数字与单位之间的空格。 |
 | TLS | 修正 macOS 自带 LibreSSL 的端口参数后，实际本地 TLS 换证拒绝与重新配对测试通过。没有连接真实电视。 |
 | 实际 Release 打包 | `build-final.log`。执行 `bash scripts/build_app.sh` 成功，保留元数据缺失即失败的门禁。Xcode 产生新常量数据后显式提取元数据，包内含四个动作和四个 App Shortcuts。 |
-| 签名 | 本机 ad-hoc 签名。`codesign --verify --deep --strict` 通过不等于正式签名、Gatekeeper 或升级验收。 |
+| 签名 | `build-final.log` 对应 ad-hoc 包。随后使用本机已有 Apple Development 证书，`build-development-signed.log` 打包完成，严格签名核验为 0，Team ID 存在。开发签名不等于 Developer ID 发布、Gatekeeper 或升级验收。 |
 | 资源 | 安装包包含 `MenuBarMijia_MijiaCore.bundle` 和繁体资源。新增实际包资源发现回归，不用源目录 override 代替包验证。 |
-| 独立复审 | sol-loop 两轮，`gpt-6.1-sol`，xhigh。S1 冷启动查询空数据、S2 提前报告执行成功均修复，第二轮 APPROVE。用量未暴露。批准不替代快照和真实设备验收。CI 后续发现 Swift 6.3.3 的动画闭包结果类型冲突，界面调用已显式丢弃控制 Task，关联 20 项本机测试通过，待新 CI。 |
+| 独立复审 | sol-loop 三轮，`gpt-6.1-sol`，xhigh。S1 冷启动查询空数据、S2 提前报告执行成功均修复，第二、三轮 APPROVE。用量未暴露。第三轮覆盖界面动画闭包结果修正。批准不替代快照和真实设备验收。CI 后续发现 Swift 6.3.3 的动画闭包结果类型冲突，界面调用已显式丢弃控制 Task，关联 20 项本机测试通过，待新 CI。 |
 
 ## 本轮修复
 
@@ -49,7 +51,7 @@ App 以 `-home_backend demo` 启动。首次桌面访问系统提示由用户手
 | 真实连接 #18/#26/#37 | 未测 | 未登录真实 HA、米家或海外账号，未测试地址变化和锁屏轮询。 |
 | 误操作与定时 #21/#22/#23 | 未测 | 核心安全与定时回归通过，未做真实 AI、合盖跨时与设备范围实测。 |
 | 长开、电量、用电 #35/#62 | 未测 | 无长时间真实读数、电量重启冷却和清除后重启证据。 |
-| URL 与快捷指令 #57 | 部分通过 | 元数据有四动作，新增实际 Intent 的延迟加载、失败回滚与确认结果回归通过。[系统 Shortcuts 已实际搜索到四个动作](evidence/pr65/shortcuts-discovery.png)。选择房间时，ad-hoc 包被系统以缺少 Team ID 拒绝通信。执行与 Spotlight 尚未通过，正在用现有开发证书复测。 |
+| URL 与快捷指令 #57 | 部分通过 | 元数据有四动作，新增实际 Intent 的延迟加载、失败回滚与确认结果回归通过。[系统 Shortcuts 已实际搜索到四个动作](evidence/pr65/shortcuts-discovery.png)。选择房间时，ad-hoc 包被系统以缺少 Team ID 拒绝通信。执行与 Spotlight 尚未通过，正在用现有开发证书复测。手写 URL 的 toggle、scene、ask 及确认取消不下发尚未实测。 |
 | Mac 自动化 #59 | 未测 | 规则列表默认空已观察。未在真实锁屏、合盖、显示器事件中执行测试。 |
 | 升级与凭据 #16/#17/#32 | 未测 | 缺独立测试账号与真实签名升级产物，没有写假 token、删除凭据或操作离线私钥。 |
 | TLS #30 | 部分通过 | 实际受控 TLS 服务换证拒绝通过。真实电视的显式重新信任与配对未测。 |

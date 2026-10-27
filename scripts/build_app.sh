@@ -226,9 +226,13 @@ generate_app_intents_metadata_via_xcode() {
         toolchain="$developer_dir/Toolchains/XcodeDefault.xctoolchain"
         sdk_root="$(xcrun --sdk macosx --show-sdk-path)"
         xcode_version="$(xcodebuild -version | awk '/Build/ {print $3; exit}')"
-        find "$derived" -path "*/$APP_INTENTS_MODULE-p.build/*" -name '*.swiftconstvalues' > "$derived/constvals.txt"
+        find "$derived" -path "*/${APP_INTENTS_MODULE}*.build/*" -name '*.swiftconstvalues' > "$derived/constvals.txt"
         find "$ROOT/Sources/$APP_INTENTS_MODULE" -name '*.swift' > "$derived/sources.txt"
-        [ -s "$derived/constvals.txt" ] || return 1
+        if [ ! -s "$derived/constvals.txt" ]; then
+            echo "❌ Xcode 构建未产生 ${APP_INTENTS_MODULE} 的 swiftconstvalues，构建日志：$ROOT/.build/appintents-build.log" >&2
+            find "$derived" -name '*.swiftconstvalues' >&2
+            return 1
+        fi
         "$toolchain/usr/bin/appintentsmetadataprocessor" \
             --toolchain-dir "$toolchain" \
             --module-name "$APP_INTENTS_MODULE" \

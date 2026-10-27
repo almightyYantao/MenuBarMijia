@@ -112,8 +112,11 @@ jobs:
         if: failure()
         with:
           name: snapshot-diff
-          path: snapshot-failed
+          path: |
+            snapshot-failed
+            .build/appintents-build.log
           if-no-files-found: ignore
+          include-hidden-files: true
 
   snapshot-record:
     # 仅手动触发（workflow_dispatch）：以 record 模式渲染 UI 快照基线（#46）。

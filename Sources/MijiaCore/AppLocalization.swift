@@ -600,18 +600,17 @@ public enum L10n {
     /// probed for `<Package>_MijiaCore.bundle/Contents/Resources/Localizations`,
     /// `<Package>_MijiaCore.bundle/Localizations`, `<Package>_MijiaCore.resources/Localizations`,
     /// the same three without `Localizations`, and a bare `Localizations`.
-    static var translationDirectoryCandidates: [URL] {
-        var candidates: [URL] = []
-        for base in translationSearchBases {
+    static var translationDirectoryCandidates: some Sequence<URL> {
+        translationSearchBases.lazy.flatMap { base -> [URL] in
+            var candidates = [base.appendingPathComponent("Localizations")]
             for name in resourceDirectoryNames(in: base) {
                 let root = base.appendingPathComponent(name)
                 candidates.append(root.appendingPathComponent("Contents/Resources/Localizations"))
                 candidates.append(root.appendingPathComponent("Localizations"))
                 candidates.append(root)
             }
-            candidates.append(base.appendingPathComponent("Localizations"))
+            return candidates
         }
-        return candidates
     }
 
     /// Resource bundle/directory names produced for the `MijiaCore` target by any package name.
@@ -631,7 +630,7 @@ public enum L10n {
         return names
     }
 
-    static func firstTranslationDirectory(in candidates: [URL]) -> URL? {
+    static func firstTranslationDirectory(in candidates: some Sequence<URL>) -> URL? {
         var isDirectory: ObjCBool = false
         for candidate in candidates {
             guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory),

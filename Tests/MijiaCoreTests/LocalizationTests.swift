@@ -192,6 +192,13 @@ struct LocalizationTests {
             root.appendingPathComponent("MenuBarMijia_MijiaCore.bundle/Localizations"),
         ]
         #expect(L10n.firstTranslationDirectory(in: candidates)?.path == nested.path)
+        var visited: [URL] = []
+        let lazyCandidates = candidates.lazy.map { candidate in
+            visited.append(candidate)
+            return candidate
+        }
+        #expect(L10n.firstTranslationDirectory(in: lazyCandidates)?.path == nested.path)
+        #expect(visited == [candidates[0]])
         // A base directory with no tables at all yields nothing rather than a wrong path.
         #expect(L10n.firstTranslationDirectory(in: [root.appendingPathComponent("Missing")]) == nil)
         // Package-specific names are recognised (`<Package>_MijiaCore.bundle|.resources`).
