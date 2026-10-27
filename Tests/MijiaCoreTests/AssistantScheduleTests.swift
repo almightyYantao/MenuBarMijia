@@ -12,11 +12,13 @@ struct AssistantScheduleTests {
             #expect(got?.remainder == rest, "\(text)")
         }
         check("10分钟后关灯", 600, "关灯")
+        check("5 分钟后关灯", 300, "关灯")
         check("半小时后打开空调", 1800, "打开空调")
         check("过两分钟关掉书房灯", 120, "关掉书房灯")
         check("一个半小时后关空调", 5400, "关空调")
         check("二十分钟以后关灯", 1200, "关灯")
         check("关灯，30秒后", 30, "关灯")
+        check("关灯，30 秒后", 30, "关灯")
         check("1小时后把空调调到26度", 3600, "把空调调到26度")
         #expect(DelayPhrase.extract("打开空调") == nil)
         #expect(DelayPhrase.extract("把空调调到26度") == nil)

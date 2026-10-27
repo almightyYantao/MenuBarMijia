@@ -4,12 +4,13 @@ import Foundation
 extension HomeStore {
     // MARK: - Primary Toggle & Manual Light Memory
 
-    public func togglePrimary(_ device: SmartDevice) {
+    @discardableResult
+    public func togglePrimary(_ device: SmartDevice) -> Task<Bool, Never>? {
         guard device.isOnline else {
             showToast(L10n.tr("\(device.name) 当前离线（可能断电）", "\(device.name) is offline (unplugged)"), isError: true)
-            return
+            return nil
         }
-        guard let idx = devices.firstIndex(where: { $0.id == device.id }) else { return }
+        guard let idx = devices.firstIndex(where: { $0.id == device.id }) else { return nil }
         let previous = devices[idx]
         var updated = previous
         var command: DeviceCommand?
@@ -54,15 +55,15 @@ extension HomeStore {
                 command = .pressButton(entityId: btnId)
             } else {
                 toggleExpanded(device.id)
-                return
+                return nil
             }
 
         case .speaker, .fridge, .sensor:
             toggleExpanded(device.id)
-            return
+            return nil
         }
 
-        guard let cmd = command else { return }
+        guard let cmd = command else { return nil }
         devices[idx] = updated
         if case .light = updated.kind, updated.isActiveOn {
             recordManualLightUse(device.id)
@@ -78,15 +79,17 @@ extension HomeStore {
         )
         if isHabitLearningEnabled { userHabitMemory = memory }
 
-        Task {
+        return Task {
             do {
                 try await executeDeviceCommand(cmd)
+                return true
             } catch {
                 if let revertIdx = self.devices.firstIndex(where: { $0.id == device.id }) {
                     self.devices[revertIdx] = previous
                 }
                 self.optimisticLockUntil.removeValue(forKey: device.id)
                 self.showToast(L10n.tr("\(device.name) 响应失败，已回滚", "\(device.name) failed to respond; rolled back"), isError: true)
+                return false
             }
         }
     }

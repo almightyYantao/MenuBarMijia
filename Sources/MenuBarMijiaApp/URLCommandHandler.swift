@@ -53,7 +53,12 @@ final class URLCommandHandler {
 
         // A link can be the launch reason; wait briefly for the provider's first snapshot so the
         // confirmation sheet can name the device instead of failing.
-        await waitForInitialContent(store: store)
+        do {
+            try await store.waitForInitialSnapshot()
+        } catch {
+            finish(error.localizedDescription, isError: true, store: store)
+            return
+        }
 
         guard let resolved = resolve(command, store: store) else {
             store.showToast(
@@ -156,8 +161,16 @@ final class URLCommandHandler {
             }
             // `togglePrimary` flips whatever the device is doing now, so report the result rather
             // than a prediction made before the confirmation sheet appeared.
-            store.togglePrimary(device)
+            let task = store.togglePrimary(device)
             let isOnNow = store.devices.first(where: { $0.id == device.id })?.isActiveOn ?? false
+            guard await task?.value == true else {
+                finish(
+                    L10n.format("%@ 响应失败，已回滚", "%@ failed to respond; rolled back", device.name),
+                    isError: true,
+                    store: store
+                )
+                return
+            }
             finish(
                 isOnNow
                     ? L10n.format("已打开 %@", "Turned on %@", device.name)
@@ -172,12 +185,14 @@ final class URLCommandHandler {
                 )
                 return
             }
-            store.triggerScene(scene)
+            let succeeded = await store.triggerScene(scene).value
             // `triggerScene` already reports success/failure through the store toast; only mirror it
             // to the notification banner so a Raycast/Stream Deck trigger is visible.
             HotkeyAndNotificationManager.shared.deliverExternalActionNotification(
                 title: L10n.tr("MenuBarMijia 外部链接", "MenuBarMijia external link"),
-                body: L10n.format("已触发场景：%@", "Activated scene: %@", scene.name)
+                body: succeeded
+                    ? L10n.format("已触发场景：%@", "Activated scene: %@", scene.name)
+                    : L10n.format("场景「%@」执行失败", "Scene \"%@\" failed", scene.name)
             )
         case .ask(let text):
             let plan = await store.runAssistantCommand(text)
@@ -218,11 +233,4 @@ final class URLCommandHandler {
         )
     }
 
-    private func waitForInitialContent(store: HomeStore) async {
-        guard store.devices.isEmpty, store.scenes.isEmpty else { return }
-        for _ in 0..<40 {
-            try? await Task.sleep(for: .milliseconds(100))
-            if !store.devices.isEmpty || !store.scenes.isEmpty { return }
-        }
-    }
 }

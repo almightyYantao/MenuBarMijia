@@ -80,6 +80,7 @@ extension HomeStore {
     }
 
     public func startListening() {
+        hasReceivedInitialSnapshot = false
         eventTask?.cancel()
         let stream = provider.events()
         eventTask = Task { [weak self] in
@@ -89,6 +90,20 @@ extension HomeStore {
             }
         }
         pushPollingContext()
+    }
+
+    public func waitForInitialSnapshot(timeout: Duration = .seconds(4)) async throws {
+        try Task.checkCancellation()
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while !hasReceivedInitialSnapshot {
+            guard ContinuousClock.now < deadline else {
+                throw HomeProviderError.networkError(L10n.tr(
+                    "家居数据尚未加载，请稍后重试",
+                    "Home data has not loaded yet. Try again shortly."
+                ))
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
     }
 
     // MARK: - Polling Rhythm (#26)
@@ -132,6 +147,7 @@ extension HomeStore {
             self.connectionStatus = status
 
         case .snapshotUpdated(let snapshot):
+            hasReceivedInitialSnapshot = true
             var nextRooms = snapshot.rooms
             if let lgDev = latestLGDevice, lgConfig.isEnabled,
                !nextRooms.contains(where: { $0.id == lgDev.roomId || $0.name == lgDev.roomName }) {

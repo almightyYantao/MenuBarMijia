@@ -81,6 +81,14 @@ struct LocalizationTests {
 
     // MARK: - Resources
 
+    @Test("Packaged tables are found without a source-directory override")
+    func packagedTablesAreDiscovered() {
+        #expect(L10n.availableLanguages.contains(.zhHant))
+        L10n.$overrideLanguage.withValue(.zhHant) {
+            #expect(L10n.tr("已关闭", "Off") == "已關閉")
+        }
+    }
+
     @Test("Shipped tables are found and listed without Swift cases")
     func shippedTablesAreDiscovered() throws {
         let dir = Self.shippedTablesDirectory
@@ -117,6 +125,8 @@ struct LocalizationTests {
         try Self.withTemporaryTables(["fr.json": Self.frenchTable]) { _ in
             #expect(L10n.availableLanguages.contains(AppLanguage(rawValue: "fr")))
             #expect(AppLanguagePreference.allCases.contains(AppLanguagePreference(rawValue: "fr")!))
+            #expect(AppLanguagePreference(rawValue: "fr")?.resolved(preferredLanguages: ["en-US"]) == AppLanguage(rawValue: "fr"))
+            #expect(AppLanguagePreference(rawValue: "fr-CA")?.resolved(preferredLanguages: ["en-US"]) == AppLanguage(rawValue: "fr"))
             #expect(L10n.nativeName(for: AppLanguage(rawValue: "fr")) == "Français")
             #expect(L10n.speechLocaleIdentifier(for: AppLanguage(rawValue: "fr")) == "fr-FR")
 
@@ -181,7 +191,7 @@ struct LocalizationTests {
             root.appendingPathComponent("MenuBarMijia_MijiaCore.bundle/Contents/Resources/Localizations"),
             root.appendingPathComponent("MenuBarMijia_MijiaCore.bundle/Localizations"),
         ]
-        #expect(L10n.firstTranslationDirectory(in: candidates) == nested)
+        #expect(L10n.firstTranslationDirectory(in: candidates)?.path == nested.path)
         // A base directory with no tables at all yields nothing rather than a wrong path.
         #expect(L10n.firstTranslationDirectory(in: [root.appendingPathComponent("Missing")]) == nil)
         // Package-specific names are recognised (`<Package>_MijiaCore.bundle|.resources`).
@@ -351,7 +361,7 @@ struct LocalizationTests {
             L10n.$overrideTemperatureUnit.withValue(.fahrenheit) {
                 #expect(ac.statusSubtitle.contains("77°F"))
                 #expect(ac.statusSubtitle.contains("72°F"))
-                #expect(ac.statusSubtitle == "71.6°F · 48%")
+                #expect(sensor.statusSubtitle == "71.6°F · 48%")
                 // The underlying spec is untouched.
                 guard case .climate(let spec) = ac.kind else { return }
                 #expect(spec.targetTemperature == 25.0)

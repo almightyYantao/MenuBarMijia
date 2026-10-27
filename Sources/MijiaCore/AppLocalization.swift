@@ -220,7 +220,12 @@ public struct AppLanguagePreference: RawRepresentable, Hashable, Identifiable, C
     }
 
     public func resolved(preferredLanguages: [String] = Locale.preferredLanguages) -> AppLanguage {
-        language ?? AppLanguage.detectSystemLanguage(preferredLanguages: preferredLanguages)
+        if let language {
+            let available = L10n.availableLanguages
+            if available.contains(language) { return language }
+            if let match = AppLanguage.match(language.rawValue, in: available) { return match }
+        }
+        return AppLanguage.detectSystemLanguage(preferredLanguages: preferredLanguages)
     }
 
     public var title: String {
@@ -571,11 +576,10 @@ public enum L10n {
         return found
     }
 
-    /// Bases searched, most specific first: the app's `Contents/Resources`, its executable
-    /// directory, up to three parent directories (SwiftPM's `.build/<config>`), and the bundle's own
-    /// resource directory.
+    /// Searches the module resources first, then the app and executable locations and their parents.
     static var translationSearchBases: [URL] {
         var bases: [URL] = []
+        if let resources = Bundle.module.resourceURL { bases.append(resources) }
         if let resources = Bundle.main.resourceURL { bases.append(resources) }
         let mainURL = Bundle.main.bundleURL
         bases.append(mainURL)

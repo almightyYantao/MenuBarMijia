@@ -319,6 +319,7 @@ final class MenuBarPanelController: NSObject {
         panel.isMovable = false
         panel.isMovableByWindowBackground = false
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        panel.contentView = nil
         return panel
     }
 

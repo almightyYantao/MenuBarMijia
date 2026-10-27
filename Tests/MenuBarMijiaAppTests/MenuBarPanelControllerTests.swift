@@ -148,7 +148,7 @@ struct MenuBarPanelControllerTests {
     }
 
     @Test("Hiding orders the window out, keeps the SwiftUI tree and posts the hide notification")
-    func hidePanelReleasesContent() async throws {
+    func hidePanelKeepsContent() async throws {
         let (store, suite) = try await makeStore()
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let controller = makeController(store: store)
@@ -156,6 +156,7 @@ struct MenuBarPanelControllerTests {
 
         controller.showPanel()
         let panel = try #require(controller.panelWindow)
+        let hosting = try #require(panel.contentView as? NSHostingView<ControlCenterPanel>)
 
         var didHide = false
         let token = NotificationCenter.default.addObserver(
@@ -172,11 +173,11 @@ struct MenuBarPanelControllerTests {
         #expect(didHide)
         #expect(controller.isPanelVisible == false)
         #expect(panel.isVisible == false)
-        #expect(panel.contentView is NSHostingView<ControlCenterPanel>, "the SwiftUI tree survives a close")
+        #expect(panel.contentView === hosting, "the SwiftUI tree survives a close")
         #expect(controller.panelWindow === panel, "the window is reused, not recreated")
     }
 
-    @Test("Toggle switches between visible and hidden, and the second open rebuilds content")
+    @Test("Toggle switches between visible and hidden while preserving the same SwiftUI tree")
     func toggleCyclesVisibility() async throws {
         let (store, suite) = try await makeStore()
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
@@ -185,16 +186,16 @@ struct MenuBarPanelControllerTests {
 
         controller.togglePanel()
         let panel = try #require(controller.panelWindow)
+        let hosting = try #require(panel.contentView as? NSHostingView<ControlCenterPanel>)
         #expect(controller.isPanelVisible)
-        #expect(panel.contentView != nil)
 
         controller.togglePanel()
         #expect(controller.isPanelVisible == false)
-        #expect(panel.contentView == nil)
+        #expect(panel.contentView === hosting)
 
         controller.togglePanel()
         #expect(controller.isPanelVisible)
-        #expect(panel.contentView is NSHostingView<ControlCenterPanel>)
+        #expect(panel.contentView === hosting)
     }
 
     @Test("The panel window is the only window recognised as the control center")

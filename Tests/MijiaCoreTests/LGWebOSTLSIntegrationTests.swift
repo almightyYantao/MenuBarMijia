@@ -56,7 +56,7 @@ struct LGWebOSTLSIntegrationTests {
 
         let server = Process()
         server.executableURL = generate.executableURL
-        server.arguments = ["s_server", "-accept", "127.0.0.1:\(port)", "-cert", certificate, "-key", key, "-www", "-quiet"]
+        server.arguments = ["s_server", "-accept", "\(port)", "-cert", certificate, "-key", key, "-www", "-quiet"]
         server.standardInput = FileHandle.nullDevice
         server.standardOutput = FileHandle.nullDevice
         server.standardError = FileHandle.nullDevice

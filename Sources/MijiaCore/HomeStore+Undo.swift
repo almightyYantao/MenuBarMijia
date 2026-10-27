@@ -4,13 +4,16 @@ import Foundation
 extension HomeStore {
     // MARK: - Scenes & Built-In QuickActions with 5-Second Undo
 
-    public func triggerScene(_ scene: HomeScene) {
+    @discardableResult
+    public func triggerScene(_ scene: HomeScene) -> Task<Bool, Never> {
         Task {
             do {
                 try await executeDeviceCommand(.activateScene(entityId: scene.entityId))
                 showToast(L10n.tr("已触发场景：\(scene.name)", "Activated scene: \(scene.name)"))
+                return true
             } catch {
                 showToast(L10n.tr("场景「\(scene.name)」执行失败", "Scene \"\(scene.name)\" failed"), isError: true)
+                return false
             }
         }
     }

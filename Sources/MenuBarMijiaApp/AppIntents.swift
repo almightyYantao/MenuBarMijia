@@ -9,16 +9,6 @@ import MijiaCore
 // tile. Parameter lists come from the live store, which means Shortcuts/Siri only offer devices,
 // scenes, and rooms that exist in the connected home.
 //
-// `perform()` stays nonisolated and hops through `MainActor.run`, because `HomeStore` is
-// `@MainActor`. This also keeps the intent types usable from the system's background execution.
-//
-// Note: Shortcuts/Siri discover intents through the `Metadata.appintents` bundle that Xcode's
-// `appintentsmetadataprocessor` writes during a build. `swift build` does not run that step, so
-// `scripts/build_app.sh` invokes the processor best-effort when the toolchain emits the compiler's
-// `.swiftconstvalues` side outputs and embeds the result. Without those outputs, the intents still
-// compile and the app works, but Shortcuts may not list them; the `menumijia://` URL Scheme works
-// regardless.
-
 // MARK: - Entities
 
 struct DeviceEntity: AppEntity, Hashable {
@@ -45,6 +35,7 @@ struct DeviceEntity: AppEntity, Hashable {
 
 struct DeviceEntityQuery: EntityStringQuery {
     func entities(for identifiers: [String]) async throws -> [DeviceEntity] {
+        try await HomeStore.shared.waitForInitialSnapshot()
         let wanted = Set(identifiers)
         return await MainActor.run {
             HomeStore.shared.controllableDevices
@@ -54,12 +45,14 @@ struct DeviceEntityQuery: EntityStringQuery {
     }
 
     func suggestedEntities() async throws -> [DeviceEntity] {
-        await MainActor.run {
+        try await HomeStore.shared.waitForInitialSnapshot()
+        return await MainActor.run {
             HomeStore.shared.controllableDevices.map { DeviceEntity(device: $0) }
         }
     }
 
     func entities(matching string: String) async throws -> [DeviceEntity] {
+        try await HomeStore.shared.waitForInitialSnapshot()
         let needle = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return try await suggestedEntities() }
         return await MainActor.run {
@@ -92,6 +85,7 @@ struct SceneEntity: AppEntity, Hashable {
 
 struct SceneEntityQuery: EntityStringQuery {
     func entities(for identifiers: [String]) async throws -> [SceneEntity] {
+        try await HomeStore.shared.waitForInitialSnapshot()
         let wanted = Set(identifiers)
         return await MainActor.run {
             HomeStore.shared.scenes
@@ -101,12 +95,14 @@ struct SceneEntityQuery: EntityStringQuery {
     }
 
     func suggestedEntities() async throws -> [SceneEntity] {
-        await MainActor.run {
+        try await HomeStore.shared.waitForInitialSnapshot()
+        return await MainActor.run {
             HomeStore.shared.scenes.map { SceneEntity(scene: $0) }
         }
     }
 
     func entities(matching string: String) async throws -> [SceneEntity] {
+        try await HomeStore.shared.waitForInitialSnapshot()
         let needle = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return try await suggestedEntities() }
         return await MainActor.run {
@@ -136,6 +132,7 @@ struct RoomEntity: AppEntity, Hashable {
 
 struct RoomEntityQuery: EntityStringQuery {
     func entities(for identifiers: [String]) async throws -> [RoomEntity] {
+        try await HomeStore.shared.waitForInitialSnapshot()
         let wanted = Set(identifiers)
         return await MainActor.run {
             Self.allRooms(in: HomeStore.shared).filter { wanted.contains($0.id) }
@@ -143,12 +140,14 @@ struct RoomEntityQuery: EntityStringQuery {
     }
 
     func suggestedEntities() async throws -> [RoomEntity] {
-        await MainActor.run {
+        try await HomeStore.shared.waitForInitialSnapshot()
+        return await MainActor.run {
             Self.allRooms(in: HomeStore.shared)
         }
     }
 
     func entities(matching string: String) async throws -> [RoomEntity] {
+        try await HomeStore.shared.waitForInitialSnapshot()
         let needle = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return try await suggestedEntities() }
         return await MainActor.run {
@@ -187,37 +186,29 @@ struct ToggleDeviceIntent: AppIntent {
     var device: DeviceEntity
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let deviceId = device.id
-        let deviceName = device.name
-        let message: String = await MainActor.run {
-            let store = HomeStore.shared
-            guard let current = store.devices.first(where: { $0.id == deviceId }) else {
-                return L10n.format(
-                    "找不到设备「%@」",
-                    "Device \"%@\" was not found",
-                    deviceName
-                )
-            }
-            guard current.isOnline else {
-                return L10n.format("%@ 当前离线", "%@ is offline", current.name)
-            }
-            guard current.isPrimaryToggleable else {
-                return L10n.format(
-                    "%@ 只能展开详情操作",
-                    "%@ can only be controlled from its detail view",
-                    current.name
-                )
-            }
-
-            store.togglePrimary(current)
-            // Report the state the store now holds instead of predicting the flip.
-            let isOn = store.devices.first(where: { $0.id == deviceId })?.isActiveOn ?? false
-            return isOn
-                ? L10n.format("已打开 %@", "Turned on %@", current.name)
-                : L10n.format("已关闭 %@", "Turned off %@", current.name)
-        }
+        let message = try await execute(in: HomeStore.shared)
         await notifyExternalAction(message)
         return .result(dialog: intentDialog(message))
+    }
+
+    @MainActor
+    func execute(in store: HomeStore) async throws -> String {
+        try await store.waitForInitialSnapshot()
+        guard let current = store.controllableDevices.first(where: { $0.id == device.id }) else {
+            return L10n.format(
+                "找不到可控设备「%@」",
+                "Controllable device \"%@\" was not found",
+                device.name
+            )
+        }
+        let task = store.togglePrimary(current)
+        let isOn = store.devices.first(where: { $0.id == device.id })?.isActiveOn ?? false
+        guard await task?.value == true else {
+            return L10n.format("%@ 响应失败，已回滚", "%@ failed to respond; rolled back", current.name)
+        }
+        return isOn
+            ? L10n.format("已打开 %@", "Turned on %@", current.name)
+            : L10n.format("已关闭 %@", "Turned off %@", current.name)
     }
 }
 
@@ -231,24 +222,25 @@ struct RunSceneIntent: AppIntent {
     var scene: SceneEntity
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let sceneId = scene.id
-        let sceneName = scene.name
-        let message: String = await MainActor.run {
-            let store = HomeStore.shared
-            guard let current = store.scenes.first(where: { $0.id == sceneId }) else {
-                return L10n.format(
-                    "找不到场景「%@」",
-                    "Scene \"%@\" was not found",
-                    sceneName
-                )
-            }
-            store.triggerScene(current)
-            return L10n.format("已触发场景：%@", "Activated scene: %@", current.name)
-        }
-        // `triggerScene` already reports success/failure inside the panel; the dialog answers the
-        // caller (Shortcuts/Siri/Spotlight), so no second toast is shown here.
+        let message = try await execute(in: HomeStore.shared)
         await notifyExternalAction(message)
         return .result(dialog: intentDialog(message))
+    }
+
+    @MainActor
+    func execute(in store: HomeStore) async throws -> String {
+        try await store.waitForInitialSnapshot()
+        guard let current = store.scenes.first(where: { $0.id == scene.id }) else {
+            return L10n.format(
+                "找不到场景「%@」",
+                "Scene \"%@\" was not found",
+                scene.name
+            )
+        }
+        guard await store.triggerScene(current).value else {
+            return L10n.format("场景「%@」执行失败", "Scene \"%@\" failed", current.name)
+        }
+        return L10n.format("已触发场景：%@", "Activated scene: %@", current.name)
     }
 }
 
@@ -270,6 +262,7 @@ struct AskAssistantIntent: AppIntent {
             )))
         }
 
+        try await HomeStore.shared.waitForInitialSnapshot()
         let message = await askAssistant(utterance)
         await notifyExternalAction(message)
         return .result(dialog: intentDialog(message))
@@ -286,6 +279,7 @@ struct GetRoomClimateIntent: AppIntent {
     var room: RoomEntity
 
     func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
+        try await HomeStore.shared.waitForInitialSnapshot()
         let roomName = room.name
         let summary: (value: String, dialog: String) = await MainActor.run {
             let displayName = L10n.displayRoomName(roomName)

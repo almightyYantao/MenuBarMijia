@@ -74,12 +74,12 @@ export const DelayPhrase = {
       const m = /^半小时(?:以)?后(.+)$/.exec(trimmed);
       return buildDelay(1800, 1, m?.[1] ?? "");
     }
-    const regex = /^(?:过|等)?([0-9]+|[一二两三四五六七八九十]+)(秒钟?|分钟?|小时|钟头)(?:以)?后?[，,\s]*(.+)$/;
+    const regex = /^(?:过|等)?([0-9]+|[一二两三四五六七八九十]+)\s*(秒钟?|分钟?|小时|钟头)(?:以)?后?[，,\s]*(.+)$/;
     const front = regex.exec(trimmed);
     if (front) {
       return buildDelay(parseCnOrArabicNumber(front[1] ?? ""), chineseUnitMultiplier(front[2] ?? ""), front[3] ?? "");
     }
-    const backRegex = /^(.+?)[，,\s]*(?:过|等)?([0-9]+|[一二两三四五六七八九十]+)(秒钟?|分钟?|小时|钟头)(?:以)?后$/;
+    const backRegex = /^(.+?)[，,\s]*(?:过|等)?([0-9]+|[一二两三四五六七八九十]+)\s*(秒钟?|分钟?|小时|钟头)(?:以)?后$/;
     const back = backRegex.exec(trimmed);
     if (back) {
       return buildDelay(parseCnOrArabicNumber(back[2] ?? ""), chineseUnitMultiplier(back[3] ?? ""), back[1] ?? "");

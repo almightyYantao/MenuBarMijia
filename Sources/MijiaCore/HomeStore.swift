@@ -53,6 +53,7 @@ public final class HomeStore {
     public internal(set) var devices: [SmartDevice] = []
     public internal(set) var environmentReadings: [EnvironmentReading] = []
     public internal(set) var scenes: [HomeScene] = []
+    public internal(set) var hasReceivedInitialSnapshot = false
 
     public var selectedRoomId: String? = nil // nil = 全部 / 常用
     public var expandedDeviceId: String? = nil

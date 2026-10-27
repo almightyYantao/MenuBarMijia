@@ -162,21 +162,8 @@ cat > "$APP_DIR/Contents/Resources/en.lproj/InfoPlist.strings" <<'STRINGS_EN'
 "NSSpeechRecognitionUsageDescription" = "Used to transcribe your voice commands into smart home actions in real time.";
 STRINGS_EN
 
-# App Intents 元数据（必需，#57）：快捷指令 / Siri / Spotlight 只从包内的
-# Contents/Resources/Metadata.appintents 发现动作。Xcode 由 ExtractAppIntentsMetadata 构建阶段生成
-# 它（真实调用参数已核对：--output 指向 `<Target>.appintents` 目录本身，另需 --bundle-identifier），
-# 而 `swift build` 从不运行该阶段。缺这份元数据，动作在快捷指令里彻底不可见——是功能缺失而非可选
-# 优化，所以拿不到 extract.actionsdata 时打包直接失败退出，绝不静默产出「动作未注册」的 App。
-#
-# 为什么主路径是 xcodebuild 而不是手动传旗标：
-# - 处理器唯一的事实来源是 swiftc 写出的 `*.swiftconstvalues`（SupplementaryOutput）。
-# - 驱动这份输出的 `-const-gather-protocols-list` 目前只存在于未发布的 swift main；已发布的
-#   6.0/6.1/6.2/6.3 的 Options.td 里都没有它，Xcode 自己用的是 `-const-gather-protocols-file`
-#   加 JSON 清单。用 `-Xswiftc` 硬塞这些参数在正式工具链上必然会失败或产不出文件。
-# - Xcode 的构建图知道当前工具链的正确组合，因此让 xcodebuild 生成元数据、再取出
-#   `<Target>.appintents`，是唯一在受支持工具链上可持续的保证方式。
-# 若本机确实已由 `swift build` 落盘了 const values（未来 SwiftPM 支持），仍会先用它们跑一次，
-# 省掉整包构建。
+# SwiftPM executable targets emit const values through Xcode but do not run the app metadata
+# extraction phase. Build those values with Xcode, then process them before signing the bundle.
 APP_INTENTS_MODULE="MenuBarMijiaApp"
 APP_INTENTS_BUNDLE_ID="com.jryang1997.MenuBarMijia"
 APP_INTENTS_DEPLOYMENT_TARGET="14.0"
@@ -220,28 +207,44 @@ generate_app_intents_metadata_via_xcode() {
             -destination 'platform=macOS' \
             -configuration Release \
             -derivedDataPath "$derived" \
-            build >/dev/null 2>&1; then
+            build >"$ROOT/.build/appintents-build.log" 2>&1; then
             built=1
             break
         fi
     done
     if [ "$built" = "0" ]; then
         echo "   （xcodebuild 未能构建含 $APP_INTENTS_MODULE 的 scheme；可用 xcodebuild -list 查看）" >&2
-        rm -rf "$derived"
+        tail -n 40 "$ROOT/.build/appintents-build.log" >&2
         return 1
     fi
 
-    local bundle="" candidate resolved
-    while IFS= read -r candidate; do
-        resolved="$(app_intents_bundle_dir "$candidate")"
-        if [ -n "$resolved" ]; then
-            bundle="$resolved"
-            break
-        fi
-    done < <(find "$derived" -type d -name '*appintents' 2>/dev/null)
+    local bundle
+    bundle="$(app_intents_bundle_dir "$derived/Build/Products/Release/$APP_INTENTS_MODULE.appintents")"
     if [ -z "$bundle" ]; then
-        rm -rf "$derived"
-        return 1
+        local developer_dir toolchain sdk_root xcode_version
+        developer_dir="$(xcode-select -p)"
+        toolchain="$developer_dir/Toolchains/XcodeDefault.xctoolchain"
+        sdk_root="$(xcrun --sdk macosx --show-sdk-path)"
+        xcode_version="$(xcodebuild -version | awk '/Build/ {print $3; exit}')"
+        find "$derived" -path "*/$APP_INTENTS_MODULE-p.build/*" -name '*.swiftconstvalues' > "$derived/constvals.txt"
+        find "$ROOT/Sources/$APP_INTENTS_MODULE" -name '*.swift' > "$derived/sources.txt"
+        [ -s "$derived/constvals.txt" ] || return 1
+        "$toolchain/usr/bin/appintentsmetadataprocessor" \
+            --toolchain-dir "$toolchain" \
+            --module-name "$APP_INTENTS_MODULE" \
+            --sdk-root "$sdk_root" \
+            --xcode-version "$xcode_version" \
+            --platform-family macOS \
+            --deployment-target "$APP_INTENTS_DEPLOYMENT_TARGET" \
+            --bundle-identifier "$APP_INTENTS_BUNDLE_ID" \
+            --output "$derived/metadata" \
+            --target-triple "$(uname -m)-apple-macos${APP_INTENTS_DEPLOYMENT_TARGET}" \
+            --binary-file "$derived/Build/Products/Release/$APP_INTENTS_MODULE" \
+            --source-file-list "$derived/sources.txt" \
+            --swift-const-vals-list "$derived/constvals.txt" \
+            --force --compile-time-extraction --no-app-shortcuts-localization || return 1
+        bundle="$(app_intents_bundle_dir "$derived/metadata")"
+        [ -n "$bundle" ] || return 1
     fi
     rm -rf "$APP_DIR/Contents/Resources/Metadata.appintents"
     cp -R "$bundle" "$APP_DIR/Contents/Resources/Metadata.appintents"
@@ -250,52 +253,15 @@ generate_app_intents_metadata_via_xcode() {
 }
 
 generate_app_intents_metadata() {
-    local developer_dir toolchain sdk_root xcode_version target_triple tmp processor
     local resources="$APP_DIR/Contents/Resources/Metadata.appintents"
-
-    developer_dir="$(xcode-select -p 2>/dev/null || true)"
-    toolchain="${developer_dir}/Toolchains/XcodeDefault.xctoolchain"
-    sdk_root="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
-    xcode_version="$(xcodebuild -version 2>/dev/null | awk '/Build/ {print $3; exit}' || true)"
-    target_triple="$(uname -m)-apple-macos${APP_INTENTS_DEPLOYMENT_TARGET}"
-    processor="$toolchain/usr/bin/appintentsmetadataprocessor"
-
     rm -rf "$resources"
-
-    # Fast path: SwiftPM already emitted const values (only on toolchains that support it).
-    local constvals
-    constvals="$(find "$ROOT/.build" -path "*$APP_INTENTS_MODULE.build*" -name '*.swiftconstvalues' 2>/dev/null || true)"
-    if [ -n "$constvals" ] && [ -x "$processor" ]; then
-        tmp="$(mktemp -d)"
-        find "$ROOT/Sources/$APP_INTENTS_MODULE" -name '*.swift' > "$tmp/sources.txt"
-        printf '%s\n' "$constvals" > "$tmp/constvals.txt"
-        "$processor" \
-            --toolchain-dir "$toolchain" \
-            --module-name "$APP_INTENTS_MODULE" \
-            --sdk-root "$sdk_root" \
-            --xcode-version "$xcode_version" \
-            --platform-family macOS \
-            --deployment-target "$APP_INTENTS_DEPLOYMENT_TARGET" \
-            --bundle-identifier "$APP_INTENTS_BUNDLE_ID" \
-            --output "$tmp/Metadata.appintents" \
-            --target-triple "$target_triple" \
-            --binary-file "$BIN_PATH" \
-            --source-file-list "$tmp/sources.txt" \
-            --swift-const-vals-list "$tmp/constvals.txt" \
-            --force --compile-time-extraction --no-app-shortcuts-localization \
-            || true
-        if [ -f "$tmp/Metadata.appintents/extract.actionsdata" ]; then
-            cp -R "$tmp/Metadata.appintents" "$resources"
-        fi
-        rm -rf "$tmp"
-    fi
 
     if [ ! -f "$resources/extract.actionsdata" ]; then
         echo "ℹ️ 生成 App Intents 元数据（xcodebuild ExtractAppIntentsMetadata）..."
         if ! generate_app_intents_metadata_via_xcode; then
             echo "❌ 无法生成 App Intents 元数据（Metadata.appintents）。" >&2
             echo "   缺了它，快捷指令 / Siri / Spotlight 看不到任何动作，属于 #57 的交付缺失，已中止打包。" >&2
-            echo "   排查：xcode-select -p 必须指向完整 Xcode；xcodebuild -list 应列出 $APP_INTENTS_MODULE。" >&2
+            echo "   排查：xcode-select -p 必须指向完整 Xcode；xcodebuild -list 应列出 ${APP_INTENTS_MODULE}。" >&2
             exit 1
         fi
     fi

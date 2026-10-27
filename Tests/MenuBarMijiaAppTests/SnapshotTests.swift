@@ -165,10 +165,28 @@ struct SnapshotTests {
         hosting.displayIfNeeded()
         window.displayIfNeeded()
 
-        let snapshotView: NSView = hosting
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width),
+            pixelsHigh: Int(size.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            Issue.record("Could not create a 1x snapshot bitmap")
+            return
+        }
+        bitmap.size = size
+        hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+        let image = NSImage(size: size)
+        image.addRepresentation(bitmap)
         assertSnapshot(
-            of: snapshotView,
-            as: .image(size: size),
+            of: image,
+            as: .image,
             named: name,
             record: recordMode,
             file: file,
