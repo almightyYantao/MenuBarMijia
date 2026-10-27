@@ -583,6 +583,39 @@ mod tests {
     }
 
     #[test]
+    fn native_http_invoke_rejects_an_unconfigured_host() {
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![native_http])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("isolated IPC application");
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("isolated IPC window");
+        let response = tauri::test::get_ipc_response(
+            &window,
+            tauri::webview::InvokeRequest {
+                cmd: "native_http".into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "http://tauri.localhost".parse().expect("local app origin"),
+                body: tauri::ipc::InvokeBody::Json(serde_json::json!({
+                    "url": "https://not-configured.invalid/private",
+                    "method": "POST",
+                    "headers": {"Authorization": "Bearer isolated-test-value"},
+                    "body": "private-data",
+                    "timeoutMs": 100
+                })),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        );
+        let error = response.expect_err("unconfigured hosts must fail before networking");
+        let message = error.as_str().expect("policy error returned to the frontend");
+        assert!(message.contains("not-configured.invalid"), "unexpected IPC error: {message}");
+        assert!(message.contains("拒绝访问未授权主机"), "request reached transport: {message}");
+    }
+
+    #[test]
     fn allows_only_xiaomi_api_and_configured_hosts() {
         assert!(allows("https://api.io.mi.com/app/home/device_list", &[]));
         assert!(allows("https://de.api.io.mi.com/app/home/device_list", &[]));

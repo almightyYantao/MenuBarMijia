@@ -24,6 +24,10 @@ function tile(id: string): string {
   return element(`[data-body-device="${id}"]`).textContent ?? "";
 }
 
+function textOf(selector: string): string {
+  return element(selector).textContent ?? "";
+}
+
 function startDemo(): void {
   localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
     connectionMode: "demo",
@@ -50,6 +54,9 @@ async function command(text: string): Promise<void> {
 beforeEach(() => {
   dom = new Window({ url: "http://localhost/" });
   installWindow(dom);
+  // The suite asserts Simplified Chinese chrome; pin the OS language so `system` resolves to it.
+  Object.defineProperty(dom.navigator, "languages", { value: ["zh-CN", "zh"], configurable: true });
+  Object.defineProperty(dom.navigator, "language", { value: "zh-CN", configurable: true });
   document.body.innerHTML = '<div id="app"></div>';
   // Most UI tests do not exercise the daily GitHub check; mark it done today so the
   // startup request cannot change their request lists (#39). Update tests clear this.
@@ -494,5 +501,66 @@ describe("Update notice (#39)", () => {
     await setImmediate();
     await setImmediate();
     assert.deepEqual(urls, []);
+  });
+});
+
+describe("Interface language and temperature units (#52)", () => {
+  function seed(extra: Record<string, unknown>): void {
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+      ...extra,
+    }));
+  }
+
+  it("renders the English catalog when English is selected, and remembers it", async () => {
+    seed({ interfaceLanguage: "en" });
+    new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+
+    const text = document.body.textContent ?? "";
+    assert.match(text, /All off/, "the hold-to-confirm control is translated");
+    assert.match(text, /Switch home|My Mi Home|Living room/, "home and room labels are translated");
+    assert.doesNotMatch(text, /全关/, "no Simplified Chinese chrome leaks into English mode");
+    assert.match(element('[data-body-device="light.living_ceiling"]').textContent ?? "", /Living room ceiling light/i);
+
+    // Selecting Chinese switches back without a reload and persists the choice.
+    await click("#btn-settings");
+    const chinese = document.querySelector<HTMLElement>('[data-interface-language="zh-Hans"]');
+    assert.ok(chinese, "language picker is present in settings");
+    await click('[data-interface-language="zh-Hans"]');
+    assert.match(document.body.textContent ?? "", /全关/);
+    const saved = JSON.parse(localStorage.getItem("menumijia.windows.settings.v2") ?? "{}") as Record<string, unknown>;
+    assert.equal(saved["interfaceLanguage"], "zh-Hans");
+  });
+
+  it("follows the OS language when the preference is system", async () => {
+    Object.defineProperty(window.navigator, "languages", { value: ["en-US", "en"], configurable: true });
+    Object.defineProperty(window.navigator, "language", { value: "en-US", configurable: true });
+    seed({ interfaceLanguage: "system" });
+    new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+    assert.match(document.body.textContent ?? "", /All off/);
+  });
+
+  it("shows °F when the unit is Fahrenheit, and one tap moves exactly one °F", async () => {
+    seed({ interfaceLanguage: "zh-Hans", temperatureUnit: "fahrenheit" });
+    new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+
+    // Demo AC runs at 25 °C = 77 °F; the sensor reads 25.5 °C = 77.9 °F.
+    assert.match(textOf(".cc-climate"), /77°F/);
+    assert.match(textOf(".cc-sensor"), /77\.9°F/);
+
+    await click('[data-acstep="climate.living_ac:1"]');
+    assert.match(textOf(".cc-climate"), /78°F/);
+  });
+
+  it("keeps Celsius when the unit is Celsius", async () => {
+    seed({ interfaceLanguage: "zh-Hans", temperatureUnit: "celsius" });
+    new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+    assert.match(textOf(".cc-climate"), /25°C/);
+    assert.match(textOf(".cc-sensor"), /25\.5°C/);
   });
 });

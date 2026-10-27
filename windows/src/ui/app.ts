@@ -94,6 +94,25 @@ import {
   withAliases,
   type HomeOption,
 } from "./panelPrefs.js";
+import {
+  type AppLanguage,
+  type LanguagePreference,
+  resolveLanguage,
+  setLanguage,
+  speechLocale,
+  t,
+} from "../core/i18n.js";
+import {
+  type TemperatureUnitPreference,
+  applyTemperatureUnit,
+  displayStep,
+  formatTemperature,
+  formatTemperatureValue,
+  getTemperatureUnit,
+  stepCelsius,
+  temperatureSymbol,
+  toCelsius,
+} from "../core/temperature.js";
 
 declare global {
   interface Window {
@@ -168,6 +187,10 @@ interface PersistedSettings {
   layout: LayoutPrefs;
   /** Selected Mi Home id; null shows every home. */
   selectedHomeId: string | null;
+  /** UI language (#52); `system` follows the OS language, and the speech recognizer follows the UI. */
+  interfaceLanguage: LanguagePreference;
+  /** °C/°F display (#52); stored/command values stay Celsius. */
+  temperatureUnit: TemperatureUnitPreference;
 }
 
 interface UndoStep {
@@ -188,6 +211,8 @@ interface ReplyBannerState {
 }
 
 const STORAGE_KEY = "menumijia.windows.settings.v2";
+// The #52 language/unit preferences live inside the one settings blob above, so a save writes them
+// atomically with the rest; `i18n.ts` and `temperature.ts` expose matching standalone keys for tools.
 const LEGACY_STORAGE_KEY = "menumijia.windows.settings.v1";
 
 // Injected at build time by vite.config.ts from the repository's VERSION file (#39).
@@ -219,12 +244,14 @@ const SF_ICONS = {
   arrowUpCircle: `<svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 18a8 8 0 100-16 8 8 0 000 16zm.53-11.28a.75.75 0 00-1.06 0L6.72 9.47a.75.75 0 101.06 1.06l1.47-1.47v4.19a.75.75 0 001.5 0V9.06l1.47 1.47a.75.75 0 101.06-1.06l-2.75-2.75z"/></svg>`,
 };
 
-const DEMO_DEVICES: SmartDevice[] = [
+/** Demo home, materialised per language so the preview text follows the UI (#52). */
+function demoDevices(): SmartDevice[] {
+  return [
   {
     id: "light.living_ceiling",
-    name: "客厅吸顶灯",
+    name: t(t("客厅吸顶灯")),
     roomId: "room_living",
-    roomName: "客厅",
+    roomName: t(t("客厅")),
     model: "yeelink.light.ceiling22",
     isOnline: true,
     kind: {
@@ -241,9 +268,9 @@ const DEMO_DEVICES: SmartDevice[] = [
   },
   {
     id: "climate.living_ac",
-    name: "客厅立式空调",
+    name: t(t("客厅立式空调")),
     roomId: "room_living",
-    roomName: "客厅",
+    roomName: t(t("客厅")),
     model: "xiaomi.aircondition.mc5",
     isOnline: true,
     kind: {
@@ -263,9 +290,9 @@ const DEMO_DEVICES: SmartDevice[] = [
   },
   {
     id: "light.study_desk",
-    name: "书房台灯",
+    name: t(t("书房台灯")),
     roomId: "room_study",
-    roomName: "书房",
+    roomName: t(t("书房")),
     model: "yeelink.light.lamp15",
     isOnline: true,
     kind: {
@@ -282,9 +309,9 @@ const DEMO_DEVICES: SmartDevice[] = [
   },
   {
     id: "fan.bedroom_standing",
-    name: "主卧直流风扇",
+    name: t(t("主卧直流风扇")),
     roomId: "room_bedroom",
-    roomName: "主卧",
+    roomName: t(t("主卧")),
     model: "zhimi.fan.za5",
     isOnline: true,
     kind: {
@@ -299,9 +326,9 @@ const DEMO_DEVICES: SmartDevice[] = [
   },
   {
     id: "plug.entry_socket",
-    name: "玄关智能插座",
+    name: t(t("玄关智能插座")),
     roomId: "room_entry",
-    roomName: "玄关",
+    roomName: t(t("玄关")),
     model: "cuco.plug.cp1",
     isOnline: true,
     kind: {
@@ -315,9 +342,9 @@ const DEMO_DEVICES: SmartDevice[] = [
   },
   {
     id: "vacuum.roborock",
-    name: "全屋扫拖机器人",
+    name: t(t("全屋扫拖机器人")),
     roomId: "room_living",
-    roomName: "客厅",
+    roomName: t(t("客厅")),
     model: "roborock.vacuum.a15",
     isOnline: true,
     kind: {
@@ -332,9 +359,9 @@ const DEMO_DEVICES: SmartDevice[] = [
   },
   {
     id: "sensor.living_env",
-    name: "客厅温湿度计",
+    name: t(t("客厅温湿度计")),
     roomId: "room_living",
-    roomName: "客厅",
+    roomName: t(t("客厅")),
     model: "miaomiaoce.sensor_ht.t2",
     isOnline: true,
     kind: {
@@ -344,27 +371,32 @@ const DEMO_DEVICES: SmartDevice[] = [
       battery: 94,
     },
   },
-];
+  ];
+}
 
-const DEMO_SCENES: HomeScene[] = [
-  { id: "scene.home", name: "回家模式", entityId: "scene.home" },
-  { id: "scene.focus", name: "专注模式", entityId: "scene.focus" },
-  { id: "scene.sleep", name: "睡眠模式", entityId: "scene.sleep" },
-  { id: "scene.leave", name: "离家模式", entityId: "scene.leave" },
-];
+function demoScenes(): HomeScene[] {
+  return [
+    { id: "scene.home", name: t(t("回家模式")), entityId: "scene.home" },
+    { id: "scene.focus", name: t(t("专注模式")), entityId: "scene.focus" },
+    { id: "scene.sleep", name: t(t("睡眠模式")), entityId: "scene.sleep" },
+    { id: "scene.leave", name: t(t("离家模式")), entityId: "scene.leave" },
+  ];
+}
 
-const QUICK_ACTIONS: ReadonlyArray<{
+function quickActions(): ReadonlyArray<{
   readonly id: string;
   readonly title: string;
   readonly icon: string;
   readonly tint: string;
   readonly command: string;
-}> = [
-  { id: "lights_on", title: "全开主灯", icon: SF_ICONS.sunMaxFill, tint: "amber", command: "打开所有灯" },
-  { id: "lights_off", title: "睡眠关灯", icon: SF_ICONS.moonStarsFill, tint: "indigo", command: "关闭所有灯" },
-  { id: "cool_25", title: "25°制冷", icon: SF_ICONS.snowflake, tint: "cyan", command: "空调调到25度" },
-  { id: "focus", title: "调亮灯光", icon: SF_ICONS.lightbulbFill, tint: "amber", command: "再亮一点" },
-];
+}> {
+  return [
+    { id: "lights_on", title: t(t("全开主灯")), icon: SF_ICONS.sunMaxFill, tint: "amber", command: t(t("打开所有灯")) },
+    { id: "lights_off", title: t(t("睡眠关灯")), icon: SF_ICONS.moonStarsFill, tint: "indigo", command: t(t("关闭所有灯")) },
+    { id: "cool_25", title: t(t("25°制冷")), icon: SF_ICONS.snowflake, tint: "cyan", command: t(t("空调调到25度")) },
+    { id: "focus", title: t(t("调亮灯光")), icon: SF_ICONS.lightbulbFill, tint: "amber", command: t(t("再亮一点")) },
+  ];
+}
 
 function createTransport(): HttpTransport {
   return async (req: HttpRequest): Promise<HttpResponse> => {
@@ -461,6 +493,14 @@ function loadSettings(): LoadedSettings {
           skin: SKINS.some((k) => k.id === parsed.skin) ? (parsed.skin as AppSkin) : "classic",
           panelHeight: PANEL_HEIGHTS.some((h) => h.id === parsed.panelHeight) ? (parsed.panelHeight as PanelHeight) : "standard",
           climatePanel: parsed.climatePanel ?? true,
+          interfaceLanguage:
+            parsed.interfaceLanguage === "zh-Hans" || parsed.interfaceLanguage === "en"
+              ? parsed.interfaceLanguage
+              : "system",
+          temperatureUnit:
+            parsed.temperatureUnit === "celsius" || parsed.temperatureUnit === "fahrenheit"
+              ? parsed.temperatureUnit
+              : "system",
           layout: { ...emptyLayoutPrefs(), ...(parsed.layout ?? {}) },
           selectedHomeId: parsed.selectedHomeId ?? null,
         },
@@ -495,6 +535,8 @@ function loadSettings(): LoadedSettings {
       climatePanel: true,
       layout: emptyLayoutPrefs(),
       selectedHomeId: null,
+      interfaceLanguage: "system",
+      temperatureUnit: "system",
     },
     hasLegacyCredentials: false,
   };
@@ -529,12 +571,10 @@ export class MenuMijiaWindowsApp {
   private readonly credentialVault = new CredentialVault();
   /** Serialized host list last sent to Rust; avoids re-sending it on every periodic settings save. */
   private lastAllowedHosts: string | null = null;
-  private devices: SmartDevice[] =
-    this.settings.connectionMode === "xiaomiCloud"
-      ? structuredClone(this.settings.cachedXiaomiDevices)
-      : structuredClone(DEMO_DEVICES);
-  private scenes: HomeScene[] =
-    this.settings.connectionMode === "xiaomiCloud" ? [] : structuredClone(DEMO_SCENES);
+  // Assigned in the constructor, after the interface language is resolved: the demo home is
+  // generated per language (#52), so a field initializer would freeze the module default.
+  private devices: SmartDevice[];
+  private scenes: HomeScene[];
   private environmentReadings: EnvironmentReading[] = [];
   private selectedRoom = "全部";
   private expandedDeviceId: string | null = null;
@@ -556,7 +596,7 @@ export class MenuMijiaWindowsApp {
   private missedScheduledCommands: ScheduledCommand[] = [];
   private lastUndoAction: UndoAction | null = null;
   private qrTicket: QRLoginTicket | null = null;
-  private qrStatusText = "点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。";
+  private qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
   private isPollingQR = false;
   /** Latest GitHub release found by the daily check (#39); shown in settings and the tray menu. */
   private availableUpdate: GitHubRelease | null = null;
@@ -586,6 +626,13 @@ export class MenuMijiaWindowsApp {
       this.settings.cachedModelTypes,
     );
 
+    this.applyInterfaceLanguage();
+    this.applyTemperatureSetting();
+    this.devices =
+      this.settings.connectionMode === "xiaomiCloud"
+        ? structuredClone(this.settings.cachedXiaomiDevices)
+        : demoDevices();
+    this.scenes = this.settings.connectionMode === "xiaomiCloud" ? [] : demoScenes();
     this.initializeCredentials();
     this.syncAllowedHosts();
 
@@ -666,6 +713,24 @@ export class MenuMijiaWindowsApp {
     writeSettingsForStorage(this.settings);
     this.syncAllowedHosts();
     void this.persistCredentials();
+  }
+
+  /** OS-preferred languages, read from the WebView's `window.navigator` (#52). */
+  private static osLanguages(): string[] {
+    const languages = window.navigator.languages;
+    if (Array.isArray(languages) && languages.length > 0) return [...languages];
+    return window.navigator.language ? [window.navigator.language] : [];
+  }
+
+  /** Picks the UI language from the saved preference plus the OS languages (#52). */
+  private applyInterfaceLanguage(): void {
+    setLanguage(resolveLanguage(this.settings.interfaceLanguage, MenuMijiaWindowsApp.osLanguages()));
+  }
+
+  /** Resolves °C/°F from the saved preference plus the OS region; core values stay Celsius (#52). */
+  private applyTemperatureSetting(): void {
+    const locale = MenuMijiaWindowsApp.osLanguages()[0] ?? "en";
+    applyTemperatureUnit(locale, this.settings.temperatureUnit);
   }
 
   /**
@@ -749,8 +814,8 @@ export class MenuMijiaWindowsApp {
       this.render();
     } else if (manual) {
       this.replyBanner = {
-        text: result.failed ? "检查更新失败，请稍后再试" : `已是最新版本 v${APP_VERSION}`,
-        source: "检查更新",
+        text: result.failed ? t("检查更新失败，请稍后再试") : t("已是最新版本 v{version}", { version: APP_VERSION }),
+        source: t("检查更新"),
         isError: result.failed,
       };
       this.render();
@@ -861,7 +926,7 @@ export class MenuMijiaWindowsApp {
       if (d.kind.kind === "sensor" && (d.kind.temperature !== null || d.kind.humidity !== null)) {
         out.push({
           id: d.id,
-          label: d.name.replace("温湿度计", "").trim() || d.roomName,
+          label: d.name.replace(t("温湿度计"), "").trim() || d.roomName,
           roomName: d.roomName,
           temperature: d.kind.temperature,
           humidity: d.kind.humidity,
@@ -934,17 +999,17 @@ export class MenuMijiaWindowsApp {
         this.replyBanner = {
           text:
             home.devices.length > 0
-              ? `已同步 ${home.devices.length} 台真实米家设备`
-              : "当前小米账号下暂未发现米家设备",
-          source: "米家云直连",
+              ? t("已同步 {count} 台真实米家设备", { count: home.devices.length })
+              : t("当前小米账号下暂未发现米家设备"),
+          source: t("米家云直连"),
         };
       }
     } catch (err) {
       if (!silent) {
         const msg = err instanceof Error ? err.message : String(err);
         this.replyBanner = {
-          text: `米家云同步失败：${msg}`,
-          source: "连接异常",
+          text: t("米家云同步失败：{message}", { message: msg }),
+          source: t("连接异常"),
           isError: true,
         };
       }
@@ -980,7 +1045,7 @@ export class MenuMijiaWindowsApp {
 
   private get homeTitle(): string {
     const h = this.homes.find((x) => x.id === this.settings.selectedHomeId);
-    return h ? h.name : this.homes.length > 1 ? "全部家庭" : "我的米家";
+    return h ? h.name : this.homes.length > 1 ? t("全部家庭") : t("我的米家");
   }
 
   /** Devices 全关 would switch off: on screen (current room), on, and taking part (#23). */
@@ -995,7 +1060,7 @@ export class MenuMijiaWindowsApp {
       targetId: d.id,
       operation: { kind: "power", isOn: false },
     }));
-    await this.executeIntents(intents, `已关闭 ${targets.length} 台开启中的设备`, "一键全关");
+    await this.executeIntents(intents, t("已关闭 {count} 台开启中的设备", { count: targets.length }), t("一键全关"));
   }
 
   private async handleNaturalCommand(rawInput: string, fromScheduled = false): Promise<void> {
@@ -1015,8 +1080,8 @@ export class MenuMijiaWindowsApp {
       this.scheduledCommands = [];
       this.missedScheduledCommands = [];
       this.replyBanner = {
-        text: count > 0 ? `已取消 ${count} 项定时指令` : "当前没有待执行的定时指令",
-        source: "0ms 本地直达",
+        text: count > 0 ? t("已取消 {count} 项定时指令", { count: count }) : t("当前没有待执行的定时指令"),
+        source: t("0ms 本地直达"),
       };
       this.render();
       return;
@@ -1030,12 +1095,12 @@ export class MenuMijiaWindowsApp {
           command: delaySpec.remainder,
           delaySeconds: delaySpec.seconds,
           fireTimestampMs: Date.now() + delaySpec.seconds * 1000,
-          reply: `${DelayPhrase.formatDelay(delaySpec.seconds)}后：${delaySpec.remainder}`,
+          reply: t("{delay}后：{command}", { delay: DelayPhrase.formatDelay(delaySpec.seconds), command: delaySpec.remainder }),
         };
         this.scheduledCommands.push(scheduled);
         this.replyBanner = {
-          text: `已设定 ${DelayPhrase.formatDelay(delaySpec.seconds)}后执行「${delaySpec.remainder}」`,
-          source: "定时任务",
+          text: t("已设定 {delay}后执行「{command}」", { delay: DelayPhrase.formatDelay(delaySpec.seconds), command: delaySpec.remainder }),
+          source: t("定时任务"),
         };
         this.render();
         return;
@@ -1046,7 +1111,7 @@ export class MenuMijiaWindowsApp {
       (s) => s.phrase.replace(/\s+/g, "") === trimmed.replace(/\s+/g, ""),
     );
     if (learnedMatch) {
-      await this.executeIntents(learnedMatch.intents, learnedMatch.reply, "习惯记忆 0ms");
+      await this.executeIntents(learnedMatch.intents, learnedMatch.reply, t("习惯记忆 0ms"));
       return;
     }
 
@@ -1057,22 +1122,22 @@ export class MenuMijiaWindowsApp {
       const aliasedDevices = withAliases(this.layout, this.devices);
       const localPlan = LocalIntentParser.parse(trimmed, aliasedDevices, this.scenes);
       let plan: IntentPlan | null = localPlan;
-      let sourceLabel = "0ms 本地直达";
+      let sourceLabel = t("0ms 本地直达");
 
       if (!plan) {
         const baseURL = this.settings.assistantBaseURL.trim() || "https://openrouter.ai/api/v1";
         const apiKey = this.apiKeyFor(baseURL);
         const isLoopback = isLocalAssistantEndpoint(baseURL);
         if (!endpointAllowsSendingSecrets(baseURL)) {
-          this.replyBanner = { text: INSECURE_ENDPOINT_MESSAGE, source: "地址不安全", isError: true };
+          this.replyBanner = { text: INSECURE_ENDPOINT_MESSAGE, source: t("地址不安全"), isError: true };
           this.isResolvingIntent = false;
           this.render();
           return;
         }
         if (!apiKey && !isLoopback) {
           this.replyBanner = {
-            text: "未命中本地规则。请在设置中填写 AI 服务的 API Key（支持 OpenRouter Jev、原生 Jev、DeepSeek 等）。",
-            source: "需要 API Key",
+            text: t("未命中本地规则。请在设置中填写 AI 服务的 API Key（支持 OpenRouter Jev、原生 Jev、DeepSeek 等）。"),
+            source: t("需要 API Key"),
             isError: true,
           };
           this.isResolvingIntent = false;
@@ -1083,8 +1148,8 @@ export class MenuMijiaWindowsApp {
         if (!isLoopback && endpoint && !this.settings.cloudConsentEndpoints.includes(endpoint)) {
           this.pendingCloudConsent = { utterance: trimmed, endpoint };
           this.replyBanner = {
-            text: `这句话本机没听懂，要交给云端 AI（${endpoint}）处理吗？会发送：这句话、设备名称/房间/状态。只问这一次，可在设置里撤销。`,
-            source: "需要确认",
+            text: t("这句话本机没听懂，要交给云端 AI（{endpoint}）处理吗？会发送：这句话、设备名称/房间/状态。只问这一次，可在设置里撤销。", { endpoint: endpoint }),
+            source: t("需要确认"),
           };
           this.isResolvingIntent = false;
           this.render();
@@ -1114,7 +1179,7 @@ export class MenuMijiaWindowsApp {
       const sanitized = IntentValidator.sanitize(plan.intents, aliasedDevices, this.scenes);
       this.pendingSuggestions = [...plan.suggestions];
       if (sanitized.length === 0 && plan.suggestions.length > 0) {
-        this.replyBanner = { text: plan.reply || ModelActionPolicy.confirmationReply(null), source: "需要确认" };
+        this.replyBanner = { text: plan.reply || ModelActionPolicy.confirmationReply(null), source: t("需要确认") };
         return;
       }
       const replyText =
@@ -1133,7 +1198,7 @@ export class MenuMijiaWindowsApp {
       const msg = err instanceof Error ? err.message : String(err);
       this.replyBanner = {
         text: msg,
-        source: "出错提示",
+        source: t("出错提示"),
         isError: true,
       };
     } finally {
@@ -1239,7 +1304,7 @@ export class MenuMijiaWindowsApp {
       const device = this.devices.find((d) => d.id === deviceId);
       if (!device) {
         failed += 1;
-        failureMessage = "设备列表已更新，请重新执行";
+        failureMessage = t("设备列表已更新，请重新执行");
         continue;
       }
       const inverseCommands = this.buildInverseCommand(device, command);
@@ -1260,7 +1325,7 @@ export class MenuMijiaWindowsApp {
       } : null;
     }
     this.replyBanner = failed > 0
-      ? { text: `已执行 ${commands.length - failed} 项，${failed} 项失败。${failureMessage}`, source: "控制失败", isError: true }
+      ? { text: t("已执行 {ok} 项，{failed} 项失败。{message}", { ok: commands.length - failed, failed: failed, message: failureMessage }), source: t("控制失败"), isError: true }
       : { text: replyText, source: sourceLabel };
     this.render();
     return failed === 0;
@@ -1278,7 +1343,7 @@ export class MenuMijiaWindowsApp {
       steps: [{ deviceId: device.id, commands: inverseCommands }],
       expiresAtMs: Date.now() + 10 * 60 * 1000,
     } : null;
-    this.replyBanner = { text: summary, source: "实时控制" };
+    this.replyBanner = { text: summary, source: t("实时控制") };
     this.render();
   }
 
@@ -1286,8 +1351,8 @@ export class MenuMijiaWindowsApp {
     if (!this.lastUndoAction || this.lastUndoAction.expiresAtMs <= Date.now()) {
       this.lastUndoAction = null;
       this.replyBanner = {
-        text: "没有可撤销的操作（仅支持 10 分钟内的操作撤销）",
-        source: "撤销提示",
+        text: t("没有可撤销的操作（仅支持 10 分钟内的操作撤销）"),
+        source: t("撤销提示"),
       };
       this.render();
       return;
@@ -1317,8 +1382,8 @@ export class MenuMijiaWindowsApp {
       ? { ...action, steps: failedSteps }
       : null;
     this.replyBanner = failedSteps.length > 0
-      ? { text: `撤销未完成，${failedSteps.length} 项待恢复。${failureMessage}`, source: "控制失败", isError: true }
-      : { text: `已撤销：${action.summary}`, source: "已恢复" };
+      ? { text: t("撤销未完成，{count} 项待恢复。{message}", { count: failedSteps.length, message: failureMessage }), source: t("控制失败"), isError: true }
+      : { text: t("已撤销：{summary}", { summary: action.summary }), source: t("已恢复") };
     this.render();
   }
 
@@ -1328,7 +1393,7 @@ export class MenuMijiaWindowsApp {
     } catch (error) {
       this.replyBanner = {
         text: error instanceof Error ? error.message : String(error),
-        source: "控制失败",
+        source: t("控制失败"),
         isError: true,
       };
       this.render();
@@ -1425,15 +1490,15 @@ export class MenuMijiaWindowsApp {
 
   private async dispatchCloudCommand(command: DeviceCommand): Promise<void> {
     if (this.settings.connectionMode === "demo") return;
-    if (this.settings.connectionMode !== "xiaomiCloud") throw new Error("Windows 端暂不支持 Home Assistant 连接");
-    if (!this.settings.miSession) throw new Error("请先扫码登录米家");
+    if (this.settings.connectionMode !== "xiaomiCloud") throw new Error(t("Windows 端暂不支持 Home Assistant 连接"));
+    if (!this.settings.miSession) throw new Error(t("请先扫码登录米家"));
     const dev = this.devices.find((d) => {
       const k = d.kind;
       if (k.kind === "plug") return k.switchEntityId === command.entityId || k.childLockEntityId === command.entityId;
       if (k.kind === "sensor") return false;
       return k.entityId === command.entityId;
     });
-    if (!dev) throw new Error("无法找到指令对应的设备");
+    if (!dev) throw new Error(t("无法找到指令对应的设备"));
 
     const spec = await this.specResolver.resolve({
       did: dev.id,
@@ -1463,8 +1528,8 @@ export class MenuMijiaWindowsApp {
     if (!SpeechCtor) {
       this.isShowingAssistantBar = true;
       this.replyBanner = {
-        text: "当前系统环境不支持离线语音识别，请直接输入文字指令。",
-        source: "语音提示",
+        text: t("当前系统环境不支持离线语音识别，请直接输入文字指令。"),
+        source: t("语音提示"),
       };
       this.render();
       this.root.querySelector<HTMLInputElement>("#command-input")?.focus();
@@ -1473,7 +1538,7 @@ export class MenuMijiaWindowsApp {
 
     this.isShowingAssistantBar = true;
     const recognition = new SpeechCtor();
-    recognition.lang = "zh-CN";
+    recognition.lang = speechLocale();
     recognition.interimResults = false;
     recognition.continuous = false;
 
@@ -1503,7 +1568,7 @@ export class MenuMijiaWindowsApp {
   private async startXiaomiQRLogin(): Promise<void> {
     if (this.isPollingQR) return;
     this.isPollingQR = true;
-    this.qrStatusText = "正在获取小米安全登录二维码...";
+    this.qrStatusText = t("正在获取小米安全登录二维码...");
     invokeTauriVoid("set_pin_popover", { pin: true });
     this.render();
 
@@ -1511,7 +1576,7 @@ export class MenuMijiaWindowsApp {
       const login = new MiAccountLogin(this.transport, this.settings.miCloudRegion);
       const ticket = await login.start();
       this.qrTicket = ticket;
-      this.qrStatusText = "请打开手机「米家 App → 我的 → 右上角扫一扫」确认登录";
+      this.qrStatusText = t("请打开手机「米家 App → 我的 → 右上角扫一扫」确认登录");
       this.render();
 
       const session = await login.waitForScan(ticket);
@@ -1528,17 +1593,17 @@ export class MenuMijiaWindowsApp {
       this.qrTicket = null;
       this.saveSettings();
 
-      this.qrStatusText = `已连接小米账号 ${maskedMiUserId(session.userId)}`;
+      this.qrStatusText = t("已连接小米账号 {user}", { user: maskedMiUserId(session.userId) });
       this.replyBanner = {
-        text: `已登录小米账号 ${maskedMiUserId(session.userId)}，正在拉取真实设备...`,
-        source: "扫码成功",
+        text: t("已登录小米账号 {user}，正在拉取真实设备...", { user: maskedMiUserId(session.userId) }),
+        source: t("扫码成功"),
       };
       this.render();
 
       await this.refreshXiaomiDevices(false);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.qrStatusText = `扫码未完成：${msg}`;
+      this.qrStatusText = t("扫码未完成：{message}", { message: msg });
     } finally {
       this.isPollingQR = false;
       invokeTauriVoid("set_pin_popover", { pin: false });
@@ -1559,14 +1624,14 @@ export class MenuMijiaWindowsApp {
   private get statusSummaryText(): string {
     if (this.settings.connectionMode === "xiaomiCloud") {
       if (this.isSyncingCloud && this.devices.length === 0) {
-        return "正在从小米云端同步真实设备...";
+        return t("正在从小米云端同步真实设备...");
       }
       if (this.activeDeviceCount > 0) {
-        return `${this.activeDeviceCount} 台开启中 · 共 ${this.onlineDeviceCount} 台在线`;
+        return t("{count} 台开启中 · 共 {online} 台在线", { count: this.activeDeviceCount, online: this.onlineDeviceCount });
       }
-      return `全屋待机 · ${this.onlineDeviceCount} 台实时在线`;
+      return t("全屋待机 · {online} 台实时在线", { online: this.onlineDeviceCount });
     }
-    return `演示预览 · 点击下方「扫码直连」同步你的真机`;
+    return t("演示预览 · 点击下方「扫码直连」同步你的真机");
   }
 
   private get skin(): AppSkin {
@@ -1649,17 +1714,17 @@ export class MenuMijiaWindowsApp {
                 <div class="cc-title-row">
                   ${
                     this.homes.length > 1
-                      ? `<button class="cc-home-switch" id="btn-home-menu" aria-expanded="${this.isHomeMenuOpen}" aria-label="切换家庭">
+                      ? `<button class="cc-home-switch" id="btn-home-menu" aria-expanded="${this.isHomeMenuOpen}" aria-label="${t("切换家庭")}">
                           <span class="cc-home-title">${this.escapeHtml(this.homeTitle)}</span>
                           <span class="cc-home-caret ${this.isHomeMenuOpen ? "is-open" : ""}">${SF_ICONS.chevronDown}</span>
                         </button>`
                       : `<span class="cc-home-title">${this.escapeHtml(this.homeTitle)}</span>`
                   }
                   <span class="cc-mode-pill ${isDemo ? "is-demo" : "is-cloud"}">
-                    ${isDemo ? "演示预览" : "Miot 直连"}
+                    ${isDemo ? t("演示预览") : t("Miot 直连")}
                   </span>
                 </div>
-                <div class="cc-subtitle">${this.escapeHtml(this.isEditingLayout ? "拖动卡片排序 · 点角标改大小" : this.statusSummaryText)}</div>
+                <div class="cc-subtitle">${this.escapeHtml(this.isEditingLayout ? t("拖动卡片排序 · 点角标改大小") : this.statusSummaryText)}</div>
               </div>
             </div>
 
@@ -1667,8 +1732,8 @@ export class MenuMijiaWindowsApp {
               <button
                 class="cc-circle-btn ${this.isListeningVoice ? "is-recording" : ""}"
                 id="btn-mic"
-                title="语音控制"
-                aria-label="语音控制"
+                title="${t("语音控制")}"
+                aria-label="${t("语音控制")}"
                 aria-pressed="${this.isListeningVoice}"
               >
                 ${SF_ICONS.micFill}
@@ -1676,28 +1741,28 @@ export class MenuMijiaWindowsApp {
               <button
                 class="cc-circle-btn ${this.isShowingAssistantBar ? "is-selected" : ""}"
                 id="btn-toggle-assistant"
-                title="AI 自然语言指令栏 (/)"
-                aria-label="AI 自然语言指令栏"
+                title="${t("AI 自然语言指令栏 (/)")}"
+                aria-label="${t("AI 自然语言指令栏")}"
                 aria-pressed="${this.isShowingAssistantBar}"
               >
                 ${SF_ICONS.sparkles}
               </button>
               ${
                 this.isEditingLayout
-                  ? `<button class="cc-all-off-pill is-done" id="btn-done-editing" aria-label="完成布局编辑">完成</button>`
+                  ? `<button class="cc-all-off-pill is-done" id="btn-done-editing" aria-label="${t("完成布局编辑")}">${t("完成")}</button>`
                   : this.allOffTargets.length > 0
                   ? `<button class="cc-all-off-pill is-hold" id="btn-all-off" title="按住 0.6 秒关闭这 ${this.allOffTargets.length} 台（插座、扫地机默认不参与，可在设置里调整）" aria-label="全关，关闭 ${this.allOffTargets.length} 台设备，按住 0.6 秒确认">
                       <span class="cc-hold-fill"></span>
                       ${SF_ICONS.power}
-                      <span>${this.selectedRoom === "全部" ? "全关" : `全关·${this.escapeHtml(this.selectedRoom)}`} (${this.allOffTargets.length})</span>
+                      <span>${this.selectedRoom === "全部" ? t("全关") : t("全关·{room}", { room: this.escapeHtml(this.selectedRoom) })} (${this.allOffTargets.length})</span>
                     </button>`
                   : ""
               }
               <button
                 class="cc-circle-btn"
                 id="btn-hide-panel"
-                title="收起面板到右下角托盘 (Esc)"
-                aria-label="收起面板"
+                title="${t("收起面板到右下角托盘 (Esc)")}"
+                aria-label="${t("收起面板")}"
               >
                 ${SF_ICONS.chevronDown}
               </button>
@@ -1714,7 +1779,7 @@ export class MenuMijiaWindowsApp {
                 <div class="cc-env-chip">
                   <span class="cc-env-icon">${SF_ICONS.sensorFill}</span>
                   <span class="cc-env-label">${this.escapeHtml(env.label)}</span>
-                  ${env.temperature !== null ? `<strong class="cc-env-val">${env.temperature.toFixed(1)}°</strong>` : ""}
+                  ${env.temperature !== null ? `<strong class="cc-env-val">${formatTemperature(env.temperature, undefined, 1)}</strong>` : ""}
                   ${env.humidity !== null ? `<span class="cc-env-hum">· ${Math.round(env.humidity)}%</span>` : ""}
                 </div>
               `,
@@ -1746,15 +1811,15 @@ export class MenuMijiaWindowsApp {
                 id="command-input"
                 class="cc-spotlight-input"
                 type="text"
-                placeholder="说一句：我困了 / 调低两度 / 10分钟后关灯 / 撤销..."
-                aria-label="自然语言指令"
+                placeholder="${t("说一句：我困了 / 调低两度 / 10分钟后关灯 / 撤销...")}"
+                aria-label="${t("自然语言指令")}"
                 ${this.isResolvingIntent ? "disabled" : ""}
               />
               <button
                 id="btn-send"
                 class="cc-spotlight-send"
-                title="执行指令 (Enter)"
-                aria-label="执行指令"
+                title="${t("执行指令 (Enter)")}"
+                aria-label="${t("执行指令")}"
                 ${this.isResolvingIntent ? "disabled" : ""}
               >
                 ${SF_ICONS.arrowUpCircle}
@@ -1777,13 +1842,13 @@ export class MenuMijiaWindowsApp {
                     <span class="cc-feedback-text">${this.escapeHtml(this.replyBanner.text)}</span>
                     ${
                       this.pendingCloudConsent
-                        ? `<button class="cc-inline-pill" id="btn-cloud-allow">允许并发送</button>
-                           <button class="cc-inline-pill" id="btn-cloud-decline">不用了</button>`
+                        ? `<button class="cc-inline-pill" id="btn-cloud-allow">${t("允许并发送")}</button>
+                           <button class="cc-inline-pill" id="btn-cloud-decline">${t("不用了")}</button>`
                         : ""
                     }
                     ${
                       activeUndo
-                        ? `<button class="cc-inline-pill" id="btn-undo">撤销</button>`
+                        ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>`
                         : ""
                     }
                   </div>
@@ -1813,7 +1878,7 @@ export class MenuMijiaWindowsApp {
                       .map(
                         (item) => `
                       <div class="cc-timer-row">
-                        <span>已错过定时：${this.escapeHtml(item.command)}（电脑睡眠时到点，没有自动执行）</span>
+                        <span>${t("已错过定时：{command}（电脑睡眠时到点，没有自动执行）", { command: this.escapeHtml(item.command) })}</span>
                         <button class="cc-inline-pill" data-run-missed="${item.id}">立即执行</button>
                         <button class="cc-inline-pill" data-dismiss-missed="${item.id}">忽略</button>
                       </div>
@@ -1832,7 +1897,7 @@ export class MenuMijiaWindowsApp {
                       .map(
                         (item) => `
                       <div class="cc-timer-row">
-                        <span>${this.escapeHtml(item.command)} · 剩余 ${this.formatRemainingMs(item.fireTimestampMs - Date.now())}</span>
+                        <span>${this.escapeHtml(item.command)} ${t("· 剩余 {remaining}", { remaining: this.formatRemainingMs(item.fireTimestampMs - Date.now()) })}</span>
                         <button class="cc-inline-pill" data-cancel-timer="${item.id}">取消</button>
                       </div>
                     `,
@@ -1852,7 +1917,7 @@ export class MenuMijiaWindowsApp {
         }
 
         <section class="cc-quick-strip">
-          ${QUICK_ACTIONS.map(
+          ${quickActions().map(
             (act) => `
             <button class="cc-quick-pill tint-${act.tint}" data-scene-cmd="${this.escapeHtml(act.command)}">
               <span class="cc-quick-icon">${act.icon}</span>
@@ -1883,8 +1948,8 @@ export class MenuMijiaWindowsApp {
           <button
             class="cc-circle-btn is-small"
             id="btn-toggle-grid"
-            title="${this.settings.isCompactGridMode ? "切换为单列详情视图" : "切换为双列控制中心磁贴"}"
-            aria-label="${this.settings.isCompactGridMode ? "切换为单列详情视图" : "切换为双列控制中心磁贴"}"
+            title="${this.settings.isCompactGridMode ? t("切换为单列详情视图") : t("切换为双列控制中心磁贴")}"
+            aria-label="${this.settings.isCompactGridMode ? t("切换为单列详情视图") : t("切换为双列控制中心磁贴")}"
             aria-pressed="${this.settings.isCompactGridMode}"
           >
             ${this.settings.isCompactGridMode ? SF_ICONS.grid2x2 : SF_ICONS.grid1x2}
@@ -1905,8 +1970,8 @@ export class MenuMijiaWindowsApp {
             <span class="cc-footer-label">
               ${
                 this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession
-                  ? `米家账号 ${maskedMiUserId(this.settings.miSession.userId)} · ${this.devices.length} 台设备`
-                  : "演示模式 · 未连接米家云"
+                  ? t("米家账号 {user} · {count} 台设备", { user: maskedMiUserId(this.settings.miSession.userId), count: this.devices.length })
+                  : t("演示模式 · 未连接米家云")
               }
             </span>
           </div>
@@ -1914,35 +1979,35 @@ export class MenuMijiaWindowsApp {
           <div class="cc-footer-actions">
             ${
               !this.settings.miSession || isDemo
-                ? `<button class="cc-footer-pill is-accent" id="btn-footer-qr" title="用手机米家 App 扫码直连真实设备">
+                ? `<button class="cc-footer-pill is-accent" id="btn-footer-qr" title="${t("用手机米家 App 扫码直连真实设备")}">
                     ${SF_ICONS.qrcode}
-                    <span>扫码直连</span>
+                    <span>${t("扫码直连")}</span>
                   </button>`
                 : ""
             }
             <button
               class="cc-footer-icon-btn ${this.isSyncingCloud ? "is-spinning" : ""}"
               id="btn-refresh"
-              title="立即同步最新设备状态"
-              aria-label="立即同步最新设备状态"
+              title="${t("立即同步最新设备状态")}"
+              aria-label="${t("立即同步最新设备状态")}"
             >
               ${SF_ICONS.arrowClockwise}
             </button>
             <button
               class="cc-footer-icon-btn"
               id="btn-settings"
-              title="连接设置与 AI 决策配置"
-              aria-label="打开设置"
+              title="${t("连接设置与 AI 决策配置")}"
+              aria-label="${t("打开设置")}"
             >
               ${SF_ICONS.sliderHorizontal}
             </button>
             <button
               class="cc-footer-pill is-danger"
               id="btn-quit-app"
-              title="完全退出 MenuBarMijia"
+              title="${t("完全退出 MenuBarMijia")}"
             >
               ${SF_ICONS.power}
-              <span>退出</span>
+              <span>${t("退出")}</span>
             </button>
           </div>
         </footer>
@@ -1964,19 +2029,19 @@ export class MenuMijiaWindowsApp {
         return `
           <div class="cc-empty-state">
             <div class="cc-empty-icon is-pulsing">${SF_ICONS.sparkles}</div>
-            <div class="cc-empty-title">正在同步你的真实米家设备…</div>
-            <div class="cc-empty-subtitle">正在从小米云端拉取房间、MIoT 规格与实时状态</div>
+            <div class="cc-empty-title">${t("正在同步你的真实米家设备…")}</div>
+            <div class="cc-empty-subtitle">${t("正在从小米云端拉取房间、MIoT 规格与实时状态")}</div>
           </div>
         `;
       }
       return `
         <div class="cc-empty-state">
           <div class="cc-empty-icon">${SF_ICONS.houseFill}</div>
-          <div class="cc-empty-title">尚未同步到米家设备</div>
+          <div class="cc-empty-title">${t("尚未同步到米家设备")}</div>
           <div class="cc-empty-subtitle">当前地区（${this.escapeHtml(normalizeMiCloudRegion(this.settings.miSession?.region ?? this.settings.miCloudRegion))}）没有设备，可尝试切换地区</div>
           <div class="cc-empty-actions">
-            <button class="cc-btn-primary" id="btn-empty-resync">重新同步设备</button>
-            <button class="cc-btn-secondary" id="btn-empty-settings">切换账号 / 设置</button>
+            <button class="cc-btn-primary" id="btn-empty-resync">${t("重新同步设备")}</button>
+            <button class="cc-btn-secondary" id="btn-empty-settings">${t("切换账号 / 设置")}</button>
           </div>
         </div>
       `;
@@ -2049,7 +2114,7 @@ export class MenuMijiaWindowsApp {
     const attrs = `data-tile-id="${this.escapeHtml(dev.id)}" style="grid-column: span ${span}; --i: ${Math.min(index, 12)}; --jd: -${Math.round((performance.now() + (index * 137) % 560) % 560)}ms"`;
     const motion = `${this.animateEntrance && this.skin !== "classic" ? "is-entering" : ""} ${this.poppedDeviceId === dev.id ? "is-popped" : ""} ${this.draggingId === dev.id ? "is-dragging" : ""}`;
     const badge = this.isEditingLayout
-      ? `<button class="cc-size-badge" data-cycle-size="${this.escapeHtml(dev.id)}" title="切换卡片大小">${TILE_SIZES.find((t) => t.id === size)?.title ?? ""}</button>`
+      ? `<button class="cc-size-badge" data-cycle-size="${this.escapeHtml(dev.id)}" title="${t("切换卡片大小")}">${TILE_SIZES.find((t) => t.id === size)?.title ?? ""}</button>`
       : "";
     if (dev.kind.kind === "sensor" && !(this.skin === "bento" && span < 6)) {
       return this.renderSensorCard(dev, dev.kind, span < 6, attrs, motion, badge);
@@ -2072,7 +2137,7 @@ export class MenuMijiaWindowsApp {
     const fill = kind === "light" && this.skin !== "classic" && !isExpanded
       ? dim ?? (isOn && dev.kind.kind === "light" ? dev.kind.brightnessPercent ?? 100 : 0)
       : 0;
-    const shownSubtitle = dim !== null ? `亮度 ${dim}%` : subtitle;
+    const shownSubtitle = dim !== null ? t("亮度 {percent}%", { percent: dim }) : subtitle;
     return `
       <div class="cc-tile ${palette} ${isOn ? "is-active" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${kind === "light" ? "is-light" : ""} ${this.skin === "bento" && span < 6 ? "is-bento-tile" : ""} ${motion}" ${attrs}>
         ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%"></span>` : ""}
@@ -2081,7 +2146,7 @@ export class MenuMijiaWindowsApp {
           <button
             class="cc-tile-orb"
             data-toggle-device="${this.escapeHtml(dev.id)}"
-            title="${kind === "sensor" ? dev.name : "点击直接切换开关"}"
+            title="${kind === "sensor" ? dev.name : t("点击直接切换开关")}"
             aria-label="${this.escapeHtml(dev.name)} 开关"
             aria-pressed="${isOn}"
           >
@@ -2091,7 +2156,7 @@ export class MenuMijiaWindowsApp {
           <button
             class="cc-tile-body"
             data-body-device="${this.escapeHtml(dev.id)}"
-            title="${hasDrawer ? "点击展开精细调节" : "点击切换开关"}"
+            title="${hasDrawer ? t("点击展开精细调节") : t("点击切换开关")}"
             aria-label="${this.escapeHtml(dev.name)}，${this.escapeHtml(shownSubtitle)}"
             aria-pressed="${isOn}"
           >
@@ -2104,8 +2169,8 @@ export class MenuMijiaWindowsApp {
               ? `<button
                   class="cc-tile-chevron ${isExpanded ? "is-open" : ""}"
                   data-expand-device="${this.escapeHtml(dev.id)}"
-                  title="${isExpanded ? "收起详细控制" : "展开详细控制"}"
-                  aria-label="${isExpanded ? "收起" : "展开"} ${this.escapeHtml(dev.name)} 详细控制"
+                  title="${isExpanded ? t("收起详细控制") : t("展开详细控制")}"
+                  aria-label="${isExpanded ? t("收起") : t("展开")} ${this.escapeHtml(dev.name)} 详细控制"
                   aria-expanded="${isExpanded}"
                 >
                   ${SF_ICONS.chevronRight}
@@ -2127,11 +2192,11 @@ export class MenuMijiaWindowsApp {
     badge: string,
   ): string {
     const c = comfort(k.temperature, k.humidity);
-    const name = dev.name.replace("米家智能温湿度计", "温湿度计") || dev.name;
-    const temp = k.temperature !== null ? k.temperature.toFixed(1) : "--";
+    const name = dev.name.replace(t("米家智能温湿度计"), t("温湿度计")) || dev.name;
+    const temp = k.temperature !== null ? formatTemperatureValue(k.temperature, undefined, 1) : "--";
     const hum = k.humidity !== null ? Math.round(k.humidity) : null;
     const room = this.selectedRoom === "全部" ? `<span class="cc-sensor-room">${this.escapeHtml(dev.roomName)}</span>` : "";
-    const sensorAria = `${name}，温度 ${temp} 度${hum !== null ? `，湿度 ${hum}%` : ""}${dev.isOnline ? "" : "，离线"}`;
+    const sensorAria = `${t("{name}，温度 {temp}", { name, temp: k.temperature !== null ? formatTemperature(k.temperature, undefined, 1) : "--" })}${hum !== null ? t("，湿度 {humidity}%", { humidity: hum }) : ""}${dev.isOnline ? "" : t("，离线")}`;
     if (compact) {
       return `
         <div class="cc-tile cc-sensor is-compact ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs} role="group" aria-label="${this.escapeHtml(sensorAria)}">
@@ -2141,7 +2206,7 @@ export class MenuMijiaWindowsApp {
             <span class="cc-comfort is-${c.level}">${c.label}</span>
           </div>
           <div class="cc-sensor-main">
-            <span class="cc-sensor-temp">${temp}<small>°C</small></span>
+            <span class="cc-sensor-temp">${temp}<small>${temperatureSymbol()}</small></span>
             ${hum !== null ? `<span class="cc-sensor-hum">💧 ${hum}%</span>` : ""}
           </div>
           <div class="cc-hum-bar"><span style="width:${hum ?? 0}%"></span></div>
@@ -2159,7 +2224,7 @@ export class MenuMijiaWindowsApp {
         <div class="cc-sensor-wide">
           <div class="cc-sensor-info">
             <div class="cc-sensor-top"><span class="cc-sensor-name is-strong">${this.escapeHtml(name)}</span>${room}</div>
-            <span class="cc-sensor-temp is-big">${temp}<small>°C</small></span>
+            <span class="cc-sensor-temp is-big">${temp}<small>${temperatureSymbol()}</small></span>
             <div class="cc-sensor-meta">
               <span class="cc-comfort is-${c.level}">${c.label}</span>
               ${k.battery !== null ? `<span class="cc-sensor-batt ${k.battery <= 20 ? "is-low" : ""}">🔋 ${k.battery}%</span>` : ""}
@@ -2181,31 +2246,37 @@ export class MenuMijiaWindowsApp {
     const running = dev.isOnline && k.isOn && k.hvacMode !== "off";
     const open = forceOpen || this.expandedDeviceId === dev.id;
     const id = this.escapeHtml(dev.id);
-    const modeLabel: Record<string, string> = { cool: "制冷", heat: "制热", dry: "除湿", fan_only: "送风", auto: "自动" };
+    const modeLabel: Record<string, string> = { cool: t("制冷"), heat: t("制热"), dry: t("除湿"), fan_only: t("送风"), auto: t("自动") };
     const status = running
-      ? [modeLabel[k.hvacMode] ?? k.hvacMode, k.currentTemperature !== null ? `室温 ${k.currentTemperature.toFixed(1)}°` : ""].filter(Boolean).join(" · ")
-      : "已关闭";
+      ? [
+          modeLabel[k.hvacMode] ?? k.hvacMode,
+          k.currentTemperature !== null
+            ? t("室温 {temp}", { temp: formatTemperature(k.currentTemperature, undefined, 1) })
+            : "",
+        ].filter(Boolean).join(" · ")
+      : t("已关闭");
     const subtitle = this.selectedRoom === "全部" ? `${dev.roomName} · ${status}` : status;
     const span = Math.max(k.maxTemp - k.minTemp, 1);
     const progress = Math.min(Math.max((k.targetTemperature - k.minTemp) / span, 0), 1) * 100;
     const modes = (k.availableModes.length > 0 ? k.availableModes : ["cool", "heat", "dry", "fan_only"]).filter((m) => m !== "off");
-    const temp = Number.isInteger(k.targetTemperature) ? `${k.targetTemperature}` : k.targetTemperature.toFixed(1);
+    const unit = getTemperatureUnit();
+    const temp = formatTemperatureValue(k.targetTemperature);
     return `
       <div class="cc-tile cc-climate ${running ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs}>
         ${badge}
         <div class="cc-climate-strip">
-          <button class="cc-climate-power ${running ? "is-on" : ""}" data-toggle-device="${id}" title="${running ? "关闭空调" : "打开空调"}" aria-label="${running ? `关闭 ${this.escapeHtml(dev.name)}` : `打开 ${this.escapeHtml(dev.name)}`}" aria-pressed="${running}">
+          <button class="cc-climate-power ${running ? "is-on" : ""}" data-toggle-device="${id}" title="${running ? t("关闭空调") : t("打开空调")}" aria-label="${running ? t("关闭 {name}", { name: this.escapeHtml(dev.name) }) : t("打开 {name}", { name: this.escapeHtml(dev.name) })}" aria-pressed="${running}">
             ${k.hvacMode === "heat" ? "🔥" : SF_ICONS.snowflake}
           </button>
           <button class="cc-climate-name" data-expand-device="${id}" aria-label="${this.escapeHtml(dev.name)}，${this.escapeHtml(subtitle)}" aria-expanded="${open}">
             <span class="cc-tile-name">${this.escapeHtml(dev.name)}</span>
             <span class="cc-tile-status">${this.escapeHtml(subtitle)} ${forceOpen ? "" : `<i class="cc-mini-caret ${open ? "is-open" : ""}">${SF_ICONS.chevronDown}</i>`}</span>
           </button>
-          <button class="cc-climate-step" data-acstep="${id}:-1" title="降低温度" aria-label="降低目标温度">−</button>
-          <span class="cc-climate-temp" aria-label="目标温度 ${temp} 摄氏度">${temp}<small>°</small></span>
-          <button class="cc-climate-step" data-acstep="${id}:1" title="升高温度" aria-label="升高目标温度">＋</button>
+          <button class="cc-climate-step" data-acstep="${id}:-1" title="${t("降低温度")}" aria-label="${t("降低目标温度")}">−</button>
+          <span class="cc-climate-temp" aria-label="${t("目标温度 {temp}", { temp: formatTemperature(k.targetTemperature) })}">${temp}<small>${temperatureSymbol(unit)}</small></span>
+          <button class="cc-climate-step" data-acstep="${id}:1" title="${t("升高温度")}" aria-label="${t("升高目标温度")}">＋</button>
         </div>
-        <div class="cc-climate-gauge" role="progressbar" aria-label="目标温度进度" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}"><span style="width:${progress}%"></span></div>
+        <div class="cc-climate-gauge" role="progressbar" aria-label="${t("目标温度进度")}" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}"><span style="width:${progress}%"></span></div>
         ${
           open
             ? `<div class="cc-climate-more">
@@ -2214,7 +2285,7 @@ export class MenuMijiaWindowsApp {
                 </div>
                 ${
                   k.availableFanModes.length > 0
-                    ? `<div class="cc-segmented-pills"><span class="cc-pill-label">风速</span>${k.availableFanModes
+                    ? `<div class="cc-segmented-pills"><span class="cc-pill-label">${t("风速")}</span>${k.availableFanModes
                         .map((f) => `<button class="cc-seg-pill ${k.fanMode === f ? "is-active" : ""}" data-acfan="${id}:${this.escapeHtml(f)}" aria-pressed="${k.fanMode === f}">${this.escapeHtml(localizeFanMode(f))}</button>`)
                         .join("")}</div>`
                     : ""
@@ -2234,7 +2305,7 @@ export class MenuMijiaWindowsApp {
     return `
       <div class="cc-menu-scrim" data-close-menus></div>
       <div class="cc-menu cc-home-menu">
-        ${item(null, "全部家庭")}
+        ${item(null, t("全部家庭"))}
         <div class="cc-menu-sep"></div>
         ${this.homes.map((h) => item(h.id, h.name, h.deviceCount)).join("")}
       </div>`;
@@ -2268,11 +2339,11 @@ export class MenuMijiaWindowsApp {
       <div class="cc-menu-scrim" data-close-menus></div>
       <div class="cc-menu" style="${pos}">
         <div class="cc-menu-title">${this.escapeHtml(this.layout.aliases[dev.id] ?? dev.name)}</div>
-        <div class="cc-menu-label">卡片大小（本页）</div>
+        <div class="cc-menu-label">${t("卡片大小（本页）")}</div>
         <div class="cc-menu-chips">
           ${TILE_SIZES.map((t) => `<button class="cc-menu-chip ${size === t.id ? "is-active" : ""}" data-set-size="${id}:${t.id}">${t.title}</button>`).join("")}
         </div>
-        <div class="cc-menu-label">移到分组</div>
+        <div class="cc-menu-label">${t("移到分组")}</div>
         <div class="cc-menu-chips">
           ${this.layout.groups.map((g) => `<button class="cc-menu-chip ${current === g.id ? "is-active" : ""}" data-set-group="${id}:${this.escapeHtml(g.id)}">${this.escapeHtml(g.name)}</button>`).join("")}
           ${current ? `<button class="cc-menu-chip" data-set-group="${id}:">不分组</button>` : ""}
@@ -2280,21 +2351,21 @@ export class MenuMijiaWindowsApp {
         </div>
         <div class="cc-menu-sep"></div>
         <button class="cc-menu-item" data-rename-device="${id}">重命名…</button>
-        <button class="cc-menu-item" data-start-editing>编辑布局</button>
+        <button class="cc-menu-item" data-start-editing>${t("编辑布局")}</button>
       </div>`;
   }
 
   private renderPrompt(): string {
     const p = this.prompt;
     if (!p) return "";
-    let title = "新建分组";
+    let title = t("新建分组");
     let value = "";
-    let placeholder = "例如：灯光、电器、环境";
+    let placeholder = t("例如：灯光、电器、环境");
     if (p.kind === "renameGroup") {
-      title = "重命名分组";
+      title = t("重命名分组");
       value = this.layout.groups.find((g) => g.id === p.groupId)?.name ?? "";
     } else if (p.kind === "renameDevice") {
-      title = "重命名设备";
+      title = t("重命名设备");
       const dev = this.devices.find((d) => d.id === p.deviceId);
       placeholder = dev?.name ?? "";
       value = this.layout.aliases[p.deviceId] ?? dev?.name ?? "";
@@ -2305,11 +2376,11 @@ export class MenuMijiaWindowsApp {
       <div class="cc-prompt">
         <strong>${title}</strong>
         <input id="prompt-input" class="cc-prompt-input" type="text" value="${this.escapeHtml(value)}" placeholder="${this.escapeHtml(placeholder)}" />
-        ${p.kind === "renameDevice" ? `<small>只在本 App 显示，不会修改米家里的名字</small>` : ""}
+        ${p.kind === "renameDevice" ? `<small>${t("只在本 App 显示，不会修改米家里的名字")}</small>` : ""}
         <div class="cc-prompt-actions">
-          ${hasAlias ? `<button class="cc-btn-secondary" id="btn-prompt-reset">恢复原名</button>` : ""}
-          <button class="cc-btn-secondary" data-prompt-cancel>取消</button>
-          <button class="cc-btn-primary" id="btn-prompt-save">保存</button>
+          ${hasAlias ? `<button class="cc-btn-secondary" id="btn-prompt-reset">${t("恢复原名")}</button>` : ""}
+          <button class="cc-btn-secondary" data-prompt-cancel>${t("取消")}</button>
+          <button class="cc-btn-primary" id="btn-prompt-save">${t("保存")}</button>
         </div>
       </div>`;
   }
@@ -2334,37 +2405,37 @@ export class MenuMijiaWindowsApp {
           ` : ""}
           <div class="cc-slider-group">
             <div class="cc-slider-label">
-              <span>亮度</span>
+              <span>${t("亮度")}</span>
               <strong>${bri}%</strong>
             </div>
-            <input class="cc-range is-amber" type="range" min="1" max="100" value="${bri}" data-brightness="${this.escapeHtml(dev.id)}" aria-label="亮度" aria-valuemin="1" aria-valuemax="100" aria-valuenow="${bri}" />
+            <input class="cc-range is-amber" type="range" min="1" max="100" value="${bri}" data-brightness="${this.escapeHtml(dev.id)}" aria-label="${t("亮度")}" aria-valuemin="1" aria-valuemax="100" aria-valuenow="${bri}" />
           </div>
           <div class="cc-slider-group">
             <div class="cc-slider-label">
-              <span>色温</span>
+              <span>${t("色温")}</span>
               <strong>${ct}K</strong>
             </div>
-            <input class="cc-range is-kelvin" type="range" min="${k.minKelvin}" max="${k.maxKelvin}" step="100" value="${ct}" data-colortemp="${this.escapeHtml(dev.id)}" aria-label="色温" aria-valuemin="${k.minKelvin}" aria-valuemax="${k.maxKelvin}" aria-valuenow="${ct}" />
+            <input class="cc-range is-kelvin" type="range" min="${k.minKelvin}" max="${k.maxKelvin}" step="100" value="${ct}" data-colortemp="${this.escapeHtml(dev.id)}" aria-label="${t("色温")}" aria-valuemin="${k.minKelvin}" aria-valuemax="${k.maxKelvin}" aria-valuenow="${ct}" />
           </div>
         </div>
       `;
     }
     if (k.kind === "climate") {
       const modes: ReadonlyArray<{ readonly code: string; readonly label: string }> = [
-        { code: "cool", label: "制冷" },
-        { code: "heat", label: "制热" },
-        { code: "dry", label: "除湿" },
-        { code: "fan_only", label: "送风" },
-        { code: "auto", label: "自动" },
+        { code: "cool", label: t("制冷") },
+        { code: "heat", label: t("制热") },
+        { code: "dry", label: t("除湿") },
+        { code: "fan_only", label: t("送风") },
+        { code: "auto", label: t("自动") },
       ];
       return `
         <div class="cc-tile-drawer">
           <div class="cc-slider-group">
             <div class="cc-slider-label">
-              <span>目标温度</span>
+              <span>${t("目标温度")}</span>
               <strong>${k.targetTemperature}°C</strong>
             </div>
-            <input class="cc-range is-blue" type="range" min="${k.minTemp}" max="${k.maxTemp}" step="${k.step}" value="${k.targetTemperature}" data-actemp="${this.escapeHtml(dev.id)}" aria-label="目标温度" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}" />
+            <input class="cc-range is-blue" type="range" min="${formatTemperatureValue(k.minTemp)}" max="${formatTemperatureValue(k.maxTemp)}" step="${displayStep(k.step)}" value="${formatTemperatureValue(k.targetTemperature)}" data-actemp="${this.escapeHtml(dev.id)}" aria-label="${t("目标温度")}" aria-valuemin="${formatTemperatureValue(k.minTemp)}" aria-valuemax="${formatTemperatureValue(k.maxTemp)}" aria-valuetext="${formatTemperature(k.targetTemperature)}" />
           </div>
           <div class="cc-segmented-pills">
             ${modes
@@ -2398,7 +2469,7 @@ export class MenuMijiaWindowsApp {
               )
               .join("")}
             <button class="cc-seg-pill ${k.isOscillating ? "is-active" : ""}" data-fanosc="${this.escapeHtml(dev.id)}" aria-pressed="${k.isOscillating}">
-              摇头 ${k.isOscillating ? "开" : "关"}
+              摇头 ${k.isOscillating ? t("开") : t("关")}
             </button>
           </div>
         </div>
@@ -2410,33 +2481,33 @@ export class MenuMijiaWindowsApp {
   private renderOnboardingModal(): string {
     return `
       <div class="cc-sheet-backdrop">
-        <div class="cc-sheet" role="dialog" aria-modal="true" aria-label="首次设置">
+        <div class="cc-sheet" role="dialog" aria-modal="true" aria-label="${t("首次设置")}">
           <div class="cc-sheet-header">
-            <div class="cc-sheet-badge">MenuBarMijia 控制中心</div>
-            <button class="cc-circle-btn is-small" id="btn-close-onboarding" title="关闭引导" aria-label="关闭引导">
+            <div class="cc-sheet-badge">${t("MenuBarMijia 控制中心")}</div>
+            <button class="cc-circle-btn is-small" id="btn-close-onboarding" title="${t("关闭引导")}" aria-label="${t("关闭引导")}">
               ${SF_ICONS.xmark}
             </button>
           </div>
 
-          <h2 class="cc-sheet-title">扫码直连你的真实米家设备</h2>
+          <h2 class="cc-sheet-title">${t("扫码直连你的真实米家设备")}</h2>
           <p class="cc-sheet-desc">
-            手机打开「米家 App → 扫一扫」即可直接同步全屋真实设备；常驻 Windows 右下角系统托盘，点击图标或按 Alt+M 随时弹出，点击外部自动收起。
+            ${t("手机打开「米家 App → 扫一扫」即可直接同步全屋真实设备；常驻 Windows 右下角系统托盘，点击图标或按 Alt+M 随时弹出，点击外部自动收起。")}
           </p>
 
           <div class="cc-field">
-            <label>云端服务器地区</label>
+            <label>${t("云端服务器地区")}</label>
             <select class="cc-input" data-mi-region>
               ${MI_CLOUD_REGIONS.map(
                 (region) => `<option value="${region.code}" ${normalizeMiCloudRegion(this.settings.miCloudRegion) === region.code ? "selected" : ""}>${this.escapeHtml(region.label)}</option>`,
               ).join("")}
             </select>
-            <p class="cc-field-hint">欧洲、印度、俄罗斯、新加坡、美区的米家账号请先选择对应地区，再扫码登录。</p>
+            <p class="cc-field-hint">${t("欧洲、印度、俄罗斯、新加坡、美区的米家账号请先选择对应地区，再扫码登录。")}</p>
           </div>
 
           <div class="cc-qr-box">
             <button class="cc-btn-primary is-full" id="btn-start-qr" ${this.isPollingQR ? "disabled" : ""}>
               ${SF_ICONS.qrcode}
-              <span>${this.isPollingQR ? "正在等待手机米家扫码确认..." : "获取米家登录二维码"}</span>
+              <span>${this.isPollingQR ? t("正在等待手机米家扫码确认...") : t("获取米家登录二维码")}</span>
             </button>
             <div class="cc-qr-status">${this.escapeHtml(this.qrStatusText)}</div>
             ${
@@ -2449,7 +2520,7 @@ export class MenuMijiaWindowsApp {
           </div>
 
           <div class="cc-field">
-            <label>OpenRouter API Key（可选，用于 Jev SystemOne 模糊意图决策）</label>
+            <label>${t("OpenRouter API Key（可选，用于 Jev SystemOne 模糊意图决策）")}</label>
             <input
               id="onboarding-api-key"
               class="cc-input"
@@ -2460,8 +2531,8 @@ export class MenuMijiaWindowsApp {
           </div>
 
           <div class="cc-sheet-footer">
-            <button class="cc-btn-secondary" id="btn-close-onboarding-alt">先看演示预览</button>
-            <button class="cc-btn-primary" id="btn-finish-onboarding">进入控制中心</button>
+            <button class="cc-btn-secondary" id="btn-close-onboarding-alt">${t("先看演示预览")}</button>
+            <button class="cc-btn-primary" id="btn-finish-onboarding">${t("进入控制中心")}</button>
           </div>
         </div>
       </div>
@@ -2471,16 +2542,16 @@ export class MenuMijiaWindowsApp {
   private renderSettingsModal(): string {
     return `
       <div class="cc-sheet-backdrop">
-        <div class="cc-sheet" role="dialog" aria-modal="true" aria-label="偏好设置">
+        <div class="cc-sheet" role="dialog" aria-modal="true" aria-label="${t("偏好设置")}">
           <div class="cc-sheet-header">
-            <strong>偏好设置与米家连接</strong>
-            <button class="cc-circle-btn is-small" id="btn-close-settings" title="返回控制中心" aria-label="返回控制中心">
+            <strong>${t("偏好设置与米家连接")}</strong>
+            <button class="cc-circle-btn is-small" id="btn-close-settings" title="${t("返回控制中心")}" aria-label="${t("返回控制中心")}">
               ${SF_ICONS.xmark}
             </button>
           </div>
 
           <div class="cc-field">
-            <label>面板皮肤</label>
+            <label>${t("面板皮肤")}</label>
             <div class="cc-skin-grid">
               ${SKINS.map((k) => `
                 <button class="cc-skin-swatch ${this.skin === k.id ? "is-active" : ""}" data-skin="${k.id}" aria-pressed="${this.skin === k.id}" aria-label="${this.escapeHtml(k.title)}">
@@ -2488,23 +2559,47 @@ export class MenuMijiaWindowsApp {
                   <span>${k.title}</span>
                 </button>`).join("")}
             </div>
-            <p class="cc-field-hint">经典以外的皮肤带有：卡片依次入场、在灯上左右拖动调亮度、按住「全关」0.6 秒确认。长按卡片可以拖动排序，右键卡片可以改大小、分组和重命名。</p>
+            <p class="cc-field-hint">${t("经典以外的皮肤带有：卡片依次入场、在灯上左右拖动调亮度、按住「全关」0.6 秒确认。长按卡片可以拖动排序，右键卡片可以改大小、分组和重命名。")}</p>
           </div>
 
           <div class="cc-field">
-            <label>面板高度</label>
+            <label>${t("界面语言 / 语言")}</label>
+            <div class="cc-segmented-pills">
+              ${([["system", t("跟随系统")], ["zh-Hans", t("简体中文")], ["en", "English"]] as const)
+                .map(
+                  ([value, label]) =>
+                    `<button class="cc-seg-pill ${this.settings.interfaceLanguage === value ? "is-active" : ""}" data-interface-language="${value}" aria-pressed="${this.settings.interfaceLanguage === value}">${this.escapeHtml(label)}</button>`,
+                )
+                .join("")}
+            </div>
+          </div>
+
+          <div class="cc-field">
+            <label>${t("温度单位")}</label>
+            <div class="cc-segmented-pills">
+              ${([["system", t("跟随系统")], ["celsius", t("摄氏度 (°C)")], ["fahrenheit", t("华氏度 (°F)")]] as const)
+                .map(
+                  ([value, label]) =>
+                    `<button class="cc-seg-pill ${this.settings.temperatureUnit === value ? "is-active" : ""}" data-temperature-unit="${value}" aria-pressed="${this.settings.temperatureUnit === value}">${this.escapeHtml(label)}</button>`,
+                )
+                .join("")}
+            </div>
+          </div>
+
+          <div class="cc-field">
+            <label>${t("面板高度")}</label>
             <div class="cc-segmented-pills">
               ${PANEL_HEIGHTS.map((h) => `<button class="cc-seg-pill ${this.settings.panelHeight === h.id ? "is-active" : ""}" data-panel-height="${h.id}" aria-pressed="${this.settings.panelHeight === h.id}">${h.title}</button>`).join("")}
             </div>
           </div>
 
           <div class="cc-field cc-field-row">
-            <label for="settings-climate-panel">空调使用整行控制条</label>
+            <label for="settings-climate-panel">${t("空调使用整行控制条")}</label>
             <input id="settings-climate-panel" type="checkbox" ${this.settings.climatePanel ? "checked" : ""} />
           </div>
 
           <div class="cc-field">
-            <label>设备数据源</label>
+            <label>${t("设备数据源")}</label>
             <div class="cc-segmented-pills">
               <button
                 class="cc-seg-pill ${this.settings.connectionMode === "xiaomiCloud" ? "is-active" : ""}"
@@ -2522,7 +2617,7 @@ export class MenuMijiaWindowsApp {
           </div>
 
           <div class="cc-field">
-            <label>云端服务器地区</label>
+            <label>${t("云端服务器地区")}</label>
             <select class="cc-input" data-mi-region>
               ${MI_CLOUD_REGIONS.map(
                 (region) => `<option value="${region.code}" ${normalizeMiCloudRegion(this.settings.miCloudRegion) === region.code ? "selected" : ""}>${this.escapeHtml(region.label)}</option>`,
@@ -2537,8 +2632,8 @@ export class MenuMijiaWindowsApp {
               <span>
                 ${
                   this.settings.miSession
-                    ? `切换/重新扫码 (已登录 ${maskedMiUserId(this.settings.miSession.userId)})`
-                    : "获取米家登录二维码"
+                    ? t("切换/重新扫码 (已登录 {user})", { user: maskedMiUserId(this.settings.miSession.userId) })
+                    : t("获取米家登录二维码")
                 }
               </span>
             </button>
@@ -2551,7 +2646,7 @@ export class MenuMijiaWindowsApp {
           </div>
 
           <div class="cc-field">
-            <label>AI 服务商预设（支持 OpenRouter Jev、原生 Jev、DeepSeek、千问、GLM 等）</label>
+            <label>${t("AI 服务商预设（支持 OpenRouter Jev、原生 Jev、DeepSeek、千问、GLM 等）")}</label>
             <div class="cc-segmented-pills" style="flex-wrap: wrap;">
               ${ASSISTANT_PROVIDER_PRESETS.filter((p) => p.id !== "custom")
                 .map((preset) => {
@@ -2567,7 +2662,7 @@ export class MenuMijiaWindowsApp {
           </div>
 
           <div class="cc-field">
-            <label>AI 服务地址（支持 /v1/systemone 与 OpenAI 兼容 /v1/chat/completions）</label>
+            <label>${t("AI 服务地址（支持 /v1/systemone 与 OpenAI 兼容 /v1/chat/completions）")}</label>
             <input
               id="settings-base-url"
               class="cc-input"
@@ -2578,7 +2673,7 @@ export class MenuMijiaWindowsApp {
           </div>
 
           <div class="cc-field">
-            <label>决策模型（如 ~typesafe/jev-latest、jev-latest、deepseek-chat）</label>
+            <label>${t("决策模型（如 ~typesafe/jev-latest、jev-latest、deepseek-chat）")}</label>
             <input
               id="settings-model"
               class="cc-input"
@@ -2588,7 +2683,7 @@ export class MenuMijiaWindowsApp {
           </div>
 
           <div class="cc-field">
-            <label>API Key（本机安全保存）</label>
+            <label>${t("API Key（本机安全保存）")}</label>
             <input
               id="settings-api-key"
               class="cc-input"
@@ -2601,14 +2696,14 @@ export class MenuMijiaWindowsApp {
           ${
             this.settings.cloudConsentEndpoints.length > 0
               ? `<div class="cc-field">
-            <label>已允许发送到：${this.escapeHtml(this.settings.cloudConsentEndpoints.join("、"))}</label>
-            <button type="button" class="cc-btn-secondary" id="btn-revoke-cloud">撤销授权（下次发往云端前再问）</button>
+            <label>${t("已允许发送到：{endpoints}", { endpoints: this.escapeHtml(this.settings.cloudConsentEndpoints.join("、")) })}</label>
+            <button type="button" class="cc-btn-secondary" id="btn-revoke-cloud">${t("撤销授权（下次发往云端前再问）")}</button>
           </div>`
               : ""
           }
 
           <div class="cc-field">
-            <label>「全关」包含哪些设备（插座、扫地机默认不包含）</label>
+            <label>${t("「全关」包含哪些设备（插座、扫地机默认不包含）")}</label>
             <div class="cc-timers-stack">
               ${this.devices
                 .filter((d) => d.kind.kind !== "sensor")
@@ -2626,7 +2721,7 @@ export class MenuMijiaWindowsApp {
           <div class="cc-field">
             <label class="cc-checkbox">
               <input type="checkbox" id="settings-habit" ${this.settings.habitLearningEnabled ? "checked" : ""} />
-              <span>自动记住自然语言习惯（相同表达下次 0ms 本地直达）</span>
+              <span>${t("自动记住自然语言习惯（相同表达下次 0ms 本地直达）")}</span>
             </label>
             ${
               this.settings.learnedShortcuts.length > 0
@@ -2647,24 +2742,24 @@ export class MenuMijiaWindowsApp {
           </div>
 
           <div class="cc-field">
-            <label>软件更新</label>
+            <label>${t("软件更新")}</label>
             <div class="cc-update-row">
-              <span>当前版本 v${APP_VERSION}</span>
+              <span>${t("当前版本 v{version}", { version: APP_VERSION })}</span>
               ${
                 this.availableUpdate
-                  ? `<button type="button" class="cc-btn-secondary" id="btn-open-update">有新版本 v${this.availableUpdate.version}，点击查看</button>`
-                  : `<button type="button" class="cc-btn-secondary" id="btn-check-update">立即检查</button>`
+                  ? `<button type="button" class="cc-btn-secondary" id="btn-open-update">${t("有新版本 v{version}，点击查看", { version: this.availableUpdate.version })}</button>`
+                  : `<button type="button" class="cc-btn-secondary" id="btn-check-update">${t("立即检查")}</button>`
               }
             </div>
             <label class="cc-checkbox">
               <input type="checkbox" id="settings-auto-update" ${this.settings.autoCheckUpdates ? "checked" : ""} />
-              <span>每天自动检查更新（关闭后不再请求 GitHub）</span>
+              <span>${t("每天自动检查更新（关闭后不再请求 GitHub）")}</span>
             </label>
           </div>
 
           <div class="cc-sheet-footer">
-            <button class="cc-btn-danger" id="btn-settings-quit">退出 MenuBarMijia</button>
-            <button class="cc-btn-primary" id="btn-save-settings">完成并保存</button>
+            <button class="cc-btn-danger" id="btn-settings-quit">${t("退出 MenuBarMijia")}</button>
+            <button class="cc-btn-primary" id="btn-save-settings">${t("完成并保存")}</button>
           </div>
         </div>
       </div>
@@ -2717,7 +2812,7 @@ export class MenuMijiaWindowsApp {
       allOff.addEventListener("pointerup", () => {
         cancel();
         if (!fired) {
-          this.replyBanner = { text: `按住 0.6 秒关闭这 ${this.allOffTargets.length} 台（插座、扫地机默认不参与）`, source: "提示" };
+          this.replyBanner = { text: t("按住 0.6 秒关闭这 {count} 台（插座、扫地机默认不参与）", { count: this.allOffTargets.length }), source: t("提示") };
           this.render();
         }
       });
@@ -2842,8 +2937,16 @@ export class MenuMijiaWindowsApp {
         const dev = this.devices.find((d) => d.id === id);
         if (!dev || dev.kind.kind !== "climate") return;
         const k = dev.kind;
-        const temperature = Math.min(k.maxTemp, Math.max(k.minTemp, k.targetTemperature + Number(dir) * (k.step || 1)));
-        void this.executeSingleCommand(dev, { kind: "setClimateTemperature", entityId: k.entityId, temperature }, `已将${dev.name}设为 ${temperature}°C`);
+        const step = stepCelsius(k.step || 1);
+        const next = k.targetTemperature + Number(dir) * step;
+        // Round to the thermostat's own step so repeated °F taps do not drift off the °C grid.
+        const snapped = Math.round(next / step) * step;
+        const temperature = Math.min(k.maxTemp, Math.max(k.minTemp, Number(snapped.toFixed(2))));
+        void this.executeSingleCommand(
+          dev,
+          { kind: "setClimateTemperature", entityId: k.entityId, temperature },
+          t("已将{name}设为 {temp}", { name: dev.name, temp: formatTemperature(temperature) }),
+        );
       });
     });
     this.root.querySelectorAll<HTMLElement>("[data-acfan]").forEach((btn) => {
@@ -2853,7 +2956,7 @@ export class MenuMijiaWindowsApp {
         const dev = this.devices.find((d) => d.id === raw.slice(0, i));
         if (!dev || dev.kind.kind !== "climate") return;
         const fanMode = raw.slice(i + 1);
-        void this.executeSingleCommand(dev, { kind: "setClimateFanMode", entityId: dev.kind.entityId, fanMode }, `已将${dev.name}风速设为 ${localizeFanMode(fanMode)}`);
+        void this.executeSingleCommand(dev, { kind: "setClimateFanMode", entityId: dev.kind.entityId, fanMode }, t("已将{name}风速设为 {speed}", { name: dev.name, speed: localizeFanMode(fanMode) }));
       });
     });
 
@@ -2864,6 +2967,28 @@ export class MenuMijiaWindowsApp {
         this.render();
       });
     });
+    this.root.querySelectorAll<HTMLElement>("[data-interface-language]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const value = btn.dataset.interfaceLanguage;
+        this.settings.interfaceLanguage =
+          value === "zh-Hans" || value === "en" ? value : "system";
+        this.applyInterfaceLanguage();
+        this.saveSettings();
+        this.render();
+      });
+    });
+
+    this.root.querySelectorAll<HTMLElement>("[data-temperature-unit]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const value = btn.dataset.temperatureUnit;
+        this.settings.temperatureUnit =
+          value === "celsius" || value === "fahrenheit" ? value : "system";
+        this.applyTemperatureSetting();
+        this.saveSettings();
+        this.render();
+      });
+    });
+
     this.root.querySelectorAll<HTMLElement>("[data-panel-height]").forEach((btn) => {
       btn.addEventListener("click", () => {
         this.settings.panelHeight = btn.dataset.panelHeight as PanelHeight;
@@ -2936,7 +3061,7 @@ export class MenuMijiaWindowsApp {
         this.pendingSuggestions = this.pendingSuggestions.filter((s) => s.id !== suggestion.id);
         const aliasedDevices = withAliases(this.layout, this.devices);
         const intents = IntentValidator.sanitize(suggestion.intents, aliasedDevices, this.scenes);
-        void this.executeIntents(intents, IntentReply.describe(intents, aliasedDevices, this.scenes), "已确认");
+        void this.executeIntents(intents, IntentReply.describe(intents, aliasedDevices, this.scenes), t("已确认"));
       });
     });
 
@@ -2995,7 +3120,7 @@ export class MenuMijiaWindowsApp {
         void this.executeSingleCommand(
           dev,
           firstCmd,
-          `已${nextOn ? "打开" : "关闭"}${dev.name}`,
+          `已${nextOn ? t("打开") : t("关闭")}${dev.name}`,
         );
       }
     };
@@ -3041,7 +3166,7 @@ export class MenuMijiaWindowsApp {
         void this.executeSingleCommand(
           dev,
           { kind: "setLightEffect", entityId: dev.kind.entityId, effect },
-          `已切换${dev.name}灯光模式`,
+          t("已切换{name}灯光模式", { name: dev.name }),
         );
       });
     });
@@ -3056,7 +3181,7 @@ export class MenuMijiaWindowsApp {
         void this.executeSingleCommand(
           dev,
           { kind: "setLightBrightness", entityId: dev.kind.entityId, percent },
-          `已将${dev.name}亮度设为 ${percent}%`,
+          t("已将{name}亮度设为 {percent}%", { name: dev.name, percent: percent }),
         );
       });
     });
@@ -3071,7 +3196,7 @@ export class MenuMijiaWindowsApp {
         void this.executeSingleCommand(
           dev,
           { kind: "setLightColorTemp", entityId: dev.kind.entityId, kelvin },
-          `已将${dev.name}色温设为 ${kelvin}K`,
+          t("已将{name}色温设为 {kelvin}K", { name: dev.name, kelvin: kelvin }),
         );
       });
     });
@@ -3082,11 +3207,12 @@ export class MenuMijiaWindowsApp {
         if (!id) return;
         const dev = this.devices.find((d) => d.id === id);
         if (!dev || dev.kind.kind !== "climate") return;
-        const temperature = Number(slider.value);
+        // The slider works in display units; the command carries Celsius (#52).
+        const temperature = Number(toCelsius(Number(slider.value)).toFixed(2));
         void this.executeSingleCommand(
           dev,
           { kind: "setClimateTemperature", entityId: dev.kind.entityId, temperature },
-          `已将${dev.name}设为 ${temperature}°C`,
+          t("已将{name}设为 {temp}", { name: dev.name, temp: formatTemperature(temperature) }),
         );
       });
     });
@@ -3102,7 +3228,7 @@ export class MenuMijiaWindowsApp {
         void this.executeSingleCommand(
           dev,
           { kind: "setClimateMode", entityId: dev.kind.entityId, hvacMode },
-          `已切换${dev.name}模式`,
+          t("已切换{name}模式", { name: dev.name }),
         );
       });
     });
@@ -3118,7 +3244,7 @@ export class MenuMijiaWindowsApp {
         void this.executeSingleCommand(
           dev,
           { kind: "setFanPresetMode", entityId: dev.kind.entityId, presetMode },
-          `已将${dev.name}设为 ${IntentReply.fanSpeedLabel(presetMode)}`,
+          t("已将{name}设为 {speed}", { name: dev.name, speed: IntentReply.fanSpeedLabel(presetMode) }),
         );
       });
     });
@@ -3133,7 +3259,7 @@ export class MenuMijiaWindowsApp {
         void this.executeSingleCommand(
           dev,
           { kind: "setFanOscillating", entityId: dev.kind.entityId, oscillating: nextOsc },
-          `已${nextOsc ? "开启" : "关闭"}${dev.name}摇头`,
+          `已${nextOsc ? t("开启") : t("关闭")}${dev.name}摇头`,
         );
       });
     });
@@ -3151,7 +3277,7 @@ export class MenuMijiaWindowsApp {
 
     this.root.querySelector("#btn-cloud-decline")?.addEventListener("click", () => {
       this.pendingCloudConsent = null;
-      this.replyBanner = { text: "没有发送。「打开书房灯」这类简单指令不用联网。", source: "已取消" };
+      this.replyBanner = { text: t("没有发送。「打开书房灯」这类简单指令不用联网。"), source: t("已取消") };
       this.render();
     });
 
@@ -3232,8 +3358,8 @@ export class MenuMijiaWindowsApp {
         this.settings.connectionMode = mode;
         this.selectedRoom = "全部";
         if (mode === "demo") {
-          this.devices = structuredClone(DEMO_DEVICES);
-          this.scenes = structuredClone(DEMO_SCENES);
+          this.devices = demoDevices();
+          this.scenes = demoScenes();
         } else if (mode === "xiaomiCloud") {
           this.devices = structuredClone(this.settings.cachedXiaomiDevices);
           this.scenes = [];
@@ -3489,7 +3615,7 @@ export class MenuMijiaWindowsApp {
         const percent = this.dimPreview.percent;
         this.dimPreview = null;
         if (dev && dev.kind.kind === "light") {
-          void this.executeSingleCommand(dev, { kind: "setLightBrightness", entityId: dev.kind.entityId, percent }, `已将${dev.name}亮度设为 ${percent}%`);
+          void this.executeSingleCommand(dev, { kind: "setLightBrightness", entityId: dev.kind.entityId, percent }, t("已将{name}亮度设为 {percent}%", { name: dev.name, percent: percent }));
         }
       }
     });

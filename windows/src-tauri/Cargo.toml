@@ -18,3 +18,6 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # Windows Credential Manager for tokens and API keys (#28).
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
