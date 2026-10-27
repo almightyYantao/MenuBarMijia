@@ -31,6 +31,29 @@ public enum AppSkin: String, CaseIterable, Identifiable, Sendable {
 
     public var isClassic: Bool { self == .classic }
 
+    /// The skin painted when the effective appearance is the opposite of the one this skin was
+    /// designed for (#51). Classic adapts by itself through system materials, so it has no twin.
+    public var appearanceTwin: AppSkin? {
+        switch self {
+        case .classic: return nil
+        case .frost: return .night
+        case .night: return .frost
+        case .dawn: return .neon
+        case .neon: return .dawn
+        case .soft: return .capsule
+        case .capsule: return .soft
+        case .bento: return .glass
+        case .glass: return .bento
+        }
+    }
+
+    /// Palette that paints the panel for `scheme`: the skin's own palette when it was designed
+    /// for that scheme (or the skin is Classic), otherwise its twin's palette.
+    public func palette(for scheme: ColorScheme) -> SkinPalette {
+        guard let designed = palette.scheme, designed != scheme else { return palette }
+        return (appearanceTwin ?? self).palette
+    }
+
     public var palette: SkinPalette {
         switch self {
         case .classic: return .classic
@@ -73,6 +96,35 @@ public enum PanelHeight: String, CaseIterable, Identifiable, Sendable {
         case .standard: return Swift.min(560, screen)
         case .tall: return Swift.min(680, screen)
         case .max: return Swift.max(460, screen)
+        }
+    }
+}
+
+// MARK: - Appearance (#51)
+
+/// Panel appearance: follow the system, or force light/dark. Skins that were designed for the
+/// other scheme switch to their paired skin (`AppSkin.appearanceTwin`).
+public enum AppAppearance: String, CaseIterable, Identifiable, Sendable {
+    case system, light, dark
+
+    public static let storageKey = "app_appearance"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .system: return L10n.tr("跟随系统", "Follow System")
+        case .light: return L10n.tr("浅色", "Light")
+        case .dark: return L10n.tr("深色", "Dark")
+        }
+    }
+
+    /// `nil` means "use the system colour scheme".
+    public var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
         }
     }
 }
@@ -188,40 +240,63 @@ private struct AppSkinKey: EnvironmentKey {
     static let defaultValue: AppSkin = .classic
 }
 
+private struct SkinPaletteKey: EnvironmentKey {
+    static let defaultValue: SkinPalette = .classic
+}
+
 extension EnvironmentValues {
     public var appSkin: AppSkin {
         get { self[AppSkinKey.self] }
         set { self[AppSkinKey.self] = newValue }
     }
+
+    /// Palette for the *effective* appearance (#51). Views must read this instead of
+    /// `appSkin.palette`, which always returns the skin's native light/dark palette.
+    public var skinPalette: SkinPalette {
+        get { self[SkinPaletteKey.self] }
+        set { self[SkinPaletteKey.self] = newValue }
+    }
 }
 
-/// Applied once at the panel root: stores the skin in the environment, forces its color scheme
-/// and font design, and paints the panel background.
+/// Applied once at the panel root: stores the skin in the environment, resolves the palette for
+/// the effective appearance (follow-system or forced light/dark), and paints the panel background.
 public struct SkinRoot: ViewModifier {
     public let skin: AppSkin
 
+    @Environment(\.colorScheme) private var systemScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
+
+    private var appearance: AppAppearance { AppAppearance(rawValue: appearanceRaw) ?? .system }
+    /// Forced appearance wins; otherwise the system scheme flows through untouched.
+    private var effectiveScheme: ColorScheme { appearance.colorScheme ?? systemScheme }
+
     public func body(content: Content) -> some View {
-        let p = skin.palette
-        if skin.isClassic {
-            content
-                .environment(\.appSkin, skin)
-                .background(.ultraThinMaterial)
-        } else {
-            content
-                .environment(\.appSkin, skin)
-                .environment(\.colorScheme, p.scheme ?? .light)
-                .fontDesign(p.fontDesign)
-                .foregroundStyle(p.fg)
-                .tint(p.accent)
-                .background {
+        let p = skin.palette(for: effectiveScheme)
+        return content
+            .environment(\.appSkin, skin)
+            .environment(\.skinPalette, p)
+            .environment(\.colorScheme, effectiveScheme)
+            .fontDesign(p.fontDesign)
+            .foregroundStyle(p.fg)
+            .tint(p.accent)
+            .background {
+                if skin.isClassic {
+                    // #41: "Reduce transparency" replaces the material with an opaque surface.
+                    if reduceTransparency {
+                        Rectangle().fill(Color(nsColor: .windowBackgroundColor))
+                    } else {
+                        Rectangle().fill(.ultraThinMaterial)
+                    }
+                } else {
                     ZStack {
                         Rectangle().fill(p.backgroundStyle)
-                        if p.translucent {
+                        if p.translucent && !reduceTransparency {
                             Rectangle().fill(.ultraThinMaterial).opacity(0.55)
                         }
                     }
                 }
-        }
+            }
     }
 }
 
@@ -230,6 +305,7 @@ public struct SkinRoot: ViewModifier {
 /// Replacement for the glass fill on chips, capsules and small buttons when a skin is active.
 struct SkinChipSurface<S: Shape>: ViewModifier {
     @Environment(\.appSkin) private var skin
+    @Environment(\.skinPalette) private var palette
     let shape: S
     let tint: Color?
     let interactive: Bool
@@ -243,7 +319,7 @@ struct SkinChipSurface<S: Shape>: ViewModifier {
         } else if skin.isClassic || skin == .glass {
             content.modifier(ClassicGlass(shape: shape, tint: tint, interactive: interactive, clear: clear, translucentOnly: skin == .glass))
         } else {
-            let p = skin.palette
+            let p = palette
             content
                 .background {
                     if p.neumorphic {
@@ -274,11 +350,12 @@ struct SkinChipSurface<S: Shape>: ViewModifier {
 /// Device tile surface for non-classic skins.
 struct SkinTileSurface: ViewModifier {
     @Environment(\.appSkin) private var skin
+    @Environment(\.skinPalette) private var palette
     let isActive: Bool
     let cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
-        let p = skin.palette
+        let p = palette
         let radius = p.capsuleTiles ? 26 : p.tileRadius
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         let fill = isActive ? p.activeTile : p.tile
@@ -432,6 +509,7 @@ extension View {
 /// Skinned "All Off" control: press and hold 0.6s to fire, with a filling progress sweep.
 struct HoldToConfirmButton: View {
     @Environment(\.appSkin) private var skin
+    @Environment(\.skinPalette) private var palette
     let title: String
     let count: Int
     let onConfirm: () -> Void
@@ -440,7 +518,7 @@ struct HoldToConfirmButton: View {
     @State private var holding = false
 
     var body: some View {
-        let p = skin.palette
+        let p = palette
         HStack(spacing: 4) {
             Image(systemName: "power").font(.system(size: 10.5, weight: .bold))
             Text(title).font(.system(size: 11.5, weight: .semibold))
@@ -469,6 +547,8 @@ struct HoldToConfirmButton: View {
         .onTapGesture(perform: onTap)
         .onLongPressGesture(minimumDuration: 0.6, maximumDistance: 20) {
             holding = false
+            // #54: a confirm that turns off the whole room deserves a level-change tap.
+            NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
             onConfirm()
         } onPressingChanged: { pressing in
             withAnimation(pressing ? .linear(duration: 0.6) : .easeOut(duration: 0.2)) { holding = pressing }
@@ -479,7 +559,10 @@ struct HoldToConfirmButton: View {
         .accessibilityLabel(Text("\(title) (\(count))"))
         .accessibilityHint(Text(L10n.tr("按住 0.6 秒关闭", "Hold 0.6 seconds to turn off")))
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction(named: Text(L10n.tr("关闭这 \(count) 台设备", "Turn off these \(count) devices")), onConfirm)
+        .accessibilityAction(named: Text(L10n.tr("关闭这 \(count) 台设备", "Turn off these \(count) devices"))) {
+            NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+            onConfirm()
+        }
     }
 
     private func fillStyle(_ p: SkinPalette) -> AnyShapeStyle {
@@ -512,11 +595,20 @@ struct SkinPickerGrid: View {
 }
 
 private struct SkinSwatch: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
     let skin: AppSkin
     let isSelected: Bool
 
+    /// Mirrors what the panel will actually paint for the current appearance (#51), so a light
+    /// skin previews its dark twin while the system is dark.
+    private var palette: SkinPalette {
+        let appearance = AppAppearance(rawValue: appearanceRaw) ?? .system
+        return skin.palette(for: appearance.colorScheme ?? colorScheme)
+    }
+
     var body: some View {
-        let p = skin.palette
+        let p = palette
         VStack(spacing: 5) {
             ZStack {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -544,10 +636,13 @@ private struct SkinSwatch: View {
             }
 
             Text(skin.title)
-                .font(.system(size: 10.5, weight: isSelected ? .semibold : .regular))
+                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
                 .foregroundStyle(isSelected ? Color.primary : Color.secondary)
         }
         .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(skin.title))
+        .accessibilityAddTraits(isSelected ? [AccessibilityTraits.isButton, .isSelected] : .isButton)
     }
 }
 

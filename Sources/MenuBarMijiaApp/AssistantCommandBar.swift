@@ -546,6 +546,7 @@ struct AssistantCommandBar: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(Text(L10n.tr("忽略已错过的定时", "Dismiss missed timer")))
                     .help(L10n.tr("忽略这个已错过的定时", "Dismiss this missed timer"))
                 }
                 .font(.system(size: 11, weight: .medium))
@@ -576,6 +577,7 @@ struct AssistantCommandBar: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(Text(L10n.tr("取消这个定时", "Cancel this timer")))
                     .help(L10n.tr("取消这个定时", "Cancel this timer"))
                 }
                 .font(.system(size: 11, weight: .medium))
@@ -602,7 +604,7 @@ struct AssistantCommandBar: View {
                                 .font(.system(size: 10, weight: .semibold))
                         }
                         Text(isJev ? L10n.tr("Jev 猜你想做", "Jev Suggests") : L10n.tr("AI 猜你想做", "AI Suggests"))
-                            .font(.system(size: 10.5, weight: .semibold))
+                            .font(.system(size: 11, weight: .semibold))
                     }
                     .foregroundStyle(Color.accentColor)
                     .padding(.horizontal, 8)
@@ -625,11 +627,11 @@ struct AssistantCommandBar: View {
                                 .font(.system(size: 9.5, weight: .semibold))
                                 .foregroundStyle(suggestion.confidencePercent != nil ? Color.orange : Color.secondary)
                             Text(suggestion.title)
-                                .font(.system(size: 10.5, weight: .medium))
+                                .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(.primary.opacity(0.88))
                             if let pct = suggestion.confidencePercent {
                                 Text("\(pct)%")
-                                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                                    .font(.system(size: 10, weight: .bold, design: .rounded))
                                     .monospacedDigit()
                                     .foregroundStyle(Color.orange)
                             }
@@ -680,6 +682,9 @@ struct AssistantCommandBar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(Text(speech.isListening
+            ? L10n.tr("停止聆听", "Stop listening")
+            : L10n.tr("语音输入", "Voice input")))
         .help(speech.isListening
               ? L10n.tr("停止聆听并执行", "Stop listening and run")
               : L10n.tr("语音输入（快捷键 V，或长按菜单栏图标）", "Voice input (Shortcut V, or long-press menu bar icon)"))
@@ -706,6 +711,7 @@ struct AssistantCommandBar: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Text(L10n.tr("关闭 AI 指令栏", "Close AI command bar")))
             .help(L10n.tr("关闭 (Esc)", "Close (Esc)"))
         }
     }
@@ -864,7 +870,7 @@ struct AssistantSettingsSection: View {
                             modelDraft = candidate
                         }
                         .buttonStyle(.plain)
-                        .font(.system(size: 9.5, weight: modelDraft == candidate ? .semibold : .regular, design: .monospaced))
+                        .font(.system(size: 10, weight: modelDraft == candidate ? .semibold : .regular, design: .monospaced))
                         .foregroundStyle(modelDraft == candidate ? Color.accentColor : Color.secondary)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1.5)

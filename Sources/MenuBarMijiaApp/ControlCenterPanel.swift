@@ -28,6 +28,7 @@ public struct ControlCenterPanel: View {
     @AppStorage(GroupPrefs.aliasesKey) private var aliasesRaw: String = "{}"
     @State private var layoutUI = LayoutUIState.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     /// Opens the ⌘, Settings window; the popover no longer hosts the long form (#42).
     @Environment(\.openSettings) private var openSettings
     /// Drives the open animation; reset whenever the menu-bar window closes so every open replays it.
@@ -36,14 +37,19 @@ public struct ControlCenterPanel: View {
     /// Card sizes are remembered per page: a room id, or "all" for the overview.
     private var layoutScope: String { store.selectedRoomId ?? "all" }
     @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
+    @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
     @Namespace private var roomPillNamespace
     public let store: HomeStore
 
     private static let panelWidth: CGFloat = 376
     private var panelHeight: CGFloat { (PanelHeight(rawValue: panelHeightRaw) ?? .standard).points }
     private var skin: AppSkin { AppSkin(rawValue: skinRaw) ?? .classic }
-    private var skinAccentFill: AnyShapeStyle { skin.isClassic ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(skin.palette.accentGradient) }
-    private var skinOnAccent: Color { skin.isClassic ? .white : skin.palette.onAccent }
+    private var appearance: AppAppearance { AppAppearance(rawValue: appearanceRaw) ?? .system }
+    /// The panel sets `skinRoot` on its own body, so it cannot read that environment back;
+    /// resolve the same palette locally (#51).
+    private var palette: SkinPalette { skin.palette(for: appearance.colorScheme ?? colorScheme) }
+    private var skinAccentFill: AnyShapeStyle { skin.isClassic ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(palette.accentGradient) }
+    private var skinOnAccent: Color { skin.isClassic ? .white : palette.onAccent }
 
     public init(store: HomeStore) {
         self.store = store
@@ -94,23 +100,42 @@ public struct ControlCenterPanel: View {
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.newGroupForDevice)
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingGroupId)
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingDeviceId)
+        // #41: the context menu's "Edit Layout" replaces the 0.6 s long-press for keyboard/VoiceOver users.
+        .onChange(of: layoutUI.isEditingLayoutRequested) { _, requested in
+            guard requested else { return }
+            layoutUI.isEditingLayoutRequested = false
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                store.expandedDeviceId = nil
+                isEditingLayout = true
+            }
+        }
         .frame(width: Self.panelWidth, height: panelHeight)
         .onChange(of: skinRaw) { _, _ in syncMenuBarWindowSize() }
         .onChange(of: panelHeightRaw) { _, _ in syncMenuBarWindowSize() }
         // #53: remember a successful assistant action so "撤销上一步" outlives the banner.
         .onChange(of: store.assistantState) { _, state in
-            if case .done = state {
+            switch state {
+            case .done:
                 UndoAvailabilityTracker.shared.noteAssistantAction()
+                SoundFeedback.playSuccess()
+            case .failed:
+                SoundFeedback.playFailure()
+            default:
+                break
             }
         }
         // #45: the only place that sees every error toast is the panel root.
         .onChange(of: store.toastNotice?.id) { _, _ in
             AppDiagnosticsLog.shared.record(store.toastNotice)
+            // #54: failures get an audible cue when the user opted into feedback sounds.
+            if store.toastNotice?.isError == true {
+                SoundFeedback.playFailure()
+            }
         }
         // Open animation: drop in from the menu bar with a slight scale and fade.
         .scaleEffect(isPresented || reduceMotion ? 1 : 0.94, anchor: .top)
         .offset(y: isPresented || reduceMotion ? 0 : -10)
-        .opacity(isPresented ? 1 : 0)
+        .opacity(isPresented || reduceMotion ? 1 : 0)
         .blur(radius: isPresented || reduceMotion ? 0 : 6)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
             guard !isPresented else { return }
@@ -330,7 +355,7 @@ public struct ControlCenterPanel: View {
 
     private func groupHeader(_ section: PageSection) -> some View {
         let collapsed = collapsedGroups.contains(collapseKey(section))
-        let accent = skin.isClassic ? Color.accentColor : skin.palette.accent
+        let accent = skin.isClassic ? Color.accentColor : palette.accent
         return Button {
             withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
                 var set = collapsedGroups
@@ -462,8 +487,8 @@ public struct ControlCenterPanel: View {
     private func promptBackdrop<C: View>(@ViewBuilder _ content: () -> C) -> some View {
         ZStack {
             Rectangle()
-                .fill(.ultraThinMaterial)
-                .overlay(Color.black.opacity(0.18))
+                .fill(reduceTransparency ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.ultraThinMaterial))
+                .overlay(Color.black.opacity(reduceTransparency ? 0.32 : 0.18))
                 .ignoresSafeArea()
                 .onTapGesture {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
@@ -726,7 +751,7 @@ public struct ControlCenterPanel: View {
                                 .font(.system(size: 13.5, weight: .semibold))
                                 .foregroundStyle(
                                     store.activeDeviceCount > 0
-                                        ? (skin.isClassic ? (colorScheme == .dark ? Color.orange : Color(red: 0.86, green: 0.42, blue: 0.04)) : skin.palette.accent)
+                                        ? (skin.isClassic ? (colorScheme == .dark ? Color.orange : Color(red: 0.86, green: 0.42, blue: 0.04)) : palette.accent)
                                         : Color.secondary
                                 )
                         }
@@ -735,7 +760,7 @@ public struct ControlCenterPanel: View {
 
                         if store.homeBackend == .demo {
                             Text(L10n.tr("演示模式", "Demo"))
-                                .font(.system(size: 9.5, weight: .bold))
+                                .font(.system(size: 10, weight: .bold))
                                 .foregroundStyle(.orange)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
@@ -765,9 +790,11 @@ public struct ControlCenterPanel: View {
                         .foregroundStyle(Color.primary.opacity(0.78))
                         .frame(width: 26, height: 24)
                         .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
-                        .listeningPulse(SpeechInputController.shared.isListening, color: skin.isClassic ? .accentColor : skin.palette.accent)
+                        .listeningPulse(SpeechInputController.shared.isListening, color: skin.isClassic ? .accentColor : palette.accent)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(Text(L10n.tr("语音指令", "Voice command")))
+                .accessibilityHint(Text(L10n.tr("点击后直接说话控制设备", "Click, then speak to control devices")))
                 .skinHelp(L10n.tr("语音指令：点击直接说话控制设备（快捷键 V）", "Voice command: click to speak (shortcut V)"))
 
                 Button {
@@ -787,7 +814,7 @@ public struct ControlCenterPanel: View {
                             if store.isShowingAssistantBar {
                                 Capsule(style: .continuous)
                                     .fill(skinAccentFill)
-                                    .shadowIf(!skin.isClassic && (skin.palette.neumorphic || skin.palette.glow), color: skin.palette.accent.opacity(0.32), radius: 4, y: 1.5)
+                                    .shadowIf(!skin.isClassic && (palette.neumorphic || palette.glow), color: palette.accent.opacity(0.32), radius: 4, y: 1.5)
                             }
                         }
                         .modifier(
@@ -801,6 +828,8 @@ public struct ControlCenterPanel: View {
                         )
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(Text(L10n.tr("AI 指令", "AI command")))
+                .accessibilityHint(Text(L10n.tr("用一句话控制设备", "Control devices with natural language")))
                 .skinHelp(L10n.tr("AI 指令：用一句话控制设备（快捷键 /）", "AI command: control devices with natural language (shortcut /)"))
 
                 if isEditingLayout {
@@ -814,6 +843,7 @@ public struct ControlCenterPanel: View {
                         count: count,
                         onConfirm: {
                             withAnimation(AppleMotion.snappySpring) { store.turnAllOff() }
+                            SoundFeedback.playSuccess()
                         },
                         onTap: {
                             store.showToast(
@@ -1107,8 +1137,8 @@ public struct ControlCenterPanel: View {
                     )
                 }
                 .clipShape(Capsule(style: .continuous))
-                .background(Capsule(style: .continuous).fill(skin.palette.chip))
-                .overlay(Capsule(style: .continuous).stroke(skin.palette.line, lineWidth: 0.8))
+                .background(Capsule(style: .continuous).fill(palette.chip))
+                .overlay(Capsule(style: .continuous).stroke(palette.line, lineWidth: 0.8))
             }
 
             AdaptiveGlassContainer(spacing: 5) {
@@ -1126,7 +1156,7 @@ public struct ControlCenterPanel: View {
                                 if store.isCompactGridMode {
                                     Capsule(style: .continuous)
                                         .fill(skinAccentFill)
-                                        .shadowIf(!skin.isClassic && (skin.palette.neumorphic || skin.palette.glow), color: skin.palette.accent.opacity(0.32), radius: 4, y: 1.5)
+                                        .shadowIf(!skin.isClassic && (palette.neumorphic || palette.glow), color: palette.accent.opacity(0.32), radius: 4, y: 1.5)
                                 }
                             }
                             .modifier(
@@ -1140,6 +1170,8 @@ public struct ControlCenterPanel: View {
                             )
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(Text(L10n.tr("紧凑双列视图", "Compact two-column view")))
+                    .accessibilityAddTraits(store.isCompactGridMode ? AccessibilityTraits.isSelected : [])
                     .skinHelp(
                         store.isCompactGridMode
                             ? L10n.tr("当前：双列紧凑磁贴（点击切换单列）", "2-column compact tiles (click for single column)")
@@ -1159,7 +1191,7 @@ public struct ControlCenterPanel: View {
                                 if store.hideOfflineDevices {
                                     Capsule(style: .continuous)
                                         .fill(skinAccentFill)
-                                        .shadowIf(!skin.isClassic && (skin.palette.neumorphic || skin.palette.glow), color: skin.palette.accent.opacity(0.32), radius: 4, y: 1.5)
+                                        .shadowIf(!skin.isClassic && (palette.neumorphic || palette.glow), color: palette.accent.opacity(0.32), radius: 4, y: 1.5)
                                 }
                             }
                             .modifier(
@@ -1173,6 +1205,8 @@ public struct ControlCenterPanel: View {
                             )
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(Text(L10n.tr("只显示在线设备", "Show online devices only")))
+                    .accessibilityAddTraits(store.hideOfflineDevices ? AccessibilityTraits.isSelected : [])
                     .skinHelp(
                         store.hideOfflineDevices
                             ? L10n.tr("当前只显示在线设备（点击显示全部）", "Showing online devices only (click to show all)")
@@ -1189,7 +1223,7 @@ public struct ControlCenterPanel: View {
         if skin.isClassic {
             classicRoomPill(title: title, roomId: roomId, isSelected: isSelected)
         } else {
-            let p = skin.palette
+            let p = palette
             Button {
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.72)) {
                     store.selectedRoomId = roomId
@@ -1314,7 +1348,7 @@ public struct ControlCenterPanel: View {
                 "切换后会把访问令牌发给这个地址。不认识这个地址就点「不切换」。",
                 "Switching sends your access token to this address. If you don't recognize it, choose Don't Switch."
             ))
-            .font(.system(size: 10.5))
+            .font(.system(size: 11))
             .foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 Button(L10n.tr("切换", "Switch")) {
@@ -1395,7 +1429,7 @@ public struct ControlCenterPanel: View {
     private var footerBar: some View {
         HStack(spacing: 8) {
             BreathingDot(
-                color: skin.isClassic ? statusDotColor : (statusDotColor == .green ? skin.palette.ok : statusDotColor),
+                color: skin.isClassic ? statusDotColor : (statusDotColor == .green ? palette.ok : statusDotColor),
                 animate: !skin.isClassic && statusDotColor == .green
             )
             .id(statusDotColor)
@@ -1429,7 +1463,7 @@ public struct ControlCenterPanel: View {
                                 ? L10n.tr("重启更新 v\(release.version)", "Relaunch v\(release.version)")
                                 : "v\(release.version)"
                         )
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .monospacedDigit()
                     }
                 }
@@ -1461,6 +1495,7 @@ public struct ControlCenterPanel: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(Text(L10n.tr("撤销上一步", "Undo last action")))
                 .skinHelp(L10n.tr("撤销上一步（10 分钟内有效）", "Undo the last assistant action (valid for 10 minutes)"))
             }
 
@@ -1474,6 +1509,7 @@ public struct ControlCenterPanel: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Text(L10n.tr("立即同步", "Refresh now")))
             .skinHelp(L10n.tr("立即同步最新状态", "Refresh device states now"))
 
             Button {
@@ -1486,6 +1522,7 @@ public struct ControlCenterPanel: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Text(L10n.tr("打开设置", "Open Settings")))
             .skinHelp(L10n.tr("偏好设置与连接配置（⌘,）", "Preferences & connection settings (⌘,)"))
         }
     }

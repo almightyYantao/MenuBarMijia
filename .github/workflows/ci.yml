@@ -94,4 +94,13 @@ jobs:
       - name: Build app (release)
         run: swift build -c release --product MenuBarMijiaApp
       - name: Lint & test
+        env:
+          # 快照不一致时把差异图写到固定目录，便于作为 artifact 下载（#46）。
+          SNAPSHOT_ARTIFACTS: "$GITHUB_WORKSPACE/snapshot-failed"
         run: bash scripts/check.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: snapshot-diff
+          path: snapshot-failed
+          if-no-files-found: ignore

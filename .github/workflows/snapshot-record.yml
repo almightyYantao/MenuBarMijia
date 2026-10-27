@@ -1,0 +1,35 @@
+name: Snapshot Record
+
+# 手动触发（workflow_dispatch）：以 record 模式渲染 UI 快照基线，供提交到仓库。
+# Record 模式下 SnapshotTesting 会以非零码退出，属预期；产物在 snapshot-baselines artifact。
+# 拿到 artifact 后：解压，把 PNG 拷到 Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests/ 并提交。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      SNAPSHOT_RECORD: "1"
+      SNAPSHOT_ARTIFACTS: "$GITHUB_WORKSPACE/snapshot-failed"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Record snapshot baselines
+        id: record
+        continue-on-error: true
+        run: swift test --filter SnapshotTests
+      - name: Collect baselines
+        if: always()
+        run: |
+          mkdir -p snapshot-baselines
+          find Tests/MenuBarMijiaAppTests/__Snapshots__ -name '*.png' -exec cp {} snapshot-baselines/ \; 2>/dev/null || true
+          ls snapshot-baselines | head -20
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: snapshot-baselines
+          path: snapshot-baselines

@@ -5,6 +5,7 @@ import MijiaCore
 /// mode chips on one card, so the common controls need no drawer.
 struct ClimatePanelModule: View {
     @Environment(\.appSkin) private var skin
+    @Environment(\.skinPalette) private var palette
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var modeNamespace
@@ -18,15 +19,15 @@ struct ClimatePanelModule: View {
     private var isRunning: Bool { device.isOnline && spec.isOn && spec.hvacMode != "off" }
 
     private var accent: Color {
-        skin.isClassic ? DevicePalette.accentColor(for: device) : skin.palette.accent
+        skin.isClassic ? DevicePalette.accentColor(for: device) : palette.accent
     }
 
     private var modeColor: Color {
         spec.hvacMode == "heat" ? Color(red: 0.95, green: 0.42, blue: 0.18) : Color(red: 0.12, green: 0.58, blue: 0.96)
     }
 
-    private var fg: Color { skin.isClassic ? .primary : (isRunning ? skin.palette.activeText : skin.palette.fg) }
-    private var muted: Color { skin.isClassic ? .secondary : skin.palette.muted }
+    private var fg: Color { skin.isClassic ? .primary : (isRunning ? palette.activeText : palette.fg) }
+    private var muted: Color { skin.isClassic ? .secondary : palette.muted }
 
     private var isExpanded: Bool { forceExpanded || store.expandedDeviceId == device.id }
 
@@ -65,20 +66,24 @@ struct ClimatePanelModule: View {
         HStack(spacing: 8) {
             Button {
                 withAnimation(AppleMotion.snappySpring) { store.togglePrimary(device) }
+                if device.isOnline { SoundFeedback.playSuccess() }
             } label: {
                 ZStack {
                     Circle()
-                        .fill(isRunning ? (skin.isClassic ? AnyShapeStyle(modeColor) : AnyShapeStyle(skin.palette.accentGradient)) : AnyShapeStyle(skin.isClassic ? Color.primary.opacity(0.08) : skin.palette.chip))
+                        .fill(isRunning ? (skin.isClassic ? AnyShapeStyle(modeColor) : AnyShapeStyle(palette.accentGradient)) : AnyShapeStyle(skin.isClassic ? Color.primary.opacity(0.08) : palette.chip))
                         .frame(width: 32, height: 32)
                         .shadowIf(isRunning, color: accent.opacity(0.4), radius: 6)
                     Image(systemName: spec.hvacMode == "heat" ? "flame.fill" : "snowflake")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(isRunning ? (skin.isClassic ? Color.white : skin.palette.onAccent) : muted)
+                        .foregroundStyle(isRunning ? (skin.isClassic ? Color.white : palette.onAccent) : muted)
                         .rotationEffect(.degrees(isRunning && !reduceMotion && spec.hvacMode != "heat" ? 180 : 0))
                         .animation(.spring(response: 0.8, dampingFraction: 0.6), value: isRunning)
                 }
             }
             .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.88))
+            .accessibilityLabel(Text(isRunning
+                ? L10n.tr("关闭 \(device.name)", "Turn off \(device.name)")
+                : L10n.tr("打开 \(device.name)", "Turn on \(device.name)")))
             .skinHelp(isRunning ? L10n.tr("关闭空调", "Turn off") : L10n.tr("打开空调", "Turn on"))
 
             Button {
@@ -96,7 +101,7 @@ struct ClimatePanelModule: View {
                             .font(.system(size: 8, weight: .bold))
                             .rotationEffect(.degrees(isExpanded ? 180 : 0))
                     }
-                    .font(.system(size: 10.5, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(muted)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -163,6 +168,9 @@ struct ClimatePanelModule: View {
                 .adaptiveGlass(in: Circle(), interactive: true)
         }
         .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.86))
+        .accessibilityLabel(Text(delta > 0
+            ? L10n.tr("升高目标温度", "Raise target temperature")
+            : L10n.tr("降低目标温度", "Lower target temperature")))
     }
 
     // MARK: Modes
@@ -182,13 +190,13 @@ struct ClimatePanelModule: View {
                         Image(systemName: symbol(for: mode)).font(.system(size: 9.5, weight: .semibold))
                         Text(SmartDevice.localizeHVACMode(mode)).font(.system(size: 11, weight: selected ? .semibold : .medium))
                     }
-                    .foregroundStyle(selected ? (skin.isClassic ? Color.white : skin.palette.onAccent) : muted)
+                    .foregroundStyle(selected ? (skin.isClassic ? Color.white : palette.onAccent) : muted)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 5)
                     .background {
                         if selected {
                             Capsule(style: .continuous)
-                                .fill(skin.isClassic ? AnyShapeStyle(modeColor) : AnyShapeStyle(skin.palette.accentGradient))
+                                .fill(skin.isClassic ? AnyShapeStyle(modeColor) : AnyShapeStyle(palette.accentGradient))
                                 .matchedGeometryEffect(id: "mode", in: modeNamespace)
                         }
                     }

@@ -116,6 +116,7 @@ struct LayoutEditable: ViewModifier {
     @Environment(\.isEditingLayout) private var editing
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.appSkin) private var skin
+    @Environment(\.skinPalette) private var palette
 
     let deviceId: String
     let size: TileSize
@@ -137,12 +138,13 @@ struct LayoutEditable: ViewModifier {
                     Button(action: onCycleSize) {
                         Image(systemName: size.symbol)
                             .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(skin.isClassic ? Color.white : skin.palette.onAccent)
+                            .foregroundStyle(skin.isClassic ? Color.white : palette.onAccent)
                             .frame(width: 20, height: 20)
-                            .background(Circle().fill(skin.isClassic ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(skin.palette.accentGradient)))
+                            .background(Circle().fill(skin.isClassic ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(palette.accentGradient)))
                             .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
                     }
                     .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.85))
+                    .accessibilityLabel(Text(L10n.tr("切换卡片大小，当前 \(size.title)", "Change card size, currently \(size.title)")))
                     .skinHelp(L10n.tr("切换卡片大小：\(size.title)", "Card size: \(size.title)"))
                     .offset(x: 5, y: -5)
                     .transition(.scale.combined(with: .opacity))
@@ -292,11 +294,15 @@ final class LayoutUIState {
     var renamingGroupId: String?
     /// Non-nil while renaming that device (local display name only).
     var renamingDeviceId: String?
+    /// Raised from a card's context menu, so entering edit mode no longer requires the 0.6 s
+    /// long-press the audit flagged as inaccessible (#41).
+    var isEditingLayoutRequested = false
 }
 
 /// Inline name prompt shown over the panel for creating or renaming a group.
 struct GroupNamePrompt: View {
     @Environment(\.appSkin) private var skin
+    @Environment(\.skinPalette) private var palette
     let title: String
     @State var name: String
     var placeholder: String = L10n.tr("例如：灯光、电器、环境", "e.g. Lights, Appliances")
@@ -306,7 +312,7 @@ struct GroupNamePrompt: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        let p = skin.palette
+        let p = palette
         VStack(alignment: .leading, spacing: 10) {
             Text(title).font(.system(size: 13, weight: .semibold))
             TextField(placeholder, text: $name)

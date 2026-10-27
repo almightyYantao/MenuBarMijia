@@ -150,6 +150,7 @@ private struct GeneralSettingsTab: View {
     let store: HomeStore
     @State private var launchAtLogin: Bool = (SMAppService.mainApp.status == .enabled)
     @State private var showNotificationRationale = false
+    @AppStorage(SoundFeedback.storageKey) private var soundFeedbackEnabled = false
 
     private var notifications: NotificationPermissionState { .shared }
     private var hotkey: HotkeySettingsState { .shared }
@@ -244,6 +245,19 @@ private struct GeneralSettingsTab: View {
                             set: { store.hideOfflineDevices = $0 }
                         )
                     )
+
+                    SettingsToggleRow(
+                        title: L10n.tr("操作声音反馈", "Play Feedback Sounds"),
+                        isOn: $soundFeedbackEnabled
+                    )
+
+                    Text(L10n.tr(
+                        "默认关闭。开启后，开关、全关和 AI 执行成功会播放轻提示音，失败会播放另一种提示音。",
+                        "Off by default. When enabled, successful toggles, All Off and AI actions play a soft cue, and failures play a different one."
+                    ))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
                     HStack {
                         Text(L10n.tr("登录 Mac 时自动启动", "Launch at Login"))
@@ -618,6 +632,7 @@ private struct AssistantSettingsTab: View {
 private struct AppearanceSettingsTab: View {
     let store: HomeStore
     @AppStorage(AppSkin.storageKey) private var skinRaw: String = AppSkin.classic.rawValue
+    @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
     @AppStorage(AppSkin.climatePanelKey) private var climatePanelModule: Bool = true
     @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
 
@@ -625,6 +640,25 @@ private struct AppearanceSettingsTab: View {
         let _ = store.effectiveLanguage
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 11) {
+                SettingsSection(title: L10n.tr("外观模式", "Appearance")) {
+                    Picker("", selection: $appearanceRaw) {
+                        ForEach(AppAppearance.allCases) { appearance in
+                            Text(appearance.title).tag(appearance.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+
+                    Text(L10n.tr(
+                        "跟随系统时，霜白、晨光、柔雾、便当格在深色系统下分别改用夜航、霓虹夜、胶囊、液态玻璃的配色；经典皮肤始终使用系统材质。",
+                        "Following the system, Frost, Dawn, Soft Mist and Bento switch to the Night Flight, Neon, Capsule and Liquid Glass palettes in dark mode. Classic always uses system materials."
+                    ))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
                 SettingsSection(title: L10n.tr("面板皮肤", "Panel Skin")) {
                     SkinPickerGrid(selection: Binding(
                         get: { AppSkin(rawValue: skinRaw) ?? .classic },

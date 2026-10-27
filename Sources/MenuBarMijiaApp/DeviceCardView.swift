@@ -4,6 +4,7 @@ import MijiaCore
 public struct DeviceCardView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.appSkin) private var skin
+    @Environment(\.skinPalette) private var palette
     @Environment(\.isEditingLayout) private var isEditingLayout
     @AppStorage(AppSkin.climatePanelKey) private var climatePanelModule: Bool = true
     @AppStorage(DeviceLayoutPrefs.storageKey) private var tileSizesRaw: String = "{}"
@@ -76,25 +77,40 @@ public struct DeviceCardView: View {
     }
 
     private var accent: Color {
-        skin.isClassic ? DevicePalette.accentColor(for: device) : skin.palette.accent
+        skin.isClassic ? DevicePalette.accentColor(for: device) : palette.accent
     }
 
     private var statusColor: Color {
         guard !skin.isClassic else { return DevicePalette.statusTextColor(for: device, colorScheme: colorScheme) }
         if skin == .glass || skin == .capsule {
-            return device.isOnline && device.isActiveOn ? skin.palette.activeText.opacity(0.7) : skin.palette.muted
+            return device.isOnline && device.isActiveOn ? palette.activeText.opacity(0.7) : palette.muted
         }
-        return skin.palette.muted
+        return palette.muted
     }
 
     private var nameColor: Color {
         guard !skin.isClassic else { return .primary }
-        return device.isActiveOn && device.isOnline && (skin == .glass || skin == .capsule) ? skin.palette.activeText : skin.palette.fg
+        return device.isActiveOn && device.isOnline && (skin == .glass || skin == .capsule) ? palette.activeText : palette.fg
     }
 
     private var nameGlow: Color {
-        guard skin.palette.glow, device.isActiveOn, device.isOnline else { return .clear }
-        return skin.palette.accent.opacity(0.85)
+        guard palette.glow, device.isActiveOn, device.isOnline else { return .clear }
+        return palette.accent.opacity(0.85)
+    }
+
+    /// One spoken sentence for the whole card: name, power state and the detail subtitle (#41).
+    private var accessibilitySummary: String {
+        guard device.isOnline else {
+            return L10n.tr("\(device.name)，离线", "\(device.name), offline")
+        }
+        let state = device.isActiveOn ? L10n.tr("已开启", "on") : L10n.tr("已关闭", "off")
+        let subtitle = device.statusSubtitle
+        let off = L10n.tr("已关闭", "Off")
+        let on = L10n.tr("已开启", "On")
+        if subtitle == off || subtitle == on || subtitle.isEmpty {
+            return L10n.tr("\(device.name)，\(state)", "\(device.name), \(state)")
+        }
+        return L10n.tr("\(device.name)，\(state)，\(subtitle)", "\(device.name), \(state), \(subtitle)")
     }
 
     /// Current brightness 0...1 for lights (live while dragging), nil for other kinds.
@@ -144,14 +160,14 @@ public struct DeviceCardView: View {
                         .padding(.vertical, 9)
                         .background(
                             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(skin.palette.tile)
+                                .fill(palette.tile)
                         )
                         .padding(.horizontal, 6)
                         .padding(.bottom, 6)
                         .transition(AppleMotion.drawerTransition)
                 } else {
                     Rectangle()
-                        .fill(skin.isClassic ? Color.primary.opacity(0.08) : skin.palette.line)
+                        .fill(skin.isClassic ? Color.primary.opacity(0.08) : palette.line)
                         .frame(height: 1)
                         .padding(.horizontal, 12)
 
@@ -173,7 +189,7 @@ public struct DeviceCardView: View {
         }
         .simultaneousGesture(dimGesture)
         .overlay(
-            RoundedRectangle(cornerRadius: skin.isClassic ? 14 : (skin.palette.capsuleTiles ? 26 : skin.palette.tileRadius), style: .continuous)
+            RoundedRectangle(cornerRadius: skin.isClassic ? 14 : (palette.capsuleTiles ? 26 : palette.tileRadius), style: .continuous)
                 .strokeBorder(isKeyboardFocused ? accent.opacity(0.85) : Color.clear, lineWidth: 1.6)
         )
         .opacity(device.isOnline ? 1.0 : 0.58)
@@ -205,7 +221,7 @@ public struct DeviceCardView: View {
         if !skin.isClassic, !isExpanded, let level = lightLevel, level > 0 {
             GeometryReader { geo in
                 Rectangle()
-                    .fill(skin.palette.fill)
+                    .fill(palette.fill)
                     .frame(width: geo.size.width * level)
                     .animation(dragBrightness == nil ? .easeOut(duration: 0.3) : nil, value: level)
             }
@@ -231,6 +247,12 @@ public struct DeviceCardView: View {
                 LayoutUIState.shared.renamingDeviceId = device.id
             } label: {
                 Label(L10n.tr("重命名…", "Rename…"), systemImage: "pencil")
+            }
+
+            Button {
+                LayoutUIState.shared.isEditingLayoutRequested = true
+            } label: {
+                Label(L10n.tr("编辑布局…", "Edit Layout…"), systemImage: "rectangle.3.group")
             }
 
             Menu {
@@ -324,6 +346,7 @@ public struct DeviceCardView: View {
     private var bentoBody: some View {
         Button {
             withAnimation(AppleMotion.snappySpring) { store.togglePrimary(device) }
+            if device.isOnline { SoundFeedback.playSuccess() }
         } label: {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top) {
@@ -340,6 +363,7 @@ public struct DeviceCardView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(Text(L10n.tr("更多 \(device.name) 操作", "More actions for \(device.name)")))
                     }
                 }
                 Spacer(minLength: 6)
@@ -348,7 +372,7 @@ public struct DeviceCardView: View {
                     .foregroundStyle(nameColor)
                     .lineLimit(1)
                 Text(dragBrightness.map { L10n.tr("亮度 \(Int($0 * 100))%", "Brightness \(Int($0 * 100))%") } ?? device.statusSubtitle)
-                    .font(.system(size: 10.5, weight: device.isActiveOn ? .semibold : .regular))
+                    .font(.system(size: 11, weight: device.isActiveOn ? .semibold : .regular))
                     .monospacedDigit()
                     .foregroundStyle(statusColor)
                     .lineLimit(1)
@@ -358,6 +382,8 @@ public struct DeviceCardView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.95))
+        .accessibilityLabel(Text(accessibilitySummary))
+        .accessibilityHint(Text(L10n.tr("切换开关", "Toggle power")))
     }
 
     // MARK: - Compact 2-Column Header (Left Icon Toggles, Right Area Expands)
@@ -368,10 +394,12 @@ public struct DeviceCardView: View {
                 withAnimation(AppleMotion.snappySpring) {
                     store.togglePrimary(device)
                 }
+                if device.isOnline { SoundFeedback.playSuccess() }
             } label: {
                 iconBadge
             }
             .buttonStyle(PressableCardButtonStyle())
+            .accessibilityLabel(Text(L10n.tr("\(device.name) 开关", "\(device.name) power")))
             .skinHelp(L10n.tr("点击直接切换开关", "Click to toggle power"))
 
             Button {
@@ -380,6 +408,7 @@ public struct DeviceCardView: View {
                         store.toggleExpanded(device.id)
                     } else {
                         store.togglePrimary(device)
+                        if device.isOnline { SoundFeedback.playSuccess() }
                     }
                 }
             } label: {
@@ -411,6 +440,9 @@ public struct DeviceCardView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Text(device.hasDetailDrawer
+                ? L10n.tr("\(device.name)，详细控制", "\(device.name), controls")
+                : accessibilitySummary))
             .skinHelp(device.hasDetailDrawer ? L10n.tr("点击展开详细控制", "Click to expand controls") : device.name)
         }
         .padding(.horizontal, skin.isClassic ? 9 : 11)
@@ -425,6 +457,7 @@ public struct DeviceCardView: View {
                 withAnimation(AppleMotion.snappySpring) {
                     store.togglePrimary(device)
                 }
+                if device.isOnline { SoundFeedback.playSuccess() }
             } label: {
                 HStack(spacing: 10) {
                     iconBadge
@@ -438,7 +471,7 @@ public struct DeviceCardView: View {
 
                             if showRoomBadge {
                                 Text(L10n.displayRoomName(device.roomName))
-                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .font(.system(size: 10, weight: .semibold))
                                     .foregroundStyle(nameColor.opacity(0.68))
                                     .padding(.horizontal, 5.5)
                                     .padding(.vertical, 1.5)
@@ -465,6 +498,8 @@ public struct DeviceCardView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(PressableCardButtonStyle())
+            .accessibilityLabel(Text(accessibilitySummary))
+            .accessibilityHint(Text(L10n.tr("切换开关", "Toggle power")))
 
             // Quick Index Pill + Favorite Star + Drawer Chevron
             HStack(spacing: 4) {
@@ -485,6 +520,9 @@ public struct DeviceCardView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(Text(isFavorite
+                        ? L10n.tr("取消常用星标 \(device.name)", "Remove \(device.name) from favorites")
+                        : L10n.tr("设为常用星标 \(device.name)", "Add \(device.name) to favorites")))
                     .skinHelp(isFavorite ? L10n.tr("从常用中移除", "Remove from Favorites") : L10n.tr("加入常用", "Add to Favorites"))
                 }
 
@@ -508,6 +546,9 @@ public struct DeviceCardView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(Text(isExpanded
+                        ? L10n.tr("收起 \(device.name) 详细控制", "Collapse \(device.name) controls")
+                        : L10n.tr("展开 \(device.name) 详细控制", "Expand \(device.name) controls")))
                     .skinHelp(isExpanded ? L10n.tr("收起控制面板", "Collapse controls") : L10n.tr("展开详细控制", "Expand controls"))
                 }
             }
@@ -518,7 +559,7 @@ public struct DeviceCardView: View {
 
     private func quickIndexPill(_ index: Int) -> some View {
         Text("\(index)")
-            .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
             .monospacedDigit()
             .foregroundStyle(.secondary)
             .padding(.horizontal, 4.5)
@@ -539,7 +580,7 @@ public struct DeviceCardView: View {
     }
 
     private var skinIconBadge: some View {
-        let p = skin.palette
+        let p = palette
         let on = device.isActiveOn && device.isOnline
         let glow = lightLevel ?? (on ? 0.6 : 0)
         let lightOn = on && lightLevel != nil
@@ -747,6 +788,7 @@ public struct DeviceCardView: View {
                         .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
                 }
                 .buttonStyle(PressableCardButtonStyle())
+                .accessibilityLabel(Text(L10n.tr("降低目标温度", "Lower target temperature")))
                 .disabled(!device.isOnline)
 
                 Spacer()
@@ -757,11 +799,11 @@ public struct DeviceCardView: View {
                         .monospacedDigit()
                     if let cur = spec.currentTemperature {
                         Text(String(format: L10n.tr("当前室温 %.1f°C", "Room %.1f°C"), cur))
-                            .font(.system(size: 10.5, weight: .medium))
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(.secondary)
                     } else {
                         Text(L10n.tr("设定温度", "Target Temp"))
-                            .font(.system(size: 10.5, weight: .medium))
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -777,6 +819,7 @@ public struct DeviceCardView: View {
                         .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
                 }
                 .buttonStyle(PressableCardButtonStyle())
+                .accessibilityLabel(Text(L10n.tr("升高目标温度", "Raise target temperature")))
                 .disabled(!device.isOnline)
             }
             .padding(.horizontal, 8)
@@ -915,7 +958,7 @@ public struct DeviceCardView: View {
         return VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Text(title)
-                    .font(.system(size: 10.5, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
                 if let actual {
@@ -934,6 +977,7 @@ public struct DeviceCardView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(Text(L10n.tr("降低\(title)温度", "Lower \(title) temperature")))
 
                 Spacer()
 
@@ -951,6 +995,7 @@ public struct DeviceCardView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(Text(L10n.tr("升高\(title)温度", "Raise \(title) temperature")))
             }
         }
         .padding(8)
@@ -1001,6 +1046,9 @@ public struct DeviceCardView: View {
                         .adaptiveGlass(in: Circle(), interactive: true)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(Text(spec.isMuted
+                    ? L10n.tr("取消静音 \(device.name)", "Unmute \(device.name)")
+                    : L10n.tr("静音 \(device.name)", "Mute \(device.name)")))
                 .skinHelp(L10n.tr("切换麦克风/扬声器静音", "Toggle speaker mute"))
 
                 LiquidGlassSlider(
@@ -1111,6 +1159,9 @@ public struct DeviceCardView: View {
                         .font(.system(size: 11, weight: .semibold))
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: spec.isMuted, tintColor: accent))
+                .accessibilityLabel(Text(spec.isMuted
+                    ? L10n.tr("取消静音 \(device.name)", "Unmute \(device.name)")
+                    : L10n.tr("静音 \(device.name)", "Mute \(device.name)")))
                 .skinHelp(spec.isMuted ? L10n.tr("取消静音", "Unmute") : L10n.tr("静音", "Mute"))
 
                 LiquidGlassSlider(
@@ -1139,6 +1190,7 @@ public struct DeviceCardView: View {
                     HStack(spacing: 6) {
                         Button {
                             store.togglePrimary(device)
+                            if device.isOnline { SoundFeedback.playSuccess() }
                         } label: {
                             Label(device.isActiveOn ? L10n.tr("关机待机", "Standby") : L10n.tr("唤醒开机", "Wake"), systemImage: "power")
                         }

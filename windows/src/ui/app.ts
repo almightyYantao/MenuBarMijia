@@ -1649,7 +1649,7 @@ export class MenuMijiaWindowsApp {
                 <div class="cc-title-row">
                   ${
                     this.homes.length > 1
-                      ? `<button class="cc-home-switch" id="btn-home-menu" aria-expanded="${this.isHomeMenuOpen}">
+                      ? `<button class="cc-home-switch" id="btn-home-menu" aria-expanded="${this.isHomeMenuOpen}" aria-label="切换家庭">
                           <span class="cc-home-title">${this.escapeHtml(this.homeTitle)}</span>
                           <span class="cc-home-caret ${this.isHomeMenuOpen ? "is-open" : ""}">${SF_ICONS.chevronDown}</span>
                         </button>`
@@ -1668,6 +1668,8 @@ export class MenuMijiaWindowsApp {
                 class="cc-circle-btn ${this.isListeningVoice ? "is-recording" : ""}"
                 id="btn-mic"
                 title="语音控制"
+                aria-label="语音控制"
+                aria-pressed="${this.isListeningVoice}"
               >
                 ${SF_ICONS.micFill}
               </button>
@@ -1675,14 +1677,16 @@ export class MenuMijiaWindowsApp {
                 class="cc-circle-btn ${this.isShowingAssistantBar ? "is-selected" : ""}"
                 id="btn-toggle-assistant"
                 title="AI 自然语言指令栏 (/)"
+                aria-label="AI 自然语言指令栏"
+                aria-pressed="${this.isShowingAssistantBar}"
               >
                 ${SF_ICONS.sparkles}
               </button>
               ${
                 this.isEditingLayout
-                  ? `<button class="cc-all-off-pill is-done" id="btn-done-editing">完成</button>`
+                  ? `<button class="cc-all-off-pill is-done" id="btn-done-editing" aria-label="完成布局编辑">完成</button>`
                   : this.allOffTargets.length > 0
-                  ? `<button class="cc-all-off-pill is-hold" id="btn-all-off" title="按住 0.6 秒关闭这 ${this.allOffTargets.length} 台（插座、扫地机默认不参与，可在设置里调整）">
+                  ? `<button class="cc-all-off-pill is-hold" id="btn-all-off" title="按住 0.6 秒关闭这 ${this.allOffTargets.length} 台（插座、扫地机默认不参与，可在设置里调整）" aria-label="全关，关闭 ${this.allOffTargets.length} 台设备，按住 0.6 秒确认">
                       <span class="cc-hold-fill"></span>
                       ${SF_ICONS.power}
                       <span>${this.selectedRoom === "全部" ? "全关" : `全关·${this.escapeHtml(this.selectedRoom)}`} (${this.allOffTargets.length})</span>
@@ -1693,6 +1697,7 @@ export class MenuMijiaWindowsApp {
                 class="cc-circle-btn"
                 id="btn-hide-panel"
                 title="收起面板到右下角托盘 (Esc)"
+                aria-label="收起面板"
               >
                 ${SF_ICONS.chevronDown}
               </button>
@@ -1742,12 +1747,14 @@ export class MenuMijiaWindowsApp {
                 class="cc-spotlight-input"
                 type="text"
                 placeholder="说一句：我困了 / 调低两度 / 10分钟后关灯 / 撤销..."
+                aria-label="自然语言指令"
                 ${this.isResolvingIntent ? "disabled" : ""}
               />
               <button
                 id="btn-send"
                 class="cc-spotlight-send"
                 title="执行指令 (Enter)"
+                aria-label="执行指令"
                 ${this.isResolvingIntent ? "disabled" : ""}
               >
                 ${SF_ICONS.arrowUpCircle}
@@ -1864,6 +1871,7 @@ export class MenuMijiaWindowsApp {
               <button
                 class="cc-room-pill ${this.selectedRoom === room ? "is-active" : ""}"
                 data-room="${this.escapeHtml(room)}"
+                aria-pressed="${this.selectedRoom === room}"
               >
                 ${this.escapeHtml(room)}
               </button>
@@ -1876,6 +1884,8 @@ export class MenuMijiaWindowsApp {
             class="cc-circle-btn is-small"
             id="btn-toggle-grid"
             title="${this.settings.isCompactGridMode ? "切换为单列详情视图" : "切换为双列控制中心磁贴"}"
+            aria-label="${this.settings.isCompactGridMode ? "切换为单列详情视图" : "切换为双列控制中心磁贴"}"
+            aria-pressed="${this.settings.isCompactGridMode}"
           >
             ${this.settings.isCompactGridMode ? SF_ICONS.grid2x2 : SF_ICONS.grid1x2}
           </button>
@@ -1914,6 +1924,7 @@ export class MenuMijiaWindowsApp {
               class="cc-footer-icon-btn ${this.isSyncingCloud ? "is-spinning" : ""}"
               id="btn-refresh"
               title="立即同步最新设备状态"
+              aria-label="立即同步最新设备状态"
             >
               ${SF_ICONS.arrowClockwise}
             </button>
@@ -1921,6 +1932,7 @@ export class MenuMijiaWindowsApp {
               class="cc-footer-icon-btn"
               id="btn-settings"
               title="连接设置与 AI 决策配置"
+              aria-label="打开设置"
             >
               ${SF_ICONS.sliderHorizontal}
             </button>
@@ -2070,6 +2082,8 @@ export class MenuMijiaWindowsApp {
             class="cc-tile-orb"
             data-toggle-device="${this.escapeHtml(dev.id)}"
             title="${kind === "sensor" ? dev.name : "点击直接切换开关"}"
+            aria-label="${this.escapeHtml(dev.name)} 开关"
+            aria-pressed="${isOn}"
           >
             ${svg}
           </button>
@@ -2078,6 +2092,8 @@ export class MenuMijiaWindowsApp {
             class="cc-tile-body"
             data-body-device="${this.escapeHtml(dev.id)}"
             title="${hasDrawer ? "点击展开精细调节" : "点击切换开关"}"
+            aria-label="${this.escapeHtml(dev.name)}，${this.escapeHtml(shownSubtitle)}"
+            aria-pressed="${isOn}"
           >
             <div class="cc-tile-name">${this.escapeHtml(dev.name)}</div>
             <div class="cc-tile-status">${this.escapeHtml(shownSubtitle)}</div>
@@ -2089,6 +2105,8 @@ export class MenuMijiaWindowsApp {
                   class="cc-tile-chevron ${isExpanded ? "is-open" : ""}"
                   data-expand-device="${this.escapeHtml(dev.id)}"
                   title="${isExpanded ? "收起详细控制" : "展开详细控制"}"
+                  aria-label="${isExpanded ? "收起" : "展开"} ${this.escapeHtml(dev.name)} 详细控制"
+                  aria-expanded="${isExpanded}"
                 >
                   ${SF_ICONS.chevronRight}
                 </button>`
@@ -2113,9 +2131,10 @@ export class MenuMijiaWindowsApp {
     const temp = k.temperature !== null ? k.temperature.toFixed(1) : "--";
     const hum = k.humidity !== null ? Math.round(k.humidity) : null;
     const room = this.selectedRoom === "全部" ? `<span class="cc-sensor-room">${this.escapeHtml(dev.roomName)}</span>` : "";
+    const sensorAria = `${name}，温度 ${temp} 度${hum !== null ? `，湿度 ${hum}%` : ""}${dev.isOnline ? "" : "，离线"}`;
     if (compact) {
       return `
-        <div class="cc-tile cc-sensor is-compact ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs}>
+        <div class="cc-tile cc-sensor is-compact ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs} role="group" aria-label="${this.escapeHtml(sensorAria)}">
           ${badge}
           <div class="cc-sensor-top">
             <span class="cc-sensor-name">${this.escapeHtml(name)}</span>
@@ -2135,7 +2154,7 @@ export class MenuMijiaWindowsApp {
         </div>`
       : "";
     return `
-      <div class="cc-tile cc-sensor ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs}>
+      <div class="cc-tile cc-sensor ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs} role="group" aria-label="${this.escapeHtml(sensorAria)}">
         ${badge}
         <div class="cc-sensor-wide">
           <div class="cc-sensor-info">
@@ -2175,28 +2194,28 @@ export class MenuMijiaWindowsApp {
       <div class="cc-tile cc-climate ${running ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs}>
         ${badge}
         <div class="cc-climate-strip">
-          <button class="cc-climate-power ${running ? "is-on" : ""}" data-toggle-device="${id}" title="${running ? "关闭空调" : "打开空调"}">
+          <button class="cc-climate-power ${running ? "is-on" : ""}" data-toggle-device="${id}" title="${running ? "关闭空调" : "打开空调"}" aria-label="${running ? `关闭 ${this.escapeHtml(dev.name)}` : `打开 ${this.escapeHtml(dev.name)}`}" aria-pressed="${running}">
             ${k.hvacMode === "heat" ? "🔥" : SF_ICONS.snowflake}
           </button>
-          <button class="cc-climate-name" data-expand-device="${id}">
+          <button class="cc-climate-name" data-expand-device="${id}" aria-label="${this.escapeHtml(dev.name)}，${this.escapeHtml(subtitle)}" aria-expanded="${open}">
             <span class="cc-tile-name">${this.escapeHtml(dev.name)}</span>
             <span class="cc-tile-status">${this.escapeHtml(subtitle)} ${forceOpen ? "" : `<i class="cc-mini-caret ${open ? "is-open" : ""}">${SF_ICONS.chevronDown}</i>`}</span>
           </button>
-          <button class="cc-climate-step" data-acstep="${id}:-1" title="降低温度">−</button>
-          <span class="cc-climate-temp">${temp}<small>°</small></span>
-          <button class="cc-climate-step" data-acstep="${id}:1" title="升高温度">＋</button>
+          <button class="cc-climate-step" data-acstep="${id}:-1" title="降低温度" aria-label="降低目标温度">−</button>
+          <span class="cc-climate-temp" aria-label="目标温度 ${temp} 摄氏度">${temp}<small>°</small></span>
+          <button class="cc-climate-step" data-acstep="${id}:1" title="升高温度" aria-label="升高目标温度">＋</button>
         </div>
-        <div class="cc-climate-gauge"><span style="width:${progress}%"></span></div>
+        <div class="cc-climate-gauge" role="progressbar" aria-label="目标温度进度" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}"><span style="width:${progress}%"></span></div>
         ${
           open
             ? `<div class="cc-climate-more">
                 <div class="cc-segmented-pills is-even">
-                  ${modes.map((m) => `<button class="cc-seg-pill ${running && k.hvacMode === m ? "is-active" : ""}" data-acmode="${id}:${m}">${modeLabel[m] ?? m}</button>`).join("")}
+                  ${modes.map((m) => `<button class="cc-seg-pill ${running && k.hvacMode === m ? "is-active" : ""}" data-acmode="${id}:${m}" aria-pressed="${running && k.hvacMode === m}">${modeLabel[m] ?? m}</button>`).join("")}
                 </div>
                 ${
                   k.availableFanModes.length > 0
                     ? `<div class="cc-segmented-pills"><span class="cc-pill-label">风速</span>${k.availableFanModes
-                        .map((f) => `<button class="cc-seg-pill ${k.fanMode === f ? "is-active" : ""}" data-acfan="${id}:${this.escapeHtml(f)}">${this.escapeHtml(localizeFanMode(f))}</button>`)
+                        .map((f) => `<button class="cc-seg-pill ${k.fanMode === f ? "is-active" : ""}" data-acfan="${id}:${this.escapeHtml(f)}" aria-pressed="${k.fanMode === f}">${this.escapeHtml(localizeFanMode(f))}</button>`)
                         .join("")}</div>`
                     : ""
                 }
@@ -2318,14 +2337,14 @@ export class MenuMijiaWindowsApp {
               <span>亮度</span>
               <strong>${bri}%</strong>
             </div>
-            <input class="cc-range is-amber" type="range" min="1" max="100" value="${bri}" data-brightness="${this.escapeHtml(dev.id)}" />
+            <input class="cc-range is-amber" type="range" min="1" max="100" value="${bri}" data-brightness="${this.escapeHtml(dev.id)}" aria-label="亮度" aria-valuemin="1" aria-valuemax="100" aria-valuenow="${bri}" />
           </div>
           <div class="cc-slider-group">
             <div class="cc-slider-label">
               <span>色温</span>
               <strong>${ct}K</strong>
             </div>
-            <input class="cc-range is-kelvin" type="range" min="${k.minKelvin}" max="${k.maxKelvin}" step="100" value="${ct}" data-colortemp="${this.escapeHtml(dev.id)}" />
+            <input class="cc-range is-kelvin" type="range" min="${k.minKelvin}" max="${k.maxKelvin}" step="100" value="${ct}" data-colortemp="${this.escapeHtml(dev.id)}" aria-label="色温" aria-valuemin="${k.minKelvin}" aria-valuemax="${k.maxKelvin}" aria-valuenow="${ct}" />
           </div>
         </div>
       `;
@@ -2345,7 +2364,7 @@ export class MenuMijiaWindowsApp {
               <span>目标温度</span>
               <strong>${k.targetTemperature}°C</strong>
             </div>
-            <input class="cc-range is-blue" type="range" min="${k.minTemp}" max="${k.maxTemp}" step="${k.step}" value="${k.targetTemperature}" data-actemp="${this.escapeHtml(dev.id)}" />
+            <input class="cc-range is-blue" type="range" min="${k.minTemp}" max="${k.maxTemp}" step="${k.step}" value="${k.targetTemperature}" data-actemp="${this.escapeHtml(dev.id)}" aria-label="目标温度" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}" />
           </div>
           <div class="cc-segmented-pills">
             ${modes
@@ -2372,13 +2391,13 @@ export class MenuMijiaWindowsApp {
             ${modes
               .map(
                 (preset) => `
-              <button class="cc-seg-pill ${k.presetMode === preset ? "is-active" : ""}" data-fanpreset="${this.escapeHtml(dev.id)}:${this.escapeHtml(preset)}">
+              <button class="cc-seg-pill ${k.presetMode === preset ? "is-active" : ""}" data-fanpreset="${this.escapeHtml(dev.id)}:${this.escapeHtml(preset)}" aria-pressed="${k.presetMode === preset}">
                 ${this.escapeHtml(IntentReply.fanSpeedLabel(preset))}
               </button>
             `,
               )
               .join("")}
-            <button class="cc-seg-pill ${k.isOscillating ? "is-active" : ""}" data-fanosc="${this.escapeHtml(dev.id)}">
+            <button class="cc-seg-pill ${k.isOscillating ? "is-active" : ""}" data-fanosc="${this.escapeHtml(dev.id)}" aria-pressed="${k.isOscillating}">
               摇头 ${k.isOscillating ? "开" : "关"}
             </button>
           </div>
@@ -2391,10 +2410,10 @@ export class MenuMijiaWindowsApp {
   private renderOnboardingModal(): string {
     return `
       <div class="cc-sheet-backdrop">
-        <div class="cc-sheet">
+        <div class="cc-sheet" role="dialog" aria-modal="true" aria-label="首次设置">
           <div class="cc-sheet-header">
             <div class="cc-sheet-badge">MenuBarMijia 控制中心</div>
-            <button class="cc-circle-btn is-small" id="btn-close-onboarding" title="关闭引导">
+            <button class="cc-circle-btn is-small" id="btn-close-onboarding" title="关闭引导" aria-label="关闭引导">
               ${SF_ICONS.xmark}
             </button>
           </div>
@@ -2452,10 +2471,10 @@ export class MenuMijiaWindowsApp {
   private renderSettingsModal(): string {
     return `
       <div class="cc-sheet-backdrop">
-        <div class="cc-sheet">
+        <div class="cc-sheet" role="dialog" aria-modal="true" aria-label="偏好设置">
           <div class="cc-sheet-header">
             <strong>偏好设置与米家连接</strong>
-            <button class="cc-circle-btn is-small" id="btn-close-settings" title="返回控制中心">
+            <button class="cc-circle-btn is-small" id="btn-close-settings" title="返回控制中心" aria-label="返回控制中心">
               ${SF_ICONS.xmark}
             </button>
           </div>
@@ -2464,7 +2483,7 @@ export class MenuMijiaWindowsApp {
             <label>面板皮肤</label>
             <div class="cc-skin-grid">
               ${SKINS.map((k) => `
-                <button class="cc-skin-swatch ${this.skin === k.id ? "is-active" : ""}" data-skin="${k.id}">
+                <button class="cc-skin-swatch ${this.skin === k.id ? "is-active" : ""}" data-skin="${k.id}" aria-pressed="${this.skin === k.id}" aria-label="${this.escapeHtml(k.title)}">
                   <span class="cc-swatch-art swatch-${k.id}"><i></i><i></i></span>
                   <span>${k.title}</span>
                 </button>`).join("")}
@@ -2475,7 +2494,7 @@ export class MenuMijiaWindowsApp {
           <div class="cc-field">
             <label>面板高度</label>
             <div class="cc-segmented-pills">
-              ${PANEL_HEIGHTS.map((h) => `<button class="cc-seg-pill ${this.settings.panelHeight === h.id ? "is-active" : ""}" data-panel-height="${h.id}">${h.title}</button>`).join("")}
+              ${PANEL_HEIGHTS.map((h) => `<button class="cc-seg-pill ${this.settings.panelHeight === h.id ? "is-active" : ""}" data-panel-height="${h.id}" aria-pressed="${this.settings.panelHeight === h.id}">${h.title}</button>`).join("")}
             </div>
           </div>
 

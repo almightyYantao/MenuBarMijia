@@ -30,7 +30,8 @@ struct MenuBarMijiaApp: App {
                         .monospacedDigit()
                 }
             }
-            .help(L10n.tr("单击打开面板；按住直接说话控制设备", "Click to open panel; hold to speak a command"))
+            .help(MenuBarStatusSummary.text(for: store))
+            .accessibilityLabel(Text(MenuBarStatusSummary.text(for: store)))
         }
         .menuBarExtraStyle(.window)
 
@@ -48,5 +49,41 @@ struct MenuBarMijiaApp: App {
             return String(trimmed.suffix(10))
         }
         return trimmed
+    }
+}
+
+// MARK: - Menu Bar Tooltip (#54)
+
+/// One-line status shown when hovering the menu-bar icon: "MenuBarMijia · 3 on · Study 26.5° ·
+/// Xiaomi Cloud connected". Disconnected shows the reason instead of the backend name.
+@MainActor
+enum MenuBarStatusSummary {
+    static func text(for store: HomeStore) -> String {
+        let _ = store.effectiveLanguage
+        var parts: [String] = ["MenuBarMijia"]
+        parts.append(L10n.tr("\(store.activeDeviceCount) 台开启", "\(store.activeDeviceCount) on"))
+
+        if let reading = store.environmentReadings.first(where: { $0.temperature != nil }),
+           let temperature = reading.temperature {
+            parts.append("\(L10n.displayRoomName(reading.label)) \(String(format: "%.1f°", temperature))")
+        }
+
+        switch store.connectionStatus {
+        case .connected:
+            switch store.homeBackend {
+            case .xiaomiCloud:
+                parts.append(L10n.tr("已连接米家云", "Xiaomi Cloud connected"))
+            case .homeAssistant:
+                parts.append(L10n.tr("已连接 Home Assistant", "Home Assistant connected"))
+            case .demo:
+                parts.append(L10n.tr("演示模式", "Demo mode"))
+            }
+        case .connecting:
+            parts.append(L10n.tr("正在连接…", "Connecting…"))
+        case .disconnected(let reason):
+            parts.append(L10n.tr("未连接：\(reason)", "Disconnected: \(reason)"))
+        }
+
+        return parts.joined(separator: " · ")
     }
 }

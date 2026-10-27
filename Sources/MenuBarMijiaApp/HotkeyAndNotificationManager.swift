@@ -23,6 +23,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     private var statusBarHoldTriggered: Bool = false
     private var suppressNextStatusBarMouseUpUntil: TimeInterval = 0
     private var safetyTimerTask: Task<Void, Never>?
+    private var tooltipTask: Task<Void, Never>?
     private var pendingAlertsById: [String: SafetyAlert] = [:]
 
     private static let turnOffActionId = "TURN_OFF_ACTION"
@@ -54,6 +55,32 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
                     self.ensureMenuBarExtraWindowVisible()
                 }
             }
+            if let self {
+                self.startStatusTooltipUpdates()
+            }
+        }
+    }
+
+    // MARK: - Menu Bar Icon Tooltip (#54)
+
+    /// MenuBarExtra renders its label into a private status item, and SwiftUI's `.help` is not
+    /// reliable there. Mirror the same summary onto the item's button tooltip. A cheap 2 s loop
+    /// keeps it in sync without capturing the store in a @Sendable observation callback.
+    private func startStatusTooltipUpdates() {
+        guard tooltipTask == nil else { return }
+        tooltipTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, let store = self.store else { return }
+                // Retry unconditionally: the status item may not exist for the first launch ticks.
+                self.applyStatusTooltip(MenuBarStatusSummary.text(for: store))
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
+    private func applyStatusTooltip(_ text: String) {
+        if let button = findAnyStatusBarButton(), button.toolTip != text {
+            button.toolTip = text
         }
     }
 
