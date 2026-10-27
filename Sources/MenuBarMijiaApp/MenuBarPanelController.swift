@@ -474,8 +474,9 @@ final class MenuBarPanelController: NSObject {
             object: nil,
             queue: .main
         ) { [weak self] notification in
+            let window = notification.object as? NSWindow
             MainActor.assumeIsolated {
-                self?.handleOtherWindowBecameKey(notification.object as? NSWindow)
+                self?.handleOtherWindowBecameKey(window)
             }
         })
         observers.append(NotificationCenter.default.addObserver(

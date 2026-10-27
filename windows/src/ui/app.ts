@@ -1751,7 +1751,7 @@ export class MenuMijiaWindowsApp {
                 this.isEditingLayout
                   ? `<button class="cc-all-off-pill is-done" id="btn-done-editing" aria-label="${t("完成布局编辑")}">${t("完成")}</button>`
                   : this.allOffTargets.length > 0
-                  ? `<button class="cc-all-off-pill is-hold" id="btn-all-off" title="按住 0.6 秒关闭这 ${this.allOffTargets.length} 台（插座、扫地机默认不参与，可在设置里调整）" aria-label="全关，关闭 ${this.allOffTargets.length} 台设备，按住 0.6 秒确认">
+                  ? `<button class="cc-all-off-pill is-hold" id="btn-all-off" title="${t("按住 0.6 秒关闭这 {count} 台（插座、扫地机默认不参与，可在设置里调整）", { count: this.allOffTargets.length })}" aria-label="${t("全关，关闭 {count} 台设备，按住 0.6 秒确认", { count: this.allOffTargets.length })}">
                       <span class="cc-hold-fill"></span>
                       ${SF_ICONS.power}
                       <span>${this.selectedRoom === "全部" ? t("全关") : t("全关·{room}", { room: this.escapeHtml(this.selectedRoom) })} (${this.allOffTargets.length})</span>
@@ -1938,7 +1938,7 @@ export class MenuMijiaWindowsApp {
                 data-room="${this.escapeHtml(room)}"
                 aria-pressed="${this.selectedRoom === room}"
               >
-                ${this.escapeHtml(room)}
+                ${this.escapeHtml(room === "全部" ? t("全部") : room)}
               </button>
             `,
               )
@@ -2147,7 +2147,7 @@ export class MenuMijiaWindowsApp {
             class="cc-tile-orb"
             data-toggle-device="${this.escapeHtml(dev.id)}"
             title="${kind === "sensor" ? dev.name : t("点击直接切换开关")}"
-            aria-label="${this.escapeHtml(dev.name)} 开关"
+            aria-label="${this.escapeHtml(t("{name} 开关", { name: dev.name }))}"
             aria-pressed="${isOn}"
           >
             ${svg}
@@ -2170,7 +2170,7 @@ export class MenuMijiaWindowsApp {
                   class="cc-tile-chevron ${isExpanded ? "is-open" : ""}"
                   data-expand-device="${this.escapeHtml(dev.id)}"
                   title="${isExpanded ? t("收起详细控制") : t("展开详细控制")}"
-                  aria-label="${isExpanded ? t("收起") : t("展开")} ${this.escapeHtml(dev.name)} 详细控制"
+                  aria-label="${isExpanded ? t("收起") : t("展开")} ${this.escapeHtml(t("{name} 详细控制", { name: dev.name }))}"
                   aria-expanded="${isExpanded}"
                 >
                   ${SF_ICONS.chevronRight}

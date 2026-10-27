@@ -257,8 +257,8 @@ struct PanelSearchTests {
     @Test("Focused field lets AppKit insert text, so IME and paste keep working")
     func focusedFieldDoesNotDoubleInsert() {
         #expect(action(.init(kind: .character("s")), isSearching: true, isFieldFocused: true) == .ignore)
-        #expect(action(.init(kind: .delete), isSearching: true, isFieldFocused: true, query: "sf") == .ignore)
-        #expect(action(.init(kind: .delete), isSearching: true, query: "sf") == .deleteBackward)
+        #expect(action(.init(kind: .delete), query: "sf", isSearching: true, isFieldFocused: true) == .ignore)
+        #expect(action(.init(kind: .delete), query: "sf", isSearching: true) == .deleteBackward)
     }
 
     @Test("Esc clears the query first, and only then lets the panel close")
@@ -282,7 +282,7 @@ struct PanelSearchTests {
     func returnTogglesOrRuns() {
         #expect(action(.init(kind: .return), query: "sfd", hasSelection: true) == .toggleSelection)
         #expect(
-            action(.init(kind: .return), query: "打开客厅灯", queryKind: .command, hasSelection: true) == .runCommand
+            action(.init(kind: .return), query: "打开客厅灯", hasSelection: true, queryKind: .command) == .runCommand
         )
         // Picking a device by hand beats the command reading.
         #expect(
@@ -313,7 +313,7 @@ struct PanelSearchTests {
         #expect(action(.init(kind: .character("a"), hasCommand: true)) == .ignore)
         #expect(action(.init(kind: .character("a"), hasControl: true)) == .ignore)
         #expect(action(.init(kind: .character("e"), hasOption: true)) == .ignore)
-        #expect(action(.init(kind: .escape), query: "sf", hasCommand: true) == .ignore)
+        #expect(action(.init(kind: .escape, hasCommand: true), query: "sf") == .ignore)
         #expect(action(.init(kind: .tab), query: "sf") == .ignore)
     }
 
