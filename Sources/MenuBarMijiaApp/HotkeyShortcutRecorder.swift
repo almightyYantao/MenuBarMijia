@@ -142,7 +142,8 @@ final class HotkeyRecorderController {
                 label: Self.label(for: event),
                 modifiers: Self.modifiers(from: event.modifierFlags)
             )
-            return MainActor.assumeIsolated { self.apply(payload) }
+            let swallow = MainActor.assumeIsolated { self.apply(payload) }
+            return swallow ? nil : event
         }
     }
 
@@ -154,12 +155,14 @@ final class HotkeyRecorderController {
         isRecording = false
     }
 
+    /// Records the captured key. Returns `true` when the event was consumed (always, while recording:
+    /// cancel, unusable chord beep, or a saved shortcut — none of them should leak to other apps).
     @MainActor
-    private func apply(_ key: RecordedKeyPayload) -> NSEvent? {
+    private func apply(_ key: RecordedKeyPayload) -> Bool {
         // Esc cancels instead of closing the Settings window.
         if key.keyCode == UInt16(kVK_Escape) {
             stop()
-            return nil
+            return true
         }
 
         let shortcut = HotkeyShortcut(
@@ -170,14 +173,14 @@ final class HotkeyRecorderController {
         // A plain letter would be swallowed system-wide; keep listening for a usable chord.
         guard shortcut.isValid else {
             NSSound.beep()
-            return nil
+            return true
         }
 
         HotkeyPreferences.save(shortcut)
         HotkeyAndNotificationManager.shared.applyHotkeyPreference()
         state.reload()
         stop()
-        return nil
+        return true
     }
 
     /// Whether a key event is the currently configured global shortcut.
@@ -208,7 +211,7 @@ final class HotkeyRecorderController {
         return raw.uppercased()
     }
 
-    private static let specialLabels: [UInt16: String] = {
+    nonisolated private static let specialLabels: [UInt16: String] = {
         // 分步构建：单个巨型字面量会让类型检查器超时。
         let pairs: [(UInt16, String)] = [
             (UInt16(kVK_Space), "Space"),
