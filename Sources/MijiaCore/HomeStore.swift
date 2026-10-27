@@ -392,7 +392,7 @@ public final class HomeStore {
     private func handleProviderEvent(_ event: HomeProviderEvent) {
         switch event {
         case .statusChanged(let status):
-            self.connectionStatus = status
+            if connectionStatus != status { connectionStatus = status }
 
         case .snapshotUpdated(let snapshot):
             var nextRooms = snapshot.rooms
@@ -400,9 +400,11 @@ public final class HomeStore {
                !nextRooms.contains(where: { $0.id == lgDev.roomId || $0.name == lgDev.roomName }) {
                 nextRooms.append(RoomArea(id: lgDev.roomId, name: lgDev.roomName, sortOrder: 1))
             }
-            self.rooms = nextRooms
-            self.environmentReadings = snapshot.environmentReadings
-            self.scenes = snapshot.scenes
+            // @Observable invalidates on every assignment, and HA pushes a snapshot for every
+            // state_changed event (incl. entities we never show), so only write real changes.
+            if rooms != nextRooms { rooms = nextRooms }
+            if environmentReadings != snapshot.environmentReadings { environmentReadings = snapshot.environmentReadings }
+            if scenes != snapshot.scenes { scenes = snapshot.scenes }
 
             let now = ContinuousClock.now
             var merged: [SmartDevice] = []
@@ -425,8 +427,10 @@ public final class HomeStore {
                     merged.insert(lgDev, at: 0)
                 }
             }
-            self.devices = merged
-            seedDefaultFavoritesIfNeeded()
+            if devices != merged {
+                devices = merged
+                seedDefaultFavoritesIfNeeded()
+            }
 
             if enableSafetyAlerts, let handler = onSafetyAlert {
                 for alert in evaluateSafetyAlerts(now: Date()) {
