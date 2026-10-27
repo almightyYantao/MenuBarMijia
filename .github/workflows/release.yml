@@ -170,3 +170,64 @@ jobs:
           else
             gh release create "$tag" "${files[@]}" --title "MenuBarMijia ${version}" --generate-notes
           fi
+
+  windows-release:
+    # 编译 Windows 安装包并上传，保证每个 release 双端附件齐全（#32）。
+    # 签名（SmartScreen）需要证书，SignPath/Azure Trusted Signing 接入后在此补充签名步骤。
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: "windows/src-tauri -> target"
+      - name: Build Windows installer (.exe & .msi)
+        run: npx tauri build -- --locked
+      - name: Collect installers with checksums
+        shell: bash
+        run: |
+          version="$(tr -d '[:space:]' < ../VERSION)"
+          mkdir -p ../dist-windows
+          cp src-tauri/target/release/bundle/nsis/*.exe "../dist-windows/MenuBarMijia-${version}-windows-x64-setup.exe"
+          cp src-tauri/target/release/bundle/msi/*.msi "../dist-windows/MenuBarMijia-${version}-windows-x64.msi"
+          cd ../dist-windows
+          sha256sum "MenuBarMijia-${version}-windows-x64-setup.exe" > "MenuBarMijia-${version}-windows-x64-setup.exe.sha256"
+          sha256sum "MenuBarMijia-${version}-windows-x64.msi" > "MenuBarMijia-${version}-windows-x64.msi.sha256"
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < ../VERSION)"
+          tag="v${version}"
+          files=()
+          for file in \
+            "dist-windows/MenuBarMijia-${version}-windows-x64-setup.exe" \
+            "dist-windows/MenuBarMijia-${version}-windows-x64-setup.exe.sha256" \
+            "dist-windows/MenuBarMijia-${version}-windows-x64.msi" \
+            "dist-windows/MenuBarMijia-${version}-windows-x64.msi.sha256"
+          do
+            if [ ! -f "$file" ]; then
+              echo "❌ 缺少发布附件：$file" >&2
+              exit 1
+            fi
+            files+=("$file")
+          done
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            # macOS job 先创建 release；这里只在异常时兜底创建。
+            gh release create "$tag" "${files[@]}" --title "MenuBarMijia ${version}" --generate-notes
+          fi
